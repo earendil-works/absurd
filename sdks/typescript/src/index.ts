@@ -1,13 +1,58 @@
 import pg from "pg";
 
-import {
-  type JsonValue,
-  type ClaimedMessage,
-  type SpawnOptions,
-  type WorkerOptions,
-  type CheckpointRow,
-} from "./types.ts";
-import { serializeError, computeRetryAt } from "./utils.ts";
+export type JsonValue =
+  | string
+  | number
+  | boolean
+  | null
+  | JsonValue[]
+  | { [key: string]: JsonValue };
+export type JsonObject = { [key: string]: JsonValue };
+
+export interface RetryStrategy {
+  kind: "fixed" | "exponential" | "none";
+  baseSeconds?: number;
+  factor?: number;
+  maxSeconds?: number;
+}
+
+export interface SpawnOptions {
+  maxAttempts?: number;
+  retryStrategy?: RetryStrategy;
+  headers?: JsonObject;
+}
+
+export interface ClaimedMessage {
+  run_id: string;
+  task_id: string;
+  task_name: string;
+  attempt: number;
+  params: JsonValue;
+  retry_strategy: RetryStrategy | null;
+  max_attempts: number | null;
+  headers: JsonObject | null;
+  lease_expires_at: Date;
+  wake_event: string | null;
+  event_payload: JsonValue | null;
+}
+
+export interface WorkerOptions {
+  workerId?: string;
+  claimTimeout?: number;
+  batchSize?: number;
+  pollInterval?: number;
+  onError?: (error: Error) => void;
+}
+
+interface CheckpointRow {
+  checkpoint_name: string;
+  state: JsonValue;
+  status: string;
+  owner_run_id: string;
+  ephemeral: boolean;
+  expires_at: Date | null;
+  updated_at: Date;
+}
 
 export type TaskHandler<P = any, R = any> = (
   params: P,
@@ -343,4 +388,41 @@ export class Absurd {
       await ctx.fail(err);
     }
   }
+}
+
+function serializeError(err: unknown): JsonValue {
+  if (err instanceof Error) {
+    return {
+      name: err.name,
+      message: err.message,
+      stack: err.stack || null,
+    };
+  }
+  return { message: String(err) };
+}
+
+function computeRetryAt(
+  strategy: RetryStrategy | null,
+  attempt: number,
+): Date | null {
+  if (!strategy || strategy.kind === "none") {
+    return null;
+  }
+
+  const baseSeconds = strategy.baseSeconds ?? 5;
+  let delaySeconds: number;
+
+  if (strategy.kind === "fixed") {
+    delaySeconds = baseSeconds;
+  } else if (strategy.kind === "exponential") {
+    const factor = strategy.factor ?? 2;
+    delaySeconds = baseSeconds * Math.pow(factor, attempt - 1);
+  } else {
+    return null;
+  }
+
+  const maxSeconds = strategy.maxSeconds ?? Infinity;
+  delaySeconds = Math.min(delaySeconds, maxSeconds);
+
+  return new Date(Date.now() + delaySeconds * 1000);
 }
