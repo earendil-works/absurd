@@ -12,20 +12,20 @@ declare
 begin
   sql := format($QUERY$ with cte as (
       select
-        msg_id from absurd. % I
+        msg_id from absurd.%I
         where
           vt <= clock_timestamp()
-        and case when % L != '{}'::jsonb then
-          (message @> % 2$L)::integer
+        and case when %L != '{}'::jsonb then
+          (message @> %2$L)::integer
         else
           1
         end = 1 order by msg_id asc limit $1
       for update
         skip locked)
       update
-        absurd. % I m
+        absurd.%I m
       set
-        vt = clock_timestamp() + % L, read_ct = read_ct + 1 from cte
+        vt = clock_timestamp() + %L, read_ct = read_ct + 1 from cte
       where
         m.msg_id = cte.msg_id
       returning
@@ -61,20 +61,20 @@ begin
     end if;
     sql := format($QUERY$ with cte as (
         select
-          msg_id from absurd. % I
+          msg_id from absurd.%I
           where
             vt <= clock_timestamp()
-          and case when % L != '{}'::jsonb then
-            (message @> % 2$L)::integer
+          and case when %L != '{}'::jsonb then
+            (message @> %2$L)::integer
           else
             1
           end = 1 order by msg_id asc limit $1
         for update
           skip locked)
         update
-          absurd. % I m
+          absurd.%I m
         set
-          vt = clock_timestamp() + % L, read_ct = read_ct + 1 from cte
+          vt = clock_timestamp() + %L, read_ct = read_ct + 1 from cte
         where
           m.msg_id = cte.msg_id
         returning
@@ -110,13 +110,13 @@ declare
 begin
   sql := format($QUERY$ with cte as (
       select
-        msg_id from absurd. % I
+        msg_id from absurd.%I
         where
           vt <= clock_timestamp()
       order by msg_id asc limit $1
       for update
         skip locked)
-      delete from absurd. % I
+      delete from absurd.%I
       where msg_id in (
           select
             msg_id

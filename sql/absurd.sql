@@ -1,4 +1,5 @@
 -- AUTO-GENERATED FILE. Created by running `make build`; manual changes will be overwritten.
+
 ------------------------------------------------------------
 -- Schema, tables, records, privileges, indexes, etc
 ------------------------------------------------------------
@@ -51,7 +52,6 @@ create type absurd.metrics_result as (
   scrape_time timestamp with time zone,
   queue_visible_length bigint
 );
-
 ------------------------------------------------------------
 -- Internal helper functions
 ------------------------------------------------------------
@@ -101,8 +101,8 @@ begin
   perform
     absurd.disable_notify_insert (queue_name);
   execute format($QUERY$ create constraint trigger trigger_notify_queue_insert_listeners
-      after insert on absurd. % I deferrable for each row
-      execute procedure absurd.notify_queue_listeners ( ) $QUERY$, qtable );
+      after insert on absurd.%I deferrable for each row
+      execute procedure absurd.notify_queue_listeners() $QUERY$, qtable );
 end;
 $$
 language plpgsql;
@@ -113,7 +113,7 @@ create or replace function absurd.disable_notify_insert (queue_name text)
 declare
   qtable text := absurd.format_table_name (queue_name, 'q');
 begin
-  execute format($QUERY$ drop trigger if exists trigger_notify_queue_insert_listeners on absurd. % I;
+  execute format($QUERY$ drop trigger if exists trigger_notify_queue_insert_listeners on absurd.%I;
   $QUERY$,
   qtable);
 end;
@@ -151,7 +151,6 @@ begin
   return encode(b, 'hex')::uuid;
 end;
 $$;
-
 ------------------------------------------------------------
 -- send and send_batch functions
 ------------------------------------------------------------
@@ -163,7 +162,7 @@ declare
   sql text;
   qtable text := absurd.format_table_name (queue_name, 'q');
 begin
-  sql := format($QUERY$ insert into absurd. % I (vt, message, headers)
+  sql := format($QUERY$ insert into absurd.%I (vt, message, headers)
       values ($2, $1, $3)
     returning
       msg_id;
@@ -238,7 +237,7 @@ declare
   sql text;
   qtable text := absurd.format_table_name (queue_name, 'q');
 begin
-  sql := format($QUERY$ insert into absurd. % I (vt, message, headers)
+  sql := format($QUERY$ insert into absurd.%I (vt, message, headers)
     select
       $2, $1[s.i], case when $3 is null then
         null
@@ -309,7 +308,6 @@ create function absurd.send_batch (queue_name text, msgs jsonb[], headers jsonb[
     absurd.send_batch (queue_name, msgs, headers, clock_timestamp() + make_interval(secs => delay));
 $$
 language sql;
-
 ------------------------------------------------------------
 -- read, read_with_poll, and pop functions
 ------------------------------------------------------------
@@ -324,20 +322,20 @@ declare
 begin
   sql := format($QUERY$ with cte as (
       select
-        msg_id from absurd. % I
+        msg_id from absurd.%I
         where
           vt <= clock_timestamp()
-        and case when % L != '{}'::jsonb then
-          (message @> % 2$L)::integer
+        and case when %L != '{}'::jsonb then
+          (message @> %2$L)::integer
         else
           1
         end = 1 order by msg_id asc limit $1
       for update
         skip locked)
       update
-        absurd. % I m
+        absurd.%I m
       set
-        vt = clock_timestamp() + % L, read_ct = read_ct + 1 from cte
+        vt = clock_timestamp() + %L, read_ct = read_ct + 1 from cte
       where
         m.msg_id = cte.msg_id
       returning
@@ -373,20 +371,20 @@ begin
     end if;
     sql := format($QUERY$ with cte as (
         select
-          msg_id from absurd. % I
+          msg_id from absurd.%I
           where
             vt <= clock_timestamp()
-          and case when % L != '{}'::jsonb then
-            (message @> % 2$L)::integer
+          and case when %L != '{}'::jsonb then
+            (message @> %2$L)::integer
           else
             1
           end = 1 order by msg_id asc limit $1
         for update
           skip locked)
         update
-          absurd. % I m
+          absurd.%I m
         set
-          vt = clock_timestamp() + % L, read_ct = read_ct + 1 from cte
+          vt = clock_timestamp() + %L, read_ct = read_ct + 1 from cte
         where
           m.msg_id = cte.msg_id
         returning
@@ -422,13 +420,13 @@ declare
 begin
   sql := format($QUERY$ with cte as (
       select
-        msg_id from absurd. % I
+        msg_id from absurd.%I
         where
           vt <= clock_timestamp()
       order by msg_id asc limit $1
       for update
         skip locked)
-      delete from absurd. % I
+      delete from absurd.%I
       where msg_id in (
           select
             msg_id
@@ -443,7 +441,6 @@ begin
 end;
 $$
 language plpgsql;
-
 ------------------------------------------------------------
 -- delete functions
 ------------------------------------------------------------
@@ -457,7 +454,7 @@ declare
   result uuid;
   qtable text := absurd.format_table_name (queue_name, 'q');
 begin
-  sql := format($QUERY$ delete from absurd. % I
+  sql := format($QUERY$ delete from absurd.%I
     where msg_id = $1
     returning
       msg_id $QUERY$, qtable);
@@ -477,7 +474,7 @@ declare
   sql text;
   qtable text := absurd.format_table_name (queue_name, 'q');
 begin
-  sql := format($QUERY$ delete from absurd. % I
+  sql := format($QUERY$ delete from absurd.%I
     where msg_id = any ($1)
     returning
       msg_id $QUERY$, qtable);
@@ -486,7 +483,6 @@ begin
 end;
 $$
 language plpgsql;
-
 ------------------------------------------------------------
 -- set_vt function
 ------------------------------------------------------------
@@ -500,11 +496,11 @@ declare
   qtable text := absurd.format_table_name (queue_name, 'q');
 begin
   sql := format($QUERY$ update
-      absurd. % I
+      absurd.%I
     set
-      vt = (clock_timestamp() + % L)
+      vt = (clock_timestamp() + %L)
     where
-      msg_id = % L
+      msg_id = %L
     returning
       *;
   $QUERY$,
@@ -528,7 +524,7 @@ declare
   qtable text := absurd.format_table_name (queue_name, 'q');
 begin
   sql := format($QUERY$ update
-      absurd. % I
+      absurd.%I
     set
       vt = $2
       where
@@ -542,7 +538,6 @@ begin
 end;
 $$
 language plpgsql;
-
 ------------------------------------------------------------
 -- Queue management functions
 ------------------------------------------------------------
@@ -570,13 +565,13 @@ begin
     absurd.validate_queue_name (queue_name);
   perform
     absurd.acquire_queue_lock (queue_name);
-  execute format($QUERY$ create table if not exists absurd.%I (msg_id uuid primary key default absurd.portable_uuidv7(), read_ct int default 0 not null, enqueued_at timestamp with time zone default now( ) not null, vt timestamp with time zone not null, message jsonb, headers jsonb ) $QUERY$, qtable);
-  execute format($QUERY$ create index if not exists % I on absurd. % I (vt asc);
+  execute format($QUERY$ create table if not exists absurd.%I (msg_id uuid primary key default absurd.portable_uuidv7(), read_ct int default 0 not null, enqueued_at timestamp with time zone default now() not null, vt timestamp with time zone not null, message jsonb, headers jsonb ) $QUERY$, qtable);
+  execute format($QUERY$ create index if not exists %I on absurd.%I (vt asc);
   $QUERY$,
   qtable || '_vt_idx',
   qtable);
   execute format($QUERY$ insert into absurd.meta (queue_name)
-      values (% L) on conflict
+      values (%L) on conflict
       do nothing;
   $QUERY$,
   queue_name);
@@ -614,7 +609,7 @@ end if;
       table_name = 'meta'
       and table_schema = 'absurd') then
   execute format($QUERY$ delete from absurd.meta
-    where queue_name = % L $QUERY$, queue_name);
+    where queue_name = %L $QUERY$, queue_name);
 end if;
   return true;
 end;
@@ -652,7 +647,6 @@ begin
 end
 $$
 language plpgsql;
-
 ------------------------------------------------------------
 -- Durable task tables
 ------------------------------------------------------------
@@ -1376,7 +1370,6 @@ begin
 end;
 $$
 language plpgsql;
-
 ------------------------------------------------------------
 -- Metrics functions
 ------------------------------------------------------------
@@ -1394,9 +1387,9 @@ begin
         count(*) as queue_length, count(
           case when vt <= now() then
             1
-          end) as queue_visible_length, extract(epoch from (now() - max(enqueued_at)))::int as newest_msg_age_sec, extract(epoch from (now() - min(enqueued_at)))::int as oldest_msg_age_sec, now() as scrape_time from absurd. % I)
+          end) as queue_visible_length, extract(epoch from (now() - max(enqueued_at)))::int as newest_msg_age_sec, extract(epoch from (now() - min(enqueued_at)))::int as oldest_msg_age_sec, now() as scrape_time from absurd.%I)
 select
-  % L as queue_name, q_summary.queue_length, q_summary.newest_msg_age_sec, q_summary.oldest_msg_age_sec, q_summary.queue_length as total_messages, q_summary.scrape_time, q_summary.queue_visible_length from q_summary $QUERY$, qtable, queue_name);
+  %L as queue_name, q_summary.queue_length, q_summary.newest_msg_age_sec, q_summary.oldest_msg_age_sec, q_summary.queue_length as total_messages, q_summary.scrape_time, q_summary.queue_visible_length from q_summary $QUERY$, qtable, queue_name);
   execute query into result_row;
   return result_row;
 end;

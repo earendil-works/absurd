@@ -25,13 +25,13 @@ begin
     absurd.validate_queue_name (queue_name);
   perform
     absurd.acquire_queue_lock (queue_name);
-  execute format($QUERY$ create table if not exists absurd.%I (msg_id uuid primary key default absurd.portable_uuidv7(), read_ct int default 0 not null, enqueued_at timestamp with time zone default now( ) not null, vt timestamp with time zone not null, message jsonb, headers jsonb ) $QUERY$, qtable);
-  execute format($QUERY$ create index if not exists % I on absurd. % I (vt asc);
+  execute format($QUERY$ create table if not exists absurd.%I (msg_id uuid primary key default absurd.portable_uuidv7(), read_ct int default 0 not null, enqueued_at timestamp with time zone default now() not null, vt timestamp with time zone not null, message jsonb, headers jsonb ) $QUERY$, qtable);
+  execute format($QUERY$ create index if not exists %I on absurd.%I (vt asc);
   $QUERY$,
   qtable || '_vt_idx',
   qtable);
   execute format($QUERY$ insert into absurd.meta (queue_name)
-      values (% L) on conflict
+      values (%L) on conflict
       do nothing;
   $QUERY$,
   queue_name);
@@ -69,7 +69,7 @@ end if;
       table_name = 'meta'
       and table_schema = 'absurd') then
   execute format($QUERY$ delete from absurd.meta
-    where queue_name = % L $QUERY$, queue_name);
+    where queue_name = %L $QUERY$, queue_name);
 end if;
   return true;
 end;

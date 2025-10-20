@@ -9,7 +9,7 @@ declare
   sql text;
   qtable text := absurd.format_table_name (queue_name, 'q');
 begin
-  sql := format($QUERY$ insert into absurd. % I (vt, message, headers)
+  sql := format($QUERY$ insert into absurd.%I (vt, message, headers)
       values ($2, $1, $3)
     returning
       msg_id;
@@ -84,7 +84,7 @@ declare
   sql text;
   qtable text := absurd.format_table_name (queue_name, 'q');
 begin
-  sql := format($QUERY$ insert into absurd. % I (vt, message, headers)
+  sql := format($QUERY$ insert into absurd.%I (vt, message, headers)
     select
       $2, $1[s.i], case when $3 is null then
         null

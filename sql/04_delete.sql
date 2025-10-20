@@ -11,7 +11,7 @@ declare
   result uuid;
   qtable text := absurd.format_table_name (queue_name, 'q');
 begin
-  sql := format($QUERY$ delete from absurd. % I
+  sql := format($QUERY$ delete from absurd.%I
     where msg_id = $1
     returning
       msg_id $QUERY$, qtable);
@@ -31,7 +31,7 @@ declare
   sql text;
   qtable text := absurd.format_table_name (queue_name, 'q');
 begin
-  sql := format($QUERY$ delete from absurd. % I
+  sql := format($QUERY$ delete from absurd.%I
     where msg_id = any ($1)
     returning
       msg_id $QUERY$, qtable);

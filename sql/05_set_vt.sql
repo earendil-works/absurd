@@ -11,11 +11,11 @@ declare
   qtable text := absurd.format_table_name (queue_name, 'q');
 begin
   sql := format($QUERY$ update
-      absurd. % I
+      absurd.%I
     set
-      vt = (clock_timestamp() + % L)
+      vt = (clock_timestamp() + %L)
     where
-      msg_id = % L
+      msg_id = %L
     returning
       *;
   $QUERY$,
@@ -39,7 +39,7 @@ declare
   qtable text := absurd.format_table_name (queue_name, 'q');
 begin
   sql := format($QUERY$ update
-      absurd. % I
+      absurd.%I
     set
       vt = $2
       where

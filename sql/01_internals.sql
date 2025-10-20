@@ -47,8 +47,8 @@ begin
   perform
     absurd.disable_notify_insert (queue_name);
   execute format($QUERY$ create constraint trigger trigger_notify_queue_insert_listeners
-      after insert on absurd. % I deferrable for each row
-      execute procedure absurd.notify_queue_listeners ( ) $QUERY$, qtable );
+      after insert on absurd.%I deferrable for each row
+      execute procedure absurd.notify_queue_listeners() $QUERY$, qtable );
 end;
 $$
 language plpgsql;
@@ -59,7 +59,7 @@ create or replace function absurd.disable_notify_insert (queue_name text)
 declare
   qtable text := absurd.format_table_name (queue_name, 'q');
 begin
-  execute format($QUERY$ drop trigger if exists trigger_notify_queue_insert_listeners on absurd. % I;
+  execute format($QUERY$ drop trigger if exists trigger_notify_queue_insert_listeners on absurd.%I;
   $QUERY$,
   qtable);
 end;
