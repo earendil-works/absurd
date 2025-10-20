@@ -46,13 +46,8 @@ create table absurd.task_checkpoints (
   expires_at timestamptz,
   updated_at timestamptz not null default now(),
   primary key (task_id, step_name)
-)
-partition by range (expires_at);
+);
 
--- default partition ensures checkpoints persist even before time-sliced partitions exist
-create table absurd.task_checkpoints_default partition of absurd.task_checkpoints default;
-
--- child partitions will be created per-period (for example monthly) to enable TTL drop.
 create table absurd.task_checkpoint_reads (
   task_id uuid not null references absurd.tasks (task_id) on delete cascade,
   run_id uuid not null references absurd.task_runs (run_id) on delete cascade,
@@ -67,9 +62,10 @@ create table absurd.task_waits (
   wait_type text not null check (wait_type in ('sleep', 'event')),
   wake_at timestamptz,
   wake_event text,
+  wake_event_key text generated always as (coalesce(wake_event, '_')) stored,
   payload jsonb,
   created_at timestamptz not null default now(),
-  primary key (task_id, run_id, wait_type, coalesce(wake_event, '_'))
+  primary key (task_id, run_id, wait_type, wake_event_key)
 );
 
 create index on absurd.task_waits (wake_event)
@@ -128,7 +124,7 @@ limit 1;
     raise exception 'failed to enqueue task % for queue %', p_task_name, p_queue_name;
   end if;
   v_message := jsonb_build_object('task_id', v_task_id, 'run_id', v_run_id, 'attempt', v_attempt);
-  execute format($$update absurd.%I set message = $2 where msg_id = $1$$, v_qtable)
+  execute format($fmt$update absurd.%I set message = $2 where msg_id = $1$fmt$, v_qtable)
   using v_run_id, v_message;
   insert into absurd.task_runs (run_id, task_id, attempt, status, max_attempts, retry_strategy, created_at, updated_at)
     values (v_run_id, v_task_id, v_attempt, 'pending', v_max_attempts, v_retry_strategy, v_now, v_now);
@@ -184,7 +180,7 @@ begin
         wake_event = null,
         updated_at = v_claimed_at
       where
-        run_id = v_message.msg_id
+        task_runs.run_id = v_message.msg_id
       returning
         * into v_run;
       if not found then
@@ -197,7 +193,7 @@ begin
       from
         absurd.tasks
       where
-        task_id = v_run.task_id;
+        tasks.task_id = v_run.task_id;
       select
         w.wake_event,
         w.payload into v_wait_event,
@@ -210,7 +206,7 @@ begin
         w.created_at desc
       limit 1;
       delete from absurd.task_waits
-      where run_id = v_run.run_id;
+      where task_waits.run_id = v_run.run_id;
       run_id := v_run.run_id;
       task_id := v_run.task_id;
       attempt := v_run.attempt;
@@ -330,7 +326,7 @@ begin
     run_id = p_run_id;
   delete from absurd.task_waits
   where run_id = p_run_id;
-  execute format($$select headers from absurd.%I where msg_id = $1$$, v_qtable) into v_headers
+  execute format($fmt$select headers from absurd.%I where msg_id = $1$fmt$, v_qtable) into v_headers
   using p_run_id;
   perform
     absurd.delete (p_queue_name, p_run_id);
@@ -352,7 +348,7 @@ limit 1;
     if v_new_run_id is null then
       raise exception 'failed to enqueue retry for run %', p_run_id;
     end if;
-    execute format($$update absurd.%I set message = $2 where msg_id = $1$$, v_qtable)
+    execute format($fmt$update absurd.%I set message = $2 where msg_id = $1$fmt$, v_qtable)
     using v_new_run_id, jsonb_build_object('task_id', v_task_id, 'run_id', v_new_run_id, 'attempt', v_next_attempt);
     insert into absurd.task_runs (run_id, task_id, attempt, status, max_attempts, retry_strategy, next_wake_at, created_at, updated_at)
       values (v_new_run_id, v_task_id, v_next_attempt, v_new_status, v_max_attempts, v_retry_strategy, case when v_effective_retry_at > v_now then
@@ -410,7 +406,7 @@ begin
   if p_suspend then
     insert into absurd.task_waits (task_id, run_id, wait_type, wake_at, wake_event, payload)
       values (v_task_id, p_run_id, 'sleep', p_wake_at, null, null)
-    on conflict (task_id, run_id, wait_type, coalesce(wake_event, '_'))
+    on conflict (task_id, run_id, wait_type, wake_event_key)
       do update set
         wake_at = excluded.wake_at,
         payload = excluded.payload,
@@ -477,7 +473,7 @@ begin
     and wait_type = 'sleep';
   insert into absurd.task_waits (task_id, run_id, wait_type, wake_at, wake_event, payload)
     values (v_task_id, p_run_id, 'event', null, p_event_name, p_payload)
-  on conflict (task_id, run_id, wait_type, coalesce(wake_event, '_'))
+  on conflict (task_id, run_id, wait_type, wake_event_key)
     do update set
       payload = excluded.payload,
       wake_event = excluded.wake_event,
@@ -516,7 +512,7 @@ begin
   where
     t.queue_name = p_queue_name
     and w.wait_type = 'event'
-    and coalesce(w.wake_event, '') = coalesce(p_event_name, '')
+    and w.wake_event_key = coalesce(p_event_name, '_')
     loop
       update
         absurd.task_waits
@@ -526,7 +522,7 @@ begin
         task_id = v_wait.task_id
         and run_id = v_wait.run_id
         and wait_type = 'event'
-        and coalesce(wake_event, '_') = coalesce(p_event_name, '_');
+        and wake_event_key = coalesce(p_event_name, '_');
       update
         absurd.task_runs
       set
@@ -588,22 +584,22 @@ create function absurd.get_task_checkpoint_state (p_task_id uuid, p_step_name te
 begin
   return query
   select
-    step_name,
-    state,
-    status,
-    owner_run_id,
-    ephemeral,
-    expires_at,
-    updated_at
+    task_checkpoints.step_name,
+    task_checkpoints.state,
+    task_checkpoints.status,
+    task_checkpoints.owner_run_id,
+    task_checkpoints.ephemeral,
+    task_checkpoints.expires_at,
+    task_checkpoints.updated_at
   from
     absurd.task_checkpoints
   where
-    task_id = p_task_id
-    and step_name = p_step_name
+    task_checkpoints.task_id = p_task_id
+    and task_checkpoints.step_name = p_step_name
     and (p_include_pending
-      or status = 'complete')
-    and (expires_at is null
-      or expires_at > clock_timestamp());
+      or task_checkpoints.status = 'complete')
+    and (task_checkpoints.expires_at is null
+      or task_checkpoints.expires_at > clock_timestamp());
 end;
 $$
 language plpgsql;
@@ -625,20 +621,20 @@ declare
 begin
   for v_row in
   select
-    step_name,
-    state,
-    status,
-    owner_run_id,
-    ephemeral,
-    expires_at,
-    updated_at
+    cp.step_name,
+    cp.state,
+    cp.status,
+    cp.owner_run_id,
+    cp.ephemeral,
+    cp.expires_at,
+    cp.updated_at
   from
-    absurd.task_checkpoints
+    absurd.task_checkpoints cp
   where
-    task_id = p_task_id
-    and status = 'complete'
-    and (expires_at is null
-      or expires_at > v_now)
+    cp.task_id = p_task_id
+    and cp.status = 'complete'
+    and (cp.expires_at is null
+      or cp.expires_at > v_now)
       loop
         checkpoint_name := v_row.step_name;
         state := v_row.state;
