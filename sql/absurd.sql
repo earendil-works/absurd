@@ -120,6 +120,38 @@ end;
 $$
 language plpgsql;
 
+-- Fallback function for older postgres versions that do not yet have a uuidv7 function
+-- We generate a uuidv7 from a uuidv4 and fold in a timestamp.
+create or replace function public.portable_uuidv7 ()
+  returns uuid
+  language plpgsql
+  volatile
+  as $$
+declare
+  v_server_num integer := current_setting('server_version_num')::int;
+  ts_ms bigint;
+  b bytea;
+  rnd bytea;
+  i int;
+begin
+  if v_server_num >= 180000 then
+    return uuidv7 ();
+  end if;
+  ts_ms := floor(extract(epoch from clock_timestamp()) * 1000)::bigint;
+  rnd := uuid_send(uuid_generate_v4 ());
+  b := repeat(E'\\000', 16)::bytea;
+  for i in 0..5 loop
+    b := set_byte(b, i, ((ts_ms >> ((5 - i) * 8)) & 255)::int);
+  end loop;
+  for i in 6..15 loop
+    b := set_byte(b, i, get_byte(rnd, i));
+  end loop;
+  b := set_byte(b, 6, ((get_byte(b, 6) & 15) | (7 << 4)));
+  b := set_byte(b, 8, ((get_byte(b, 8) & 63) | 128));
+  return encode(b, 'hex')::uuid;
+end;
+$$;
+
 ------------------------------------------------------------
 -- send and send_batch functions
 ------------------------------------------------------------
@@ -485,6 +517,33 @@ $$
 language plpgsql;
 
 ------------------------------------------------------------
+-- set_vt_at function
+------------------------------------------------------------
+-- Sets vt of a message to an absolute timestamp, returns it
+create function absurd.set_vt_at (queue_name text, msg_id uuid, wake_at timestamp with time zone)
+  returns setof absurd.message_record
+  as $$
+declare
+  sql text;
+  qtable text := absurd.format_table_name (queue_name, 'q');
+begin
+  sql := format($QUERY$ update
+      absurd. % I
+    set
+      vt = $2
+      where
+        msg_id = $1
+      returning
+        *;
+  $QUERY$,
+  qtable);
+  return query execute sql
+  using msg_id, wake_at;
+end;
+$$
+language plpgsql;
+
+------------------------------------------------------------
 -- Queue management functions
 ------------------------------------------------------------
 create function absurd.validate_queue_name (queue_name text)
@@ -611,10 +670,9 @@ begin
         count(*) as queue_length, count(
           case when vt <= now() then
             1
-          end) as queue_visible_length, extract(epoch from (now() - max(enqueued_at)))::int as newest_msg_age_sec, extract(epoch from (now() - min(enqueued_at)))::int as oldest_msg_age_sec, now() as scrape_time from absurd. % I
-)
-  select
-    % L as queue_name, q_summary.queue_length, q_summary.newest_msg_age_sec, q_summary.oldest_msg_age_sec, q_summary.queue_length as total_messages, q_summary.scrape_time, q_summary.queue_visible_length from q_summary $QUERY$, qtable, queue_name);
+          end) as queue_visible_length, extract(epoch from (now() - max(enqueued_at)))::int as newest_msg_age_sec, extract(epoch from (now() - min(enqueued_at)))::int as oldest_msg_age_sec, now() as scrape_time from absurd. % I)
+select
+  % L as queue_name, q_summary.queue_length, q_summary.newest_msg_age_sec, q_summary.oldest_msg_age_sec, q_summary.queue_length as total_messages, q_summary.scrape_time, q_summary.queue_visible_length from q_summary $QUERY$, qtable, queue_name);
   execute query into result_row;
   return result_row;
 end;
