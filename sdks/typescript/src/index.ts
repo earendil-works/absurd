@@ -121,24 +121,47 @@ export class TaskContext {
     stepName: string,
     eventName: string,
     payload?: JsonValue,
-  ): Promise<never> {
-    await this.pool.query(`SELECT absurd.await_event($1, $2, $3)`, [
-      this.message.run_id,
-      eventName,
-      JSON.stringify(payload ?? null),
-    ]);
+  ): Promise<JsonValue | null> {
+    if (this.checkpointCache.has(stepName)) {
+      return this.checkpointCache.get(stepName) ?? null;
+    }
 
-    await this.pool.query(
-      `SELECT absurd.set_task_checkpoint_state($1, $2, $3, $4, $5, $6)`,
+    const result = await this.pool.query<{
+      should_suspend: boolean;
+      payload: JsonValue | null;
+    }>(
+      `SELECT should_suspend, payload
+       FROM absurd.await_event($1, $2, $3, $4)`,
       [
-        this.message.task_id,
-        stepName,
-        JSON.stringify(payload ?? null),
         this.message.run_id,
-        true,
-        null,
+        stepName,
+        eventName,
+        JSON.stringify(payload ?? null),
       ],
     );
+
+    if (result.rows.length === 0) {
+      throw new Error("Failed to await event");
+    }
+
+    const { should_suspend, payload: eventPayload } = result.rows[0];
+
+    if (!should_suspend) {
+      await this.pool.query(
+        `SELECT absurd.set_task_checkpoint_state($1, $2, $3, $4, $5, $6)`,
+        [
+          this.message.task_id,
+          stepName,
+          JSON.stringify(eventPayload ?? null),
+          this.message.run_id,
+          true,
+          null,
+        ],
+      );
+
+      this.checkpointCache.set(stepName, (eventPayload ?? null) as JsonValue);
+      return eventPayload ?? null;
+    }
 
     throw new SuspendTask();
   }

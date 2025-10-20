@@ -127,9 +127,9 @@ Options:
 
 Sleep for a duration. The task will be resumed after the delay. Throws `SuspendTask`.
 
-**`awaitEvent(stepName: string, eventName: string, payload?: JsonValue): Promise<never>`**
+**`awaitEvent(stepName: string, eventName: string, payload?: JsonValue): Promise<JsonValue | null>`**
 
-Wait for an event to be emitted. Throws `SuspendTask`.
+Wait for an event to be emitted. If the event was previously emitted, returns the cached payload immediately. Otherwise suspends by throwing `SuspendTask`.
 
 **`emitEvent(eventName: string, payload?: JsonValue): Promise<void>`**
 

@@ -63,6 +63,7 @@ create table absurd.task_waits (
   wake_at timestamptz,
   wake_event text,
   wake_event_key text generated always as (coalesce(wake_event, '_')) stored,
+  step_name text,
   payload jsonb,
   created_at timestamptz not null default now(),
   primary key (task_id, run_id, wait_type, wake_event_key)
@@ -71,6 +72,15 @@ create table absurd.task_waits (
 create index on absurd.task_waits (wake_event)
 where
   wait_type = 'event';
+
+create table absurd.event_cache (
+  queue_name text not null references absurd.meta (queue_name) on delete cascade,
+  event_name text,
+  event_key text generated always as (coalesce(event_name, '_')) stored,
+  payload jsonb,
+  emitted_at timestamptz not null default now(),
+  primary key (queue_name, event_key)
+);
 
 create table absurd.task_archives (
   task_id uuid primary key references absurd.tasks (task_id),
@@ -404,12 +414,13 @@ begin
     raise exception 'run % not found', p_run_id;
   end if;
   if p_suspend then
-    insert into absurd.task_waits (task_id, run_id, wait_type, wake_at, wake_event, payload)
-      values (v_task_id, p_run_id, 'sleep', p_wake_at, null, null)
+    insert into absurd.task_waits (task_id, run_id, wait_type, wake_at, wake_event, payload, step_name)
+      values (v_task_id, p_run_id, 'sleep', p_wake_at, null, null, null)
     on conflict (task_id, run_id, wait_type, wake_event_key)
       do update set
         wake_at = excluded.wake_at,
         payload = excluded.payload,
+        step_name = excluded.step_name,
         created_at = excluded.created_at;
   else
     delete from absurd.task_waits
@@ -448,13 +459,17 @@ end;
 $$
 language plpgsql;
 
-create function absurd.await_event (p_run_id uuid, p_event_name text, p_payload jsonb default null)
-  returns void
+create function absurd.await_event (p_run_id uuid, p_step_name text, p_event_name text, p_payload jsonb default null)
+  returns table (
+    should_suspend boolean,
+    payload jsonb
+  )
   as $$
 declare
   v_task_id uuid;
   v_queue_name text;
   v_now timestamptz := clock_timestamp();
+  v_event_payload jsonb;
 begin
   select
     r.task_id,
@@ -468,15 +483,29 @@ begin
   if not found then
     raise exception 'run % not found', p_run_id;
   end if;
+  select
+    ec.payload into v_event_payload
+  from
+    absurd.event_cache ec
+  where
+    ec.queue_name = v_queue_name
+    and ec.event_key = coalesce(p_event_name, '_');
+  if found then
+    should_suspend := false;
+    payload := v_event_payload;
+    return next;
+    return;
+  end if;
   delete from absurd.task_waits
   where run_id = p_run_id
     and wait_type = 'sleep';
-  insert into absurd.task_waits (task_id, run_id, wait_type, wake_at, wake_event, payload)
-    values (v_task_id, p_run_id, 'event', null, p_event_name, p_payload)
+  insert into absurd.task_waits (task_id, run_id, wait_type, wake_at, wake_event, payload, step_name)
+    values (v_task_id, p_run_id, 'event', null, p_event_name, p_payload, p_step_name)
   on conflict (task_id, run_id, wait_type, wake_event_key)
     do update set
       payload = excluded.payload,
       wake_event = excluded.wake_event,
+      step_name = excluded.step_name,
       created_at = excluded.created_at;
   update
     absurd.task_runs
@@ -491,6 +520,10 @@ begin
     run_id = p_run_id;
   perform
     absurd.set_vt_at (v_queue_name, p_run_id, 'infinity'::timestamptz);
+  should_suspend := true;
+  payload := null;
+  return next;
+  return;
 end;
 $$
 language plpgsql;
@@ -501,19 +534,26 @@ create function absurd.emit_event (p_queue_name text, p_event_name text, p_paylo
 declare
   v_wait record;
   v_now timestamptz := clock_timestamp();
+  v_event_key text := coalesce(p_event_name, '_');
 begin
+  insert into absurd.event_cache (queue_name, event_name, payload, emitted_at)
+    values (p_queue_name, p_event_name, p_payload, v_now)
+  on conflict (queue_name, event_key)
+    do update set
+      payload = excluded.payload,
+      emitted_at = excluded.emitted_at;
   for v_wait in
   select
     w.task_id,
-    w.run_id
+    w.run_id,
+    w.step_name
   from
     absurd.task_waits w
     join absurd.tasks t on t.task_id = w.task_id
   where
     t.queue_name = p_queue_name
     and w.wait_type = 'event'
-    and w.wake_event_key = coalesce(p_event_name, '_')
-    loop
+    and w.wake_event_key = v_event_key loop
       update
         absurd.task_waits
       set
@@ -522,7 +562,11 @@ begin
         task_id = v_wait.task_id
         and run_id = v_wait.run_id
         and wait_type = 'event'
-        and wake_event_key = coalesce(p_event_name, '_');
+        and wake_event_key = v_event_key;
+      if v_wait.step_name is not null then
+        perform
+          absurd.set_task_checkpoint_state (v_wait.task_id, v_wait.step_name, p_payload, v_wait.run_id, true, null);
+      end if;
       update
         absurd.task_runs
       set
