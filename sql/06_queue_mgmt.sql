@@ -77,7 +77,7 @@ $$
 language plpgsql;
 
 -- purge queue, deleting all entries in it.
-create or replace function absurd."purge_queue" (queue_name text)
+create or replace function absurd.purge_queue (queue_name text)
   returns bigint
   as $$
 declare
@@ -95,7 +95,7 @@ $$
 language plpgsql;
 
 -- list queues
-create function absurd."list_queues" ()
+create function absurd.list_queues ()
   returns setof absurd.queue_record
   as $$
 begin

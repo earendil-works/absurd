@@ -25,7 +25,7 @@ $$
 language plpgsql;
 
 -- get metrics for all queues
-create function absurd."metrics_all" ()
+create function absurd.metrics_all ()
   returns setof absurd.metrics_result
   as $$
 declare
