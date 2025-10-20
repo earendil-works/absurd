@@ -68,7 +68,7 @@ language plpgsql;
 
 -- Fallback function for older postgres versions that do not yet have a uuidv7 function
 -- We generate a uuidv7 from a uuidv4 and fold in a timestamp.
-create or replace function public.portable_uuidv7 ()
+create or replace function absurd.portable_uuidv7 ()
   returns uuid
   language plpgsql
   volatile

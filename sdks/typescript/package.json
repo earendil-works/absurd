@@ -1,0 +1,34 @@
+{
+  "name": "absurd-sdk",
+  "version": "0.1.0",
+  "description": "TypeScript SDK for Absurd - PostgreSQL-based durable task execution",
+  "type": "module",
+  "main": "./index.ts",
+  "types": "./index.ts",
+  "exports": {
+    ".": "./index.ts"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "absurd",
+    "postgresql",
+    "queue",
+    "task",
+    "durable",
+    "workflow"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "pg": "^8.13.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/pg": "^8.11.10"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

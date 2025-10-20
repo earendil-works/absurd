@@ -122,7 +122,7 @@ language plpgsql;
 
 -- Fallback function for older postgres versions that do not yet have a uuidv7 function
 -- We generate a uuidv7 from a uuidv4 and fold in a timestamp.
-create or replace function public.portable_uuidv7 ()
+create or replace function absurd.portable_uuidv7 ()
   returns uuid
   language plpgsql
   volatile
@@ -570,7 +570,7 @@ begin
     absurd.validate_queue_name (queue_name);
   perform
     absurd.acquire_queue_lock (queue_name);
-  execute format($QUERY$ create table if not exists absurd. % I (msg_id uuid primary key default public.portable_uuidv7(), read_ct int default 0 not null, enqueued_at timestamp with time zone default now( ) not null, vt timestamp with time zone not null, message jsonb, headers jsonb ) $QUERY$, qtable);
+  execute format($QUERY$ create table if not exists absurd. % I (msg_id uuid primary key default absurd.portable_uuidv7(), read_ct int default 0 not null, enqueued_at timestamp with time zone default now( ) not null, vt timestamp with time zone not null, message jsonb, headers jsonb ) $QUERY$, qtable);
   execute format($QUERY$ create index if not exists % I on absurd. % I (vt asc);
   $QUERY$,
   qtable || '_vt_idx',
@@ -657,7 +657,7 @@ language plpgsql;
 -- Durable task tables
 ------------------------------------------------------------
 create table absurd.tasks (
-  task_id uuid primary key default public.portable_uuidv7 (),
+  task_id uuid primary key default absurd.portable_uuidv7 (),
   queue_name text not null,
   task_name text not null,
   params jsonb not null,
@@ -670,7 +670,7 @@ create table absurd.tasks (
 create index on absurd.tasks (queue_name, created_at desc);
 
 create table absurd.task_runs (
-  run_id uuid primary key default public.portable_uuidv7 (),
+  run_id uuid primary key default absurd.portable_uuidv7 (),
   task_id uuid not null references absurd.tasks (task_id) on delete cascade,
   attempt integer not null,
   status text not null check (status in ('pending', 'running', 'sleeping', 'completed', 'failed', 'abandoned')),
