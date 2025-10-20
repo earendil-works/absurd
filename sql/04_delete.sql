@@ -3,12 +3,12 @@
 ------------------------------------------------------------
 ---- delete
 ---- deletes a message id from the queue permanently
-create function absurd.delete (queue_name text, msg_id bigint)
+create function absurd.delete (queue_name text, msg_id uuid)
   returns boolean
   as $$
 declare
   sql text;
-  result bigint;
+  result uuid;
   qtable text := absurd.format_table_name (queue_name, 'q');
 begin
   sql := format($QUERY$ delete from absurd. % I
@@ -24,8 +24,8 @@ language plpgsql;
 
 ---- delete
 ---- deletes an array of message ids from the queue permanently
-create function absurd.delete (queue_name text, msg_ids bigint[])
-  returns setof bigint
+create function absurd.delete (queue_name text, msg_ids uuid[])
+  returns setof uuid
   as $$
 declare
   sql text;

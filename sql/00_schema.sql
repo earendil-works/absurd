@@ -27,7 +27,7 @@ select
 -- This type has the shape of a message in a queue, and is often returned by
 -- absurd functions that return messages
 create type absurd.message_record as (
-  msg_id bigint,
+  msg_id uuid,
   read_ct integer,
   enqueued_at timestamp with time zone,
   vt timestamp with time zone,

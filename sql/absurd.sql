@@ -1,3 +1,4 @@
+-- AUTO-GENERATED FILE. Created by running `make build`; manual changes will be overwritten.
 ------------------------------------------------------------
 -- Schema, tables, records, privileges, indexes, etc
 ------------------------------------------------------------
@@ -27,7 +28,7 @@ select
 -- This type has the shape of a message in a queue, and is often returned by
 -- absurd functions that return messages
 create type absurd.message_record as (
-  msg_id bigint,
+  msg_id uuid,
   read_ct integer,
   enqueued_at timestamp with time zone,
   vt timestamp with time zone,
@@ -124,7 +125,7 @@ language plpgsql;
 ------------------------------------------------------------
 -- send: actual implementation
 create function absurd.send (queue_name text, msg jsonb, headers jsonb, delay timestamp with time zone)
-  returns setof bigint
+  returns setof uuid
   as $$
 declare
   sql text;
@@ -144,7 +145,7 @@ language plpgsql;
 
 -- send: 2 args, no delay or headers
 create function absurd.send (queue_name text, msg jsonb)
-  returns setof bigint
+  returns setof uuid
   as $$
   select
     *
@@ -155,7 +156,7 @@ language sql;
 
 -- send: 3 args with headers
 create function absurd.send (queue_name text, msg jsonb, headers jsonb)
-  returns setof bigint
+  returns setof uuid
   as $$
   select
     *
@@ -166,7 +167,7 @@ language sql;
 
 -- send: 3 args with integer delay
 create function absurd.send (queue_name text, msg jsonb, delay integer)
-  returns setof bigint
+  returns setof uuid
   as $$
   select
     *
@@ -177,7 +178,7 @@ language sql;
 
 -- send: 3 args with timestamp
 create function absurd.send (queue_name text, msg jsonb, delay timestamp with time zone)
-  returns setof bigint
+  returns setof uuid
   as $$
   select
     *
@@ -188,7 +189,7 @@ language sql;
 
 -- send: 4 args with integer delay
 create function absurd.send (queue_name text, msg jsonb, headers jsonb, delay integer)
-  returns setof bigint
+  returns setof uuid
   as $$
   select
     *
@@ -199,7 +200,7 @@ language sql;
 
 -- send_batch: actual implementation
 create function absurd.send_batch (queue_name text, msgs jsonb[], headers jsonb[], delay timestamp with time zone)
-  returns setof bigint
+  returns setof uuid
   as $$
 declare
   sql text;
@@ -224,7 +225,7 @@ language plpgsql;
 
 -- send batch: 2 args
 create function absurd.send_batch (queue_name text, msgs jsonb[])
-  returns setof bigint
+  returns setof uuid
   as $$
   select
     *
@@ -235,7 +236,7 @@ language sql;
 
 -- send batch: 3 args with headers
 create function absurd.send_batch (queue_name text, msgs jsonb[], headers jsonb[])
-  returns setof bigint
+  returns setof uuid
   as $$
   select
     *
@@ -246,7 +247,7 @@ language sql;
 
 -- send batch: 3 args with integer delay
 create function absurd.send_batch (queue_name text, msgs jsonb[], delay integer)
-  returns setof bigint
+  returns setof uuid
   as $$
   select
     *
@@ -257,7 +258,7 @@ language sql;
 
 -- send batch: 3 args with timestamp
 create function absurd.send_batch (queue_name text, msgs jsonb[], delay timestamp with time zone)
-  returns setof bigint
+  returns setof uuid
   as $$
   select
     *
@@ -268,7 +269,7 @@ language sql;
 
 -- send_batch: 4 args with integer delay
 create function absurd.send_batch (queue_name text, msgs jsonb[], headers jsonb[], delay integer)
-  returns setof bigint
+  returns setof uuid
   as $$
   select
     *
@@ -416,12 +417,12 @@ language plpgsql;
 ------------------------------------------------------------
 ---- delete
 ---- deletes a message id from the queue permanently
-create function absurd.delete (queue_name text, msg_id bigint)
+create function absurd.delete (queue_name text, msg_id uuid)
   returns boolean
   as $$
 declare
   sql text;
-  result bigint;
+  result uuid;
   qtable text := absurd.format_table_name (queue_name, 'q');
 begin
   sql := format($QUERY$ delete from absurd. % I
@@ -437,8 +438,8 @@ language plpgsql;
 
 ---- delete
 ---- deletes an array of message ids from the queue permanently
-create function absurd.delete (queue_name text, msg_ids bigint[])
-  returns setof bigint
+create function absurd.delete (queue_name text, msg_ids uuid[])
+  returns setof uuid
   as $$
 declare
   sql text;
@@ -458,7 +459,7 @@ language plpgsql;
 -- set_vt function
 ------------------------------------------------------------
 -- Sets vt of a message, returns it
-create function absurd.set_vt (queue_name text, msg_id bigint, vt integer)
+create function absurd.set_vt (queue_name text, msg_id uuid, vt integer)
   returns setof absurd.message_record
   as $$
 declare
@@ -510,7 +511,7 @@ begin
     absurd.validate_queue_name (queue_name);
   perform
     absurd.acquire_queue_lock (queue_name);
-  execute format($QUERY$ create table if not exists absurd. % I (msg_id bigint primary key generated always as identity, read_ct int default 0 not null, enqueued_at timestamp with time zone default now( ) not null, vt timestamp with time zone not null, message jsonb, headers jsonb ) $QUERY$, qtable);
+  execute format($QUERY$ create table if not exists absurd. % I (msg_id uuid primary key default public.portable_uuidv7(), read_ct int default 0 not null, enqueued_at timestamp with time zone default now( ) not null, vt timestamp with time zone not null, message jsonb, headers jsonb ) $QUERY$, qtable);
   execute format($QUERY$ create index if not exists % I on absurd. % I (vt asc);
   $QUERY$,
   qtable || '_vt_idx',
@@ -611,15 +612,9 @@ begin
           case when vt <= now() then
             1
           end) as queue_visible_length, extract(epoch from (now() - max(enqueued_at)))::int as newest_msg_age_sec, extract(epoch from (now() - min(enqueued_at)))::int as oldest_msg_age_sec, now() as scrape_time from absurd. % I
-), all_metrics as (
+)
   select
-    case when is_called then
-      last_value
-    else
-      0
-    end as total_messages from absurd. % I)
-  select
-    % L as queue_name, q_summary.queue_length, q_summary.newest_msg_age_sec, q_summary.oldest_msg_age_sec, all_metrics.total_messages, q_summary.scrape_time, q_summary.queue_visible_length from q_summary, all_metrics $QUERY$, qtable, qtable || '_msg_id_seq', queue_name);
+    % L as queue_name, q_summary.queue_length, q_summary.newest_msg_age_sec, q_summary.oldest_msg_age_sec, q_summary.queue_length as total_messages, q_summary.scrape_time, q_summary.queue_visible_length from q_summary $QUERY$, qtable, queue_name);
   execute query into result_row;
   return result_row;
 end;
@@ -645,4 +640,3 @@ begin
 end;
 $$
 language plpgsql;
-

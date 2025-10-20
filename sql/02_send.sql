@@ -3,7 +3,7 @@
 ------------------------------------------------------------
 -- send: actual implementation
 create function absurd.send (queue_name text, msg jsonb, headers jsonb, delay timestamp with time zone)
-  returns setof bigint
+  returns setof uuid
   as $$
 declare
   sql text;
@@ -23,7 +23,7 @@ language plpgsql;
 
 -- send: 2 args, no delay or headers
 create function absurd.send (queue_name text, msg jsonb)
-  returns setof bigint
+  returns setof uuid
   as $$
   select
     *
@@ -34,7 +34,7 @@ language sql;
 
 -- send: 3 args with headers
 create function absurd.send (queue_name text, msg jsonb, headers jsonb)
-  returns setof bigint
+  returns setof uuid
   as $$
   select
     *
@@ -45,7 +45,7 @@ language sql;
 
 -- send: 3 args with integer delay
 create function absurd.send (queue_name text, msg jsonb, delay integer)
-  returns setof bigint
+  returns setof uuid
   as $$
   select
     *
@@ -56,7 +56,7 @@ language sql;
 
 -- send: 3 args with timestamp
 create function absurd.send (queue_name text, msg jsonb, delay timestamp with time zone)
-  returns setof bigint
+  returns setof uuid
   as $$
   select
     *
@@ -67,7 +67,7 @@ language sql;
 
 -- send: 4 args with integer delay
 create function absurd.send (queue_name text, msg jsonb, headers jsonb, delay integer)
-  returns setof bigint
+  returns setof uuid
   as $$
   select
     *
@@ -78,7 +78,7 @@ language sql;
 
 -- send_batch: actual implementation
 create function absurd.send_batch (queue_name text, msgs jsonb[], headers jsonb[], delay timestamp with time zone)
-  returns setof bigint
+  returns setof uuid
   as $$
 declare
   sql text;
@@ -103,7 +103,7 @@ language plpgsql;
 
 -- send batch: 2 args
 create function absurd.send_batch (queue_name text, msgs jsonb[])
-  returns setof bigint
+  returns setof uuid
   as $$
   select
     *
@@ -114,7 +114,7 @@ language sql;
 
 -- send batch: 3 args with headers
 create function absurd.send_batch (queue_name text, msgs jsonb[], headers jsonb[])
-  returns setof bigint
+  returns setof uuid
   as $$
   select
     *
@@ -125,7 +125,7 @@ language sql;
 
 -- send batch: 3 args with integer delay
 create function absurd.send_batch (queue_name text, msgs jsonb[], delay integer)
-  returns setof bigint
+  returns setof uuid
   as $$
   select
     *
@@ -136,7 +136,7 @@ language sql;
 
 -- send batch: 3 args with timestamp
 create function absurd.send_batch (queue_name text, msgs jsonb[], delay timestamp with time zone)
-  returns setof bigint
+  returns setof uuid
   as $$
   select
     *
@@ -147,7 +147,7 @@ language sql;
 
 -- send_batch: 4 args with integer delay
 create function absurd.send_batch (queue_name text, msgs jsonb[], headers jsonb[], delay integer)
-  returns setof bigint
+  returns setof uuid
   as $$
   select
     *

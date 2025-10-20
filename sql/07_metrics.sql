@@ -15,16 +15,9 @@ begin
         count(*) as queue_length, count(
           case when vt <= now() then
             1
-          end) as queue_visible_length, extract(epoch from (now() - max(enqueued_at)))::int as newest_msg_age_sec, extract(epoch from (now() - min(enqueued_at)))::int as oldest_msg_age_sec, now() as scrape_time from absurd. % I
-), all_metrics as (
-  select
-    case when is_called then
-      last_value
-    else
-      0
-    end as total_messages from absurd. % I)
-  select
-    % L as queue_name, q_summary.queue_length, q_summary.newest_msg_age_sec, q_summary.oldest_msg_age_sec, all_metrics.total_messages, q_summary.scrape_time, q_summary.queue_visible_length from q_summary, all_metrics $QUERY$, qtable, qtable || '_msg_id_seq', queue_name);
+          end) as queue_visible_length, extract(epoch from (now() - max(enqueued_at)))::int as newest_msg_age_sec, extract(epoch from (now() - min(enqueued_at)))::int as oldest_msg_age_sec, now() as scrape_time from absurd. % I)
+select
+  % L as queue_name, q_summary.queue_length, q_summary.newest_msg_age_sec, q_summary.oldest_msg_age_sec, q_summary.queue_length as total_messages, q_summary.scrape_time, q_summary.queue_visible_length from q_summary $QUERY$, qtable, queue_name);
   execute query into result_row;
   return result_row;
 end;

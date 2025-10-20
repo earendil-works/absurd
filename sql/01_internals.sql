@@ -65,3 +65,37 @@ begin
 end;
 $$
 language plpgsql;
+
+-- Fallback function for older postgres versions that do not yet have a uuidv7 function
+-- We generate a uuidv7 from a uuidv4 and fold in a timestamp.
+create or replace function public.portable_uuidv7 ()
+  returns uuid
+  language plpgsql
+  volatile
+  as $$
+declare
+  v_server_num integer := current_setting('server_version_num')::int;
+  ts_ms bigint;
+  b bytea;
+  rnd bytea;
+  i int;
+  hex text;
+begin
+  if v_server_num >= 180000 then
+    return uuidv7 ();
+  end if;
+  ts_ms := floor(extract(epoch from clock_timestamp()) * 1000)::bigint;
+  rnd := uuid_send(gen_random_uuid ());
+  b := repeat(E'\\000', 16)::bytea;
+  for i in 0..5 loop
+    b := set_byte(b, i, ((ts_ms >> ((5 - i) * 8)) & 255)::int);
+  end loop;
+  for i in 6..15 loop
+    b := set_byte(b, i, get_byte(rnd, i));
+  end loop;
+  b := set_byte(b, 6, ((get_byte(b, 6) & 15) | (7 << 4)));
+  b := set_byte(b, 8, ((get_byte(b, 8) & 63) | 128));
+  hex := encode(b, 'hex');
+  return (substr(hex, 1, 8) || '-' || substr(hex, 9, 4) || '-' || substr(hex, 13, 4) || '-' || substr(hex, 17, 4) || '-' || substr(hex, 21, 12))::uuid;
+end;
+$$;

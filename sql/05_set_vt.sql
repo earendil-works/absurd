@@ -2,7 +2,7 @@
 -- set_vt function
 ------------------------------------------------------------
 -- Sets vt of a message, returns it
-create function absurd.set_vt (queue_name text, msg_id bigint, vt integer)
+create function absurd.set_vt (queue_name text, msg_id uuid, vt integer)
   returns setof absurd.message_record
   as $$
 declare
