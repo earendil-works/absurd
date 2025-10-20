@@ -1,12 +1,12 @@
 import pg from "pg";
 
 import {
-  JsonValue,
-  ClaimedMessage,
-  SpawnOptions,
-  WorkerOptions,
-  CheckpointRow,
-} from "./types.js";
+  type JsonValue,
+  type ClaimedMessage,
+  type SpawnOptions,
+  type WorkerOptions,
+  type CheckpointRow,
+} from "./types.ts";
 import { serializeError, computeRetryAt } from "./utils.ts";
 
 export type TaskHandler<P = any, R = any> = (

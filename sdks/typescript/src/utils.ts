@@ -1,4 +1,4 @@
-import { JsonValue, RetryStrategy } from "./types.js";
+import { type JsonValue, type RetryStrategy } from "./types.ts";
 
 export function serializeError(err: unknown): JsonValue {
   if (err instanceof Error) {
