@@ -79,7 +79,6 @@ declare
   b bytea;
   rnd bytea;
   i int;
-  hex text;
 begin
   if v_server_num >= 180000 then
     return uuidv7 ();
@@ -95,7 +94,6 @@ begin
   end loop;
   b := set_byte(b, 6, ((get_byte(b, 6) & 15) | (7 << 4)));
   b := set_byte(b, 8, ((get_byte(b, 8) & 63) | 128));
-  hex := encode(b, 'hex');
-  return (substr(hex, 1, 8) || '-' || substr(hex, 9, 4) || '-' || substr(hex, 13, 4) || '-' || substr(hex, 17, 4) || '-' || substr(hex, 21, 12))::uuid;
+  return encode(b, 'hex')::uuid;
 end;
 $$;
