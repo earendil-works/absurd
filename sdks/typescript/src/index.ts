@@ -268,6 +268,11 @@ export class Absurd {
     this.registry.set(name, handler as TaskHandler);
   }
 
+  async createQueue(queueName?: string): Promise<void> {
+    const queue = queueName ?? this.queueName;
+    await this.pool.query(`SELECT absurd.create($1)`, [queue]);
+  }
+
   async spawn<P = any>(
     taskName: string,
     params: P,

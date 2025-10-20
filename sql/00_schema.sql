@@ -1,6 +1,8 @@
 ------------------------------------------------------------
 -- Schema, tables, records, privileges, indexes, etc
 ------------------------------------------------------------
+create extension if not exists "uuid-ossp";
+
 create schema if not exists absurd;
 
 -- Table where queues and metadata about them is stored
