@@ -1,4 +1,4 @@
-import pg from "pg";
+import * as pg from "pg";
 
 export type JsonValue =
   | string
@@ -23,6 +23,20 @@ export interface SpawnOptions {
 }
 
 export interface ClaimedMessage {
+  run_id: string;
+  task_id: string;
+  task_name: string;
+  attempt: number;
+  params: JsonValue;
+  retry_strategy: JsonValue;
+  max_attempts: number | null;
+  headers: JsonObject | null;
+  lease_expires_at: Date;
+  wake_event: string | null;
+  event_payload: JsonValue | null;
+}
+
+export interface NormalizedClaimedMessage {
   run_id: string;
   task_id: string;
   task_name: string;
@@ -70,14 +84,14 @@ export class TaskContext {
   private constructor(
     private readonly pool: pg.Pool,
     private readonly queueName: string,
-    private readonly message: ClaimedMessage,
+    private readonly message: NormalizedClaimedMessage,
     private readonly checkpointCache: Map<string, JsonValue>,
   ) {}
 
   static async create(args: {
     pool: pg.Pool;
     queueName: string;
-    message: ClaimedMessage;
+    message: NormalizedClaimedMessage;
   }): Promise<TaskContext> {
     const { pool, queueName, message } = args;
 
@@ -250,7 +264,10 @@ export class Absurd {
   private readonly registry = new Map<string, TaskHandler>();
   private workerShutdown: (() => void) | null = null;
 
-  constructor(poolOrUrl: pg.Pool | string, queueName: string = "default") {
+  constructor(poolOrUrl?: pg.Pool | string | null, queueName: string = "default") {
+    if (!poolOrUrl) {
+      poolOrUrl = process.env.ABSURD_DATABASE_URL || "postgresql://localhost/absurd";
+    }
     if (typeof poolOrUrl === "string") {
       this.pool = new pg.Pool({ connectionString: poolOrUrl });
       this.ownedPool = true;
@@ -314,8 +331,8 @@ export class Absurd {
     );
 
     for (const msg of result.rows) {
-      const normalized = normalizeClaimedMessage(msg);
-      await this.executeMessage(normalized);
+      const deserialized = deserializeClaimedMessage(msg);
+      await this.executeMessage(deserialized);
     }
   }
 
@@ -365,7 +382,7 @@ export class Absurd {
     }
   }
 
-  private async executeMessage(msg: ClaimedMessage): Promise<void> {
+  private async executeMessage(msg: NormalizedClaimedMessage): Promise<void> {
     const handler = this.registry.get(msg.task_name);
 
     if (!handler) {
@@ -443,37 +460,37 @@ function normalizeSpawnOptions(options: SpawnOptions): JsonObject {
     normalized.max_attempts = options.maxAttempts;
   }
   if (options.retryStrategy) {
-    normalized.retry_strategy = normalizeRetryStrategy(options.retryStrategy);
+    normalized.retry_strategy = serializeRetryStrategy(options.retryStrategy);
   }
   return normalized;
 }
 
-function normalizeRetryStrategy(strategy: RetryStrategy): JsonObject {
-  const normalized: JsonObject = {
+function serializeRetryStrategy(strategy: RetryStrategy): JsonObject {
+  const serialized: JsonObject = {
     kind: strategy.kind,
   };
   if (strategy.baseSeconds !== undefined) {
-    normalized.base_seconds = strategy.baseSeconds;
+    serialized.base_seconds = strategy.baseSeconds;
   }
   if (strategy.factor !== undefined) {
-    normalized.factor = strategy.factor;
+    serialized.factor = strategy.factor;
   }
   if (strategy.maxSeconds !== undefined) {
-    normalized.max_seconds = strategy.maxSeconds;
+    serialized.max_seconds = strategy.maxSeconds;
   }
-  return normalized;
+  return serialized;
 }
 
-function normalizeClaimedMessage(msg: ClaimedMessage): ClaimedMessage {
+function deserializeClaimedMessage(msg: ClaimedMessage): NormalizedClaimedMessage {
   return {
     ...msg,
     retry_strategy: msg.retry_strategy
-      ? denormalizeRetryStrategy(msg.retry_strategy)
+      ? deserializeRetryStrategy(msg.retry_strategy)
       : null,
   };
 }
 
-function denormalizeRetryStrategy(strategy: JsonValue): RetryStrategy | null {
+function deserializeRetryStrategy(strategy: JsonValue): RetryStrategy | null {
   if (!strategy || typeof strategy !== "object" || Array.isArray(strategy)) {
     return null;
   }
