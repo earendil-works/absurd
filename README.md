@@ -15,7 +15,7 @@ needing any other services to run in addition to Postgres.
 ## Push vs Pull
 
 Absurd is a pull based system which means that your code pulls tasks from
-postgres as it has capacity.  It does not support push at all, which would
+Postgres as it has capacity.  It does not support push at all, which would
 require another service to run.  Push systems have the inherent disadvantage
 that you need to take greater care of system load constraints and that's a path
 we don't want to go down without going into IaC.  If you need this, you can
@@ -48,9 +48,7 @@ app.registerTask('order-fulfillment', async (params, ctx) => {
     return await stripe.charges.create({ amount: params.amount, ... });
   });
 
-  // Sleep for 2 hours without holding connections or memory
-  await ctx.sleepFor('wait-for-fraud-check', 2 * 60 * 60 * 1000);
-
+  // ensure we have the inventory reserved which will also trigger
   const inventory = await ctx.step('reserve-inventory', async () => {
     return await db.reserveItems(params.items);
   });

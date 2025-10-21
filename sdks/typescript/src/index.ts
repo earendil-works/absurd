@@ -181,6 +181,9 @@ export class TaskContext {
     eventName: string,
     payload?: JsonValue,
   ): Promise<JsonValue | null> {
+    if (!eventName) {
+      throw new Error("eventName must be a non-empty string");
+    }
     if (this.checkpointCache.has(stepName)) {
       return this.checkpointCache.get(stepName) ?? null;
     }
@@ -226,6 +229,9 @@ export class TaskContext {
   }
 
   async emitEvent(eventName: string, payload?: JsonValue): Promise<void> {
+    if (!eventName) {
+      throw new Error("eventName must be a non-empty string");
+    }
     await this.pool.query(`SELECT absurd.emit_event($1, $2, $3)`, [
       this.queueName,
       eventName,

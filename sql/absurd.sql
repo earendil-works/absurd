@@ -713,11 +713,14 @@ create table absurd.task_waits (
   wait_type text not null check (wait_type in ('sleep', 'event')),
   wake_at timestamptz,
   wake_event text,
-  wake_event_key text generated always as (coalesce(wake_event, '_')) stored,
   step_name text,
   payload jsonb,
   created_at timestamptz not null default now(),
-  primary key (task_id, run_id, wait_type, wake_event_key)
+  check (
+    (wait_type = 'event' and wake_event is not null)
+    or (wait_type <> 'event' and wake_event is null)
+  ),
+  primary key (task_id, run_id, wait_type)
 );
 
 create index on absurd.task_waits (wake_event)
@@ -726,11 +729,10 @@ where
 
 create table absurd.event_cache (
   queue_name text not null references absurd.meta (queue_name) on delete cascade,
-  event_name text,
-  event_key text generated always as (coalesce(event_name, '_')) stored,
+  event_name text not null,
   payload jsonb,
   emitted_at timestamptz not null default now(),
-  primary key (queue_name, event_key)
+  primary key (queue_name, event_name)
 );
 
 create table absurd.task_archives (
@@ -1106,7 +1108,7 @@ begin
   if p_suspend then
     insert into absurd.task_waits (task_id, run_id, wait_type, wake_at, wake_event, payload, step_name)
       values (v_task_id, p_run_id, 'sleep', p_wake_at, null, null, null)
-    on conflict (task_id, run_id, wait_type, wake_event_key)
+    on conflict (task_id, run_id, wait_type)
       do update set
         wake_at = excluded.wake_at,
         payload = excluded.payload,
@@ -1161,6 +1163,9 @@ declare
   v_now timestamptz := clock_timestamp();
   v_event_payload jsonb;
 begin
+  if p_event_name is null then
+    raise exception 'await_event requires a non-null event name';
+  end if;
   select
     r.task_id,
     t.queue_name into v_task_id,
@@ -1179,7 +1184,7 @@ begin
     absurd.event_cache ec
   where
     ec.queue_name = v_queue_name
-    and ec.event_key = coalesce(p_event_name, '_');
+    and ec.event_name = p_event_name;
   if found then
     should_suspend := false;
     payload := v_event_payload;
@@ -1191,7 +1196,7 @@ begin
     and wait_type = 'sleep';
   insert into absurd.task_waits (task_id, run_id, wait_type, wake_at, wake_event, payload, step_name)
     values (v_task_id, p_run_id, 'event', null, p_event_name, p_payload, p_step_name)
-  on conflict (task_id, run_id, wait_type, wake_event_key)
+  on conflict (task_id, run_id, wait_type)
     do update set
       payload = excluded.payload,
       wake_event = excluded.wake_event,
@@ -1224,11 +1229,13 @@ create function absurd.emit_event (p_queue_name text, p_event_name text, p_paylo
 declare
   v_wait record;
   v_now timestamptz := clock_timestamp();
-  v_event_key text := coalesce(p_event_name, '_');
 begin
+  if p_event_name is null then
+    raise exception 'emit_event requires a non-null event name';
+  end if;
   insert into absurd.event_cache (queue_name, event_name, payload, emitted_at)
     values (p_queue_name, p_event_name, p_payload, v_now)
-  on conflict (queue_name, event_key)
+  on conflict (queue_name, event_name)
     do update set
       payload = excluded.payload,
       emitted_at = excluded.emitted_at;
@@ -1243,7 +1250,7 @@ begin
   where
     t.queue_name = p_queue_name
     and w.wait_type = 'event'
-    and w.wake_event_key = v_event_key loop
+    and w.wake_event = p_event_name loop
       update
         absurd.task_waits
       set
@@ -1252,7 +1259,7 @@ begin
         task_id = v_wait.task_id
         and run_id = v_wait.run_id
         and wait_type = 'event'
-        and wake_event_key = v_event_key;
+        and wake_event = p_event_name;
       if v_wait.step_name is not null then
         perform
           absurd.set_task_checkpoint_state (v_wait.task_id, v_wait.step_name, p_payload, v_wait.run_id, true, null);
