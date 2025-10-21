@@ -305,6 +305,11 @@ declare
   v_qtable text := absurd.format_table_name (p_queue_name, 'q');
   v_new_status text;
   v_headers jsonb;
+  v_strategy_kind text;
+  v_base_seconds double precision;
+  v_factor double precision;
+  v_max_seconds double precision;
+  v_delay_seconds double precision;
 begin
   select
     r.task_id,
@@ -344,7 +349,41 @@ begin
     or v_attempt < v_max_attempts;
   if v_should_retry then
     v_next_attempt := v_attempt + 1;
-    v_effective_retry_at := coalesce(p_retry_at, v_now);
+    if p_retry_at is not null then
+      v_effective_retry_at := p_retry_at;
+    else
+      v_effective_retry_at := v_now;
+      if v_retry_strategy is not null then
+        v_strategy_kind := lower(v_retry_strategy ->> 'kind');
+        if v_strategy_kind in ('fixed', 'exponential') then
+          v_base_seconds := coalesce(
+            (v_retry_strategy ->> 'base_seconds')::double precision,
+            5::double precision
+          );
+          if v_strategy_kind = 'exponential' then
+            v_factor := coalesce(
+              (v_retry_strategy ->> 'factor')::double precision,
+              2::double precision
+            );
+            v_delay_seconds := v_base_seconds * power(v_factor, greatest(v_attempt - 1, 0));
+          else
+            v_delay_seconds := v_base_seconds;
+          end if;
+          v_max_seconds := (v_retry_strategy ->> 'max_seconds')::double precision;
+          if v_max_seconds is not null then
+            v_delay_seconds := least(v_delay_seconds, v_max_seconds);
+          end if;
+          if v_delay_seconds is not null and v_delay_seconds > 0 then
+            v_effective_retry_at := v_now + make_interval(secs => v_delay_seconds);
+          end if;
+        else
+          v_effective_retry_at := v_now;
+        end if;
+      end if;
+    end if;
+    if v_effective_retry_at is null then
+      v_effective_retry_at := v_now;
+    end if;
     v_new_status := case when v_effective_retry_at > v_now then
       'sleeping'
     else

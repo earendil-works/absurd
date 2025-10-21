@@ -278,6 +278,7 @@ export class Absurd {
     params: P,
     options: SpawnOptions = {},
   ): Promise<{ task_id: string; run_id: string; attempt: number }> {
+    const normalizedOptions = normalizeSpawnOptions(options);
     const result = await this.pool.query<{
       task_id: string;
       run_id: string;
@@ -289,7 +290,7 @@ export class Absurd {
         this.queueName,
         taskName,
         JSON.stringify(params),
-        JSON.stringify(options),
+        JSON.stringify(normalizedOptions),
       ],
     );
 
@@ -313,7 +314,8 @@ export class Absurd {
     );
 
     for (const msg of result.rows) {
-      await this.executeMessage(msg);
+      const normalized = normalizeClaimedMessage(msg);
+      await this.executeMessage(normalized);
     }
   }
 
@@ -430,4 +432,78 @@ function computeRetryAt(
   delaySeconds = Math.min(delaySeconds, maxSeconds);
 
   return new Date(Date.now() + delaySeconds * 1000);
+}
+
+function normalizeSpawnOptions(options: SpawnOptions): JsonObject {
+  const normalized: JsonObject = {};
+  if (options.headers !== undefined) {
+    normalized.headers = options.headers;
+  }
+  if (options.maxAttempts !== undefined) {
+    normalized.max_attempts = options.maxAttempts;
+  }
+  if (options.retryStrategy) {
+    normalized.retry_strategy = normalizeRetryStrategy(options.retryStrategy);
+  }
+  return normalized;
+}
+
+function normalizeRetryStrategy(strategy: RetryStrategy): JsonObject {
+  const normalized: JsonObject = {
+    kind: strategy.kind,
+  };
+  if (strategy.baseSeconds !== undefined) {
+    normalized.base_seconds = strategy.baseSeconds;
+  }
+  if (strategy.factor !== undefined) {
+    normalized.factor = strategy.factor;
+  }
+  if (strategy.maxSeconds !== undefined) {
+    normalized.max_seconds = strategy.maxSeconds;
+  }
+  return normalized;
+}
+
+function normalizeClaimedMessage(msg: ClaimedMessage): ClaimedMessage {
+  return {
+    ...msg,
+    retry_strategy: msg.retry_strategy
+      ? denormalizeRetryStrategy(msg.retry_strategy)
+      : null,
+  };
+}
+
+function denormalizeRetryStrategy(strategy: JsonValue): RetryStrategy | null {
+  if (!strategy || typeof strategy !== "object" || Array.isArray(strategy)) {
+    return null;
+  }
+
+  const obj = strategy as JsonObject;
+  const kind = obj.kind;
+
+  if (
+    typeof kind !== "string" ||
+    (kind !== "fixed" && kind !== "exponential" && kind !== "none")
+  ) {
+    return null;
+  }
+
+  const result: RetryStrategy = { kind };
+
+  const baseSeconds = obj.base_seconds;
+  if (typeof baseSeconds === "number") {
+    result.baseSeconds = baseSeconds;
+  }
+
+  const factor = obj.factor;
+  if (typeof factor === "number") {
+    result.factor = factor;
+  }
+
+  const maxSeconds = obj.max_seconds;
+  if (typeof maxSeconds === "number") {
+    result.maxSeconds = maxSeconds;
+  }
+
+  return result;
 }
