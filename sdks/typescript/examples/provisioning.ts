@@ -20,7 +20,7 @@ import pg from "pg";
 import { Absurd, TaskContext } from "../src/index.ts";
 
 const DEFAULT_DB_URL = "postgresql://localhost/absurd";
-const DEFAULT_QUEUE = "provisioning-demo";
+const DEFAULT_QUEUE = "provisioning_demo";
 
 type ProvisionCustomerParams = {
   customerId: string;
