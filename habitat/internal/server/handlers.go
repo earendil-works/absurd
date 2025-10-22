@@ -535,7 +535,7 @@ func (s *Server) handleQueueTasks(w http.ResponseWriter, r *http.Request) {
 }
 
 func queueTableIdentifier(prefix, queueName string) string {
-	return pq.QuoteIdentifier(prefix + "_" + queueName)
+	return pq.QuoteIdentifier(prefix + "_" + strings.ToLower(queueName))
 }
 
 type taskSummaryRecord struct {
