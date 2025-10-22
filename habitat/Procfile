@@ -1,0 +1,2 @@
+backend: watchexec -r -w . -i node_modules/ --exts go -- sh -c "'go run cmd/habitat/main.go run'"
+ui: cd ui && npm run dev -- --host 127.0.0.1 --port 7891

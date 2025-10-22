@@ -1,0 +1,4 @@
+*.pid
+*.log
+./habitat
+internal/web/dist/
