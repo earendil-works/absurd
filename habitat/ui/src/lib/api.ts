@@ -1,245 +1,249 @@
 export interface ConfigMetadata {
-	authRequired: boolean
+  authRequired: boolean;
 }
 
 export interface QueueMetrics {
-	queueName: string
-	queueLength: number
-	queueVisibleLength: number
-	newestMsgAgeSec?: number | null
-	oldestMsgAgeSec?: number | null
-	totalMessages: number
-	scrapeTime: string
+  queueName: string;
+  queueLength: number;
+  queueVisibleLength: number;
+  newestMsgAgeSec?: number | null;
+  oldestMsgAgeSec?: number | null;
+  totalMessages: number;
+  scrapeTime: string;
 }
 
 export class APIError extends Error {
-	readonly status: number
+  readonly status: number;
 
-	constructor(message: string, status: number) {
-		super(message)
-		this.status = status
-	}
+  constructor(message: string, status: number) {
+    super(message);
+    this.status = status;
+  }
 }
 
 export class UnauthorizedError extends APIError {
-	constructor() {
-		super('unauthorized', 401)
-	}
+  constructor() {
+    super("unauthorized", 401);
+  }
 }
 
 const defaultHeaders = {
-	Accept: 'application/json',
-}
+  Accept: "application/json",
+};
 
 async function handleResponse<T>(response: Response): Promise<T> {
-	if (response.status === 401) {
-		throw new UnauthorizedError()
-	}
+  if (response.status === 401) {
+    throw new UnauthorizedError();
+  }
 
-	if (!response.ok) {
-		const message = await extractErrorMessage(response)
-		throw new APIError(message, response.status)
-	}
+  if (!response.ok) {
+    const message = await extractErrorMessage(response);
+    throw new APIError(message, response.status);
+  }
 
-	if (response.status === 204) {
-		return undefined as T
-	}
+  if (response.status === 204) {
+    return undefined as T;
+  }
 
-	return (await response.json()) as T
+  return (await response.json()) as T;
 }
 
 async function extractErrorMessage(response: Response): Promise<string> {
-	try {
-		const payload = await response.clone().json()
-		if (payload && typeof payload === 'object' && 'error' in payload) {
-			const value = (payload as { error?: string }).error
-			if (typeof value === 'string' && value.trim() !== '') {
-				return value
-			}
-		}
-	} catch {
-		// ignore json parsing failure
-	}
+  try {
+    const payload = await response.clone().json();
+    if (payload && typeof payload === "object" && "error" in payload) {
+      const value = (payload as { error?: string }).error;
+      if (typeof value === "string" && value.trim() !== "") {
+        return value;
+      }
+    }
+  } catch {
+    // ignore json parsing failure
+  }
 
-	try {
-		const text = await response.text()
-		if (text.trim() !== '') {
-			return text
-		}
-	} catch {
-		// ignore
-	}
+  try {
+    const text = await response.text();
+    if (text.trim() !== "") {
+      return text;
+    }
+  } catch {
+    // ignore
+  }
 
-	return `request failed with status ${response.status}`
+  return `request failed with status ${response.status}`;
 }
 
 export async function fetchConfig(): Promise<ConfigMetadata> {
-	return handleResponse<ConfigMetadata>(
-		await fetch('/api/config', {
-			headers: defaultHeaders,
-		}),
-	)
+  return handleResponse<ConfigMetadata>(
+    await fetch("/api/config", {
+      headers: defaultHeaders,
+    }),
+  );
 }
 
 export async function fetchMetrics(): Promise<QueueMetrics[]> {
-	const result = await handleResponse<{ queues: QueueMetrics[] }>(
-		await fetch('/api/metrics', {
-			headers: defaultHeaders,
-		}),
-	)
+  const result = await handleResponse<{ queues: QueueMetrics[] }>(
+    await fetch("/api/metrics", {
+      headers: defaultHeaders,
+    }),
+  );
 
-	return result.queues ?? []
+  return result.queues ?? [];
 }
 
 export async function login(username: string, password: string): Promise<void> {
-	await handleResponse(
-		await fetch('/api/login', {
-			method: 'POST',
-			headers: {
-				...defaultHeaders,
-				'Content-Type': 'application/json',
-			},
-			body: JSON.stringify({ username, password }),
-		}),
-	)
+  await handleResponse(
+    await fetch("/api/login", {
+      method: "POST",
+      headers: {
+        ...defaultHeaders,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ username, password }),
+    }),
+  );
 }
 
 export async function logout(): Promise<void> {
-	try {
-		await handleResponse(
-			await fetch('/api/logout', {
-				method: 'POST',
-				headers: defaultHeaders,
-			}),
-		)
-	} catch (error) {
-		// Ignored: logging out is best-effort.
-		if (error instanceof UnauthorizedError) {
-			return
-		}
-	}
+  try {
+    await handleResponse(
+      await fetch("/api/logout", {
+        method: "POST",
+        headers: defaultHeaders,
+      }),
+    );
+  } catch (error) {
+    // Ignored: logging out is best-effort.
+    if (error instanceof UnauthorizedError) {
+      return;
+    }
+  }
 }
 
 export interface TaskSummary {
-	taskId: string
-	runId: string
-	queueName: string
-	taskName: string
-	status: string
-	attempt: number
-	maxAttempts?: number | null
-	createdAt: string
-	updatedAt: string
-	completedAt?: string | null
+  taskId: string;
+  runId: string;
+  queueName: string;
+  taskName: string;
+  status: string;
+  attempt: number;
+  maxAttempts?: number | null;
+  createdAt: string;
+  updatedAt: string;
+  completedAt?: string | null;
 }
 
 export interface CheckpointState {
-	stepName: string
-	state: any // JSON object
-	status: string
-	ownerRunId?: string | null
-	ephemeral: boolean
-	expiresAt?: string | null
-	updatedAt: string
+  stepName: string;
+  state: any; // JSON object
+  status: string;
+  ownerRunId?: string | null;
+  ephemeral: boolean;
+  expiresAt?: string | null;
+  updatedAt: string;
 }
 
 export interface TaskDetail extends TaskSummary {
-	params?: any // JSON object
-	retryStrategy?: any | null
-	headers?: any | null
-	claimedBy?: string | null
-	leaseExpiresAt?: string | null
-	nextWakeAt?: string | null
-	wakeEvent?: string | null
-	finalStatus?: string | null
-	finalState?: any | null
-	checkpoints: CheckpointState[]
+  params?: any; // JSON object
+  retryStrategy?: any | null;
+  headers?: any | null;
+  claimedBy?: string | null;
+  leaseExpiresAt?: string | null;
+  nextWakeAt?: string | null;
+  wakeEvent?: string | null;
+  finalStatus?: string | null;
+  finalState?: any | null;
+  checkpoints: CheckpointState[];
 }
 
 export interface QueueSummary {
-	queueName: string
-	pendingCount: number
-	runningCount: number
-	sleepingCount: number
-	completedCount: number
-	failedCount: number
+  queueName: string;
+  pendingCount: number;
+  runningCount: number;
+  sleepingCount: number;
+  completedCount: number;
+  failedCount: number;
 }
 
 export interface TaskListResponse {
-	items: TaskSummary[]
-	total: number
-	page: number
-	perPage: number
-	availableStatuses: string[]
-	availableQueues: string[]
-	availableTaskNames: string[]
+  items: TaskSummary[];
+  total: number;
+  page: number;
+  perPage: number;
+  availableStatuses: string[];
+  availableQueues: string[];
+  availableTaskNames: string[];
 }
 
 export interface TaskListQuery {
-	search?: string
-	status?: string | null
-	queue?: string | null
-	taskName?: string | null
-	taskId?: string | null
-	page?: number
-	perPage?: number
+  search?: string;
+  status?: string | null;
+  queue?: string | null;
+  taskName?: string | null;
+  taskId?: string | null;
+  page?: number;
+  perPage?: number;
 }
 
-export async function fetchTasks(filters: TaskListQuery = {}): Promise<TaskListResponse> {
-	const params = new URLSearchParams()
-	const search = filters.search?.trim()
-	if (search) {
-		params.set('q', search)
-	}
-	if (filters.status) {
-		params.set('status', filters.status)
-	}
-	if (filters.queue) {
-		params.set('queue', filters.queue)
-	}
-	if (filters.taskName) {
-		params.set('taskName', filters.taskName)
-	}
-	if (filters.taskId) {
-		params.set('taskId', filters.taskId)
-	}
-	if (typeof filters.page === 'number' && Number.isFinite(filters.page)) {
-		params.set('page', String(filters.page))
-	}
-	if (typeof filters.perPage === 'number' && Number.isFinite(filters.perPage)) {
-		params.set('perPage', String(filters.perPage))
-	}
+export async function fetchTasks(
+  filters: TaskListQuery = {},
+): Promise<TaskListResponse> {
+  const params = new URLSearchParams();
+  const search = filters.search?.trim();
+  if (search) {
+    params.set("q", search);
+  }
+  if (filters.status) {
+    params.set("status", filters.status);
+  }
+  if (filters.queue) {
+    params.set("queue", filters.queue);
+  }
+  if (filters.taskName) {
+    params.set("taskName", filters.taskName);
+  }
+  if (filters.taskId) {
+    params.set("taskId", filters.taskId);
+  }
+  if (typeof filters.page === "number" && Number.isFinite(filters.page)) {
+    params.set("page", String(filters.page));
+  }
+  if (typeof filters.perPage === "number" && Number.isFinite(filters.perPage)) {
+    params.set("perPage", String(filters.perPage));
+  }
 
-	const query = params.toString()
-	const url = query ? `/api/tasks?${query}` : '/api/tasks'
+  const query = params.toString();
+  const url = query ? `/api/tasks?${query}` : "/api/tasks";
 
-	return handleResponse<TaskListResponse>(
-		await fetch(url, {
-			headers: defaultHeaders,
-		}),
-	)
+  return handleResponse<TaskListResponse>(
+    await fetch(url, {
+      headers: defaultHeaders,
+    }),
+  );
 }
 
 export async function fetchTask(runId: string): Promise<TaskDetail> {
-	return handleResponse<TaskDetail>(
-		await fetch(`/api/tasks/${runId}`, {
-			headers: defaultHeaders,
-		}),
-	)
+  return handleResponse<TaskDetail>(
+    await fetch(`/api/tasks/${runId}`, {
+      headers: defaultHeaders,
+    }),
+  );
 }
 
 export async function fetchQueues(): Promise<QueueSummary[]> {
-	return handleResponse<QueueSummary[]>(
-		await fetch('/api/queues', {
-			headers: defaultHeaders,
-		}),
-	)
+  return handleResponse<QueueSummary[]>(
+    await fetch("/api/queues", {
+      headers: defaultHeaders,
+    }),
+  );
 }
 
-export async function fetchQueueTasks(queueName: string): Promise<TaskSummary[]> {
-	return handleResponse<TaskSummary[]>(
-		await fetch(`/api/queues/${queueName}/tasks`, {
-			headers: defaultHeaders,
-		}),
-	)
+export async function fetchQueueTasks(
+  queueName: string,
+): Promise<TaskSummary[]> {
+  return handleResponse<TaskSummary[]>(
+    await fetch(`/api/queues/${queueName}/tasks`, {
+      headers: defaultHeaders,
+    }),
+  );
 }

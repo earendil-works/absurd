@@ -1,41 +1,41 @@
-import { createMemo, splitProps, type JSX } from 'solid-js'
-import { cn } from '@/libs/cn'
+import { createMemo, splitProps, type JSX } from "solid-js";
+import { cn } from "@/libs/cn";
 
-const TOTAL_SHADES = 17  // must be prime
-const HUE_STEP = 360 / TOTAL_SHADES
+const TOTAL_SHADES = 17; // must be prime
+const HUE_STEP = 360 / TOTAL_SHADES;
 
 interface IdDisplayProps extends JSX.HTMLAttributes<HTMLSpanElement> {
-	value: string
+  value: string;
 }
 
 function getColor(s: string): string {
-	const index = hueIndexForId(s)
-	const hue = Math.round(index * HUE_STEP)
-	return `oklch(0.52 0.18 ${hue})`;
+  const index = hueIndexForId(s);
+  const hue = Math.round(index * HUE_STEP);
+  return `oklch(0.52 0.18 ${hue})`;
 }
 
 export function IdDisplay(props: IdDisplayProps) {
-	const [local, rest] = splitProps(props, ['value', 'class', 'style'])
+  const [local, rest] = splitProps(props, ["value", "class", "style"]);
 
-	const style = createMemo(() => {
-		const color = getColor(local.value);
-		return {
-			color,
-		}
-	});
+  const style = createMemo(() => {
+    const color = getColor(local.value);
+    return {
+      color,
+    };
+  });
 
-	return (
-		<span
-			class={cn(
-				'inline-flex items-center rounded border px-1.5 py-0.5 font-mono text-xs leading-tight break-all',
-				local.class,
-			)}
-			style={style()}
-			{...rest}
-		>
-			{local.value}
-		</span>
-	)
+  return (
+    <span
+      class={cn(
+        "inline-flex items-center rounded border px-1.5 py-0.5 font-mono text-xs leading-tight break-all",
+        local.class,
+      )}
+      style={style()}
+      {...rest}
+    >
+      {local.value}
+    </span>
+  );
 }
 
 function fnv1a32(s: string) {
@@ -48,5 +48,5 @@ function fnv1a32(s: string) {
 }
 
 function hueIndexForId(value: string | undefined): number {
-	return fnv1a32(value || '') % TOTAL_SHADES;
+  return fnv1a32(value || "") % TOTAL_SHADES;
 }

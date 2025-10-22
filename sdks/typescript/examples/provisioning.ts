@@ -296,17 +296,23 @@ async function main() {
       email: `demo+${Date.now().toString(36)}@example.com`,
       plan: Math.random() > 0.5 ? "pro" : "basic",
     };
-  
-    pendingTasks.push((async () => {
-      const { task_id, run_id } = await absurd.spawn("provision-customer", params, {
-        maxAttempts: 3,
-      });
-      log("main", "spawned provisioning workflow", {
-        taskId: task_id,
-        runId: run_id,
-        customerId: params.customerId,
-      });
-    })());
+
+    pendingTasks.push(
+      (async () => {
+        const { task_id, run_id } = await absurd.spawn(
+          "provision-customer",
+          params,
+          {
+            maxAttempts: 3,
+          },
+        );
+        log("main", "spawned provisioning workflow", {
+          taskId: task_id,
+          runId: run_id,
+          customerId: params.customerId,
+        });
+      })(),
+    );
   }
 
   await Promise.all(pendingTasks);
