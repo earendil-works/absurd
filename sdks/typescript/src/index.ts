@@ -270,9 +270,13 @@ export class Absurd {
   private readonly registry = new Map<string, TaskHandler>();
   private workerShutdown: (() => void) | null = null;
 
-  constructor(poolOrUrl?: pg.Pool | string | null, queueName: string = "default") {
+  constructor(
+    poolOrUrl?: pg.Pool | string | null,
+    queueName: string = "default",
+  ) {
     if (!poolOrUrl) {
-      poolOrUrl = process.env.ABSURD_DATABASE_URL || "postgresql://localhost/absurd";
+      poolOrUrl =
+        process.env.ABSURD_DATABASE_URL || "postgresql://localhost/absurd";
     }
     if (typeof poolOrUrl === "string") {
       this.pool = new pg.Pool({ connectionString: poolOrUrl });
@@ -487,7 +491,9 @@ function serializeRetryStrategy(strategy: RetryStrategy): JsonObject {
   return serialized;
 }
 
-function deserializeClaimedMessage(msg: ClaimedMessage): NormalizedClaimedMessage {
+function deserializeClaimedMessage(
+  msg: ClaimedMessage,
+): NormalizedClaimedMessage {
   return {
     ...msg,
     retry_strategy: msg.retry_strategy

@@ -1,12 +1,12 @@
 ------------------------------------------------------------
 -- Schema, tables, records, privileges, indexes, etc
 ------------------------------------------------------------
-create extension if not exists "uuid-ossp";
+create extension "uuid-ossp";
 
-create schema if not exists absurd;
+create schema absurd;
 
 -- Table where queues and metadata about them is stored
-create table if not exists absurd.meta (
+create table absurd.meta (
   queue_name varchar unique not null,
   created_at timestamp with time zone default now() not null
 );
