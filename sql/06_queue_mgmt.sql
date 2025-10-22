@@ -27,13 +27,24 @@ begin
     absurd.validate_queue_name (queue_name);
   perform
     absurd.acquire_queue_lock (queue_name);
-  execute format($QUERY$ create table absurd.%I (msg_id uuid primary key default absurd.portable_uuidv7(), read_ct int default 0 not null, enqueued_at timestamp with time zone default now() not null, vt timestamp with time zone not null, message jsonb, headers jsonb ) $QUERY$, qtable);
-  execute format($QUERY$ create index %I on absurd.%I (vt asc);
+  -- check if the queue already exists
+  if exists (
+    select
+      1
+    from
+      information_schema.tables
+    where
+      table_name = qtable
+      and table_schema = 'absurd') then
+    return;
+  end if;
+  execute format($QUERY$ create table if not exists absurd.%I (msg_id uuid primary key default absurd.portable_uuidv7(), read_ct int default 0 not null, enqueued_at timestamp with time zone default now() not null, vt timestamp with time zone not null, message jsonb, headers jsonb ) $QUERY$, qtable);
+  execute format($QUERY$ create index if not exists %I on absurd.%I (vt asc);
   $QUERY$,
   qtable || '_vt_idx',
   qtable);
   execute format($QUERY$
-  create table absurd.%I (
+  create table if not exists absurd.%I (
     queue_name text not null default %L check (queue_name = %L),
     task_id uuid not null,
     run_id uuid primary key,
@@ -60,16 +71,16 @@ begin
   rtable,
   queue_name,
   queue_name);
-  execute format($QUERY$ create index %I on absurd.%I (task_id);
+  execute format($QUERY$ create index if not exists %I on absurd.%I (task_id);
   $QUERY$,
   rtable || '_task_idx',
   rtable);
-  execute format($QUERY$ create index %I on absurd.%I (next_wake_at) where status in ('pending', 'sleeping');
+  execute format($QUERY$ create index if not exists %I on absurd.%I (next_wake_at) where status in ('pending', 'sleeping');
   $QUERY$,
   rtable || '_wake_idx',
   rtable);
   execute format($QUERY$
-  create table absurd.%I (
+  create table if not exists absurd.%I (
     id bigserial primary key,
     item_type text not null check (item_type in ('checkpoint', 'checkpoint_read', 'wait', 'event')),
     task_id uuid,
@@ -100,23 +111,23 @@ begin
   )
   $QUERY$,
   stable);
-  execute format($QUERY$ create unique index %I on absurd.%I (task_id, step_name) where item_type = 'checkpoint';
+  execute format($QUERY$ create unique index if not exists %I on absurd.%I (task_id, step_name) where item_type = 'checkpoint';
   $QUERY$,
   stable || '_checkpoint_idx',
   stable);
-  execute format($QUERY$ create unique index %I on absurd.%I (task_id, run_id, step_name) where item_type = 'checkpoint_read';
+  execute format($QUERY$ create unique index if not exists %I on absurd.%I (task_id, run_id, step_name) where item_type = 'checkpoint_read';
   $QUERY$,
   stable || '_checkpoint_read_idx',
   stable);
-  execute format($QUERY$ create unique index %I on absurd.%I (task_id, run_id, wait_type) where item_type = 'wait';
+  execute format($QUERY$ create unique index if not exists %I on absurd.%I (task_id, run_id, wait_type) where item_type = 'wait';
   $QUERY$,
   stable || '_wait_idx',
   stable);
-  execute format($QUERY$ create index %I on absurd.%I (wake_event) where item_type = 'wait' and wait_type = 'event';
+  execute format($QUERY$ create index if not exists %I on absurd.%I (wake_event) where item_type = 'wait' and wait_type = 'event';
   $QUERY$,
   stable || '_wait_event_idx',
   stable);
-  execute format($QUERY$ create unique index %I on absurd.%I (event_name) where item_type = 'event';
+  execute format($QUERY$ create unique index if not exists %I on absurd.%I (event_name) where item_type = 'event';
   $QUERY$,
   stable || '_event_idx',
   stable);
