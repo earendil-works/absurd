@@ -1,5 +1,5 @@
 import { createMemo, splitProps, type JSX } from "solid-js";
-import { cn } from "@/libs/cn";
+import { cn } from "@/lib/cn";
 
 const TOTAL_SHADES = 17; // must be prime
 const HUE_STEP = 360 / TOTAL_SHADES;

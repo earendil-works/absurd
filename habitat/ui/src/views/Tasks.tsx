@@ -7,6 +7,7 @@ import {
   createEffect,
   onCleanup,
 } from "solid-js";
+import { useSearchParams, type NavigateOptions } from "@solidjs/router";
 import {
   Card,
   CardContent,
@@ -96,11 +97,103 @@ interface TasksProps {
 }
 
 export default function Tasks(props: TasksProps) {
-  const [searchTerm, setSearchTerm] = createSignal("");
-  const [queueFilter, setQueueFilter] = createSignal<string | null>(null);
-  const [statusFilter, setStatusFilter] = createSignal<string | null>(null);
-  const [taskNameFilter, setTaskNameFilter] = createSignal<string | null>(null);
-  const [page, setPage] = createSignal(1);
+  const [searchParams, setSearchParams] = useSearchParams();
+
+  const getParam = (key: string) => searchParams[key] as string | undefined;
+
+  const normalizeNullableParam = (value: string | undefined): string | null => {
+    if (value === undefined) {
+      return null;
+    }
+    return value.trim().length === 0 ? null : value;
+  };
+
+  const parsePageParam = (value: string | undefined): number => {
+    const parsed = Number.parseInt(value ?? "", 10);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : 1;
+  };
+
+  const [searchTerm, setSearchTerm] = createSignal(getParam("search") ?? "");
+  const [queueFilter, setQueueFilter] = createSignal<string | null>(
+    normalizeNullableParam(getParam("queue")),
+  );
+  const [statusFilter, setStatusFilter] = createSignal<string | null>(
+    normalizeNullableParam(getParam("status")),
+  );
+  const [taskNameFilter, setTaskNameFilter] = createSignal<string | null>(
+    normalizeNullableParam(getParam("taskName")),
+  );
+  const [page, setPage] = createSignal(parsePageParam(getParam("page")));
+
+  const toParamValue = (value: string | null | undefined) => {
+    if (value == null) {
+      return undefined;
+    }
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : undefined;
+  };
+
+  const syncSearchParams = (
+    updates: Partial<{
+      search: string | null;
+      queue: string | null;
+      status: string | null;
+      taskName: string | null;
+      page: number | null;
+    }>,
+    options?: Partial<NavigateOptions>,
+  ) => {
+    const payload: Record<string, string | undefined> = {};
+
+    if ("search" in updates) {
+      payload.search = toParamValue(updates.search);
+    }
+    if ("queue" in updates) {
+      payload.queue = toParamValue(updates.queue);
+    }
+    if ("status" in updates) {
+      payload.status = toParamValue(updates.status);
+    }
+    if ("taskName" in updates) {
+      payload.taskName = toParamValue(updates.taskName);
+    }
+    if ("page" in updates) {
+      const value = updates.page;
+      payload.page =
+        value != null && value > 1 ? String(Math.floor(value)) : undefined;
+    }
+
+    if (Object.keys(payload).length > 0) {
+      setSearchParams(payload, options);
+    }
+  };
+
+  createEffect(() => {
+    const nextSearch = getParam("search") ?? "";
+    if (nextSearch !== searchTerm()) {
+      setSearchTerm(nextSearch);
+    }
+
+    const nextQueue = normalizeNullableParam(getParam("queue"));
+    if (nextQueue !== queueFilter()) {
+      setQueueFilter(nextQueue);
+    }
+
+    const nextStatus = normalizeNullableParam(getParam("status"));
+    if (nextStatus !== statusFilter()) {
+      setStatusFilter(nextStatus);
+    }
+
+    const nextTaskName = normalizeNullableParam(getParam("taskName"));
+    if (nextTaskName !== taskNameFilter()) {
+      setTaskNameFilter(nextTaskName);
+    }
+
+    const nextPage = parsePageParam(getParam("page"));
+    if (nextPage !== page()) {
+      setPage(nextPage);
+    }
+  });
 
   const filters = createMemo(() => ({
     search: searchTerm(),
@@ -174,17 +267,11 @@ export default function Tasks(props: TasksProps) {
   };
 
   createEffect(() => {
-    searchTerm();
-    queueFilter();
-    statusFilter();
-    taskNameFilter();
-    setPage(1);
-  });
-
-  createEffect(() => {
     const maxPage = totalPages();
     if (page() > maxPage) {
-      setPage(maxPage);
+      const normalized = Math.max(1, maxPage);
+      setPage(normalized);
+      syncSearchParams({ page: normalized }, { replace: true });
     }
   });
 
@@ -313,9 +400,21 @@ export default function Tasks(props: TasksProps) {
                   <TextFieldLabel>Search</TextFieldLabel>
                   <TextField
                     value={searchTerm()}
-                    onInput={(event) =>
-                      setSearchTerm(event.currentTarget.value)
-                    }
+                    onInput={(event) => {
+                      const value = event.currentTarget.value;
+                      if (value === searchTerm()) {
+                        return;
+                      }
+
+                      setSearchTerm(value);
+                      if (page() !== 1) {
+                        setPage(1);
+                      }
+                      syncSearchParams(
+                        { search: value, page: 1 },
+                        { replace: true },
+                      );
+                    }}
                     placeholder="Run ID, task ID, queue, task name"
                   />
                 </TextFieldRoot>
@@ -328,9 +427,18 @@ export default function Tasks(props: TasksProps) {
                     optionValue={(option: FilterOption) => option.value}
                     optionTextValue={(option: FilterOption) => option.label}
                     value={selectedQueueOption()}
-                    onChange={(option) =>
-                      setQueueFilter(option?.value ? option.value : null)
-                    }
+                    onChange={(option) => {
+                      const nextValue = option?.value ? option.value : null;
+                      if (nextValue === queueFilter()) {
+                        return;
+                      }
+
+                      setQueueFilter(nextValue);
+                      if (page() !== 1) {
+                        setPage(1);
+                      }
+                      syncSearchParams({ queue: nextValue, page: 1 });
+                    }}
                     itemComponent={renderQueueOption}
                     defaultFilter="contains"
                     disallowEmptySelection={false}
@@ -353,9 +461,18 @@ export default function Tasks(props: TasksProps) {
                     optionValue={(option: FilterOption) => option.value}
                     optionTextValue={(option: FilterOption) => option.label}
                     value={selectedStatusOption()}
-                    onChange={(option) =>
-                      setStatusFilter(option?.value ? option.value : null)
-                    }
+                    onChange={(option) => {
+                      const nextValue = option?.value ? option.value : null;
+                      if (nextValue === statusFilter()) {
+                        return;
+                      }
+
+                      setStatusFilter(nextValue);
+                      if (page() !== 1) {
+                        setPage(1);
+                      }
+                      syncSearchParams({ status: nextValue, page: 1 });
+                    }}
                     itemComponent={renderSelectOption}
                     placeholder="All statuses"
                     aria-label="Status filter"
@@ -387,9 +504,18 @@ export default function Tasks(props: TasksProps) {
                     optionValue={(option: FilterOption) => option.value}
                     optionTextValue={(option: FilterOption) => option.label}
                     value={selectedTaskNameOption()}
-                    onChange={(option) =>
-                      setTaskNameFilter(option?.value ? option.value : null)
-                    }
+                    onChange={(option) => {
+                      const nextValue = option?.value ? option.value : null;
+                      if (nextValue === taskNameFilter()) {
+                        return;
+                      }
+
+                      setTaskNameFilter(nextValue);
+                      if (page() !== 1) {
+                        setPage(1);
+                      }
+                      syncSearchParams({ taskName: nextValue, page: 1 });
+                    }}
                     itemComponent={renderSelectOption}
                     placeholder="All task names"
                     aria-label="Task name filter"
@@ -514,7 +640,12 @@ export default function Tasks(props: TasksProps) {
                 count={totalPages()}
                 page={page()}
                 disabled={taskList.loading}
-                onPageChange={(nextPage) => setPage(nextPage)}
+                onPageChange={(nextPage) => {
+                  if (nextPage !== page()) {
+                    setPage(nextPage);
+                  }
+                  syncSearchParams({ page: nextPage });
+                }}
                 itemComponent={PaginationItem}
                 ellipsisComponent={() => <PaginationEllipsis />}
               >

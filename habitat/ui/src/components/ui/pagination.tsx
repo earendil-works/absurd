@@ -1,4 +1,4 @@
-import { cn } from "@/libs/cn";
+import { cn } from "@/lib/cn";
 import type {
   PaginationEllipsisProps,
   PaginationItemProps,
@@ -8,7 +8,7 @@ import type {
 import { Pagination as PaginationPrimitive } from "@kobalte/core/pagination";
 import type { PolymorphicProps } from "@kobalte/core/polymorphic";
 import type { VariantProps } from "class-variance-authority";
-import type { ValidComponent, VoidProps } from "solid-js";
+import type { JSX, ValidComponent, VoidProps } from "solid-js";
 import { mergeProps, splitProps } from "solid-js";
 import { buttonVariants } from "./button";
 
@@ -39,6 +39,7 @@ type paginationItemProps<T extends ValidComponent = "button"> =
   PaginationItemProps<T> &
     Pick<VariantProps<typeof buttonVariants>, "size"> & {
       class?: string;
+      children?: JSX.Element;
     };
 
 export const PaginationItem = <T extends ValidComponent = "button">(
@@ -49,6 +50,7 @@ export const PaginationItem = <T extends ValidComponent = "button">(
   const [local, rest] = splitProps(merge as paginationItemProps, [
     "class",
     "size",
+    "children",
   ]);
 
   return (
@@ -62,7 +64,9 @@ export const PaginationItem = <T extends ValidComponent = "button">(
         local.class,
       )}
       {...rest}
-    />
+    >
+      {local.children ?? rest.page}
+    </PaginationPrimitive.Item>
   );
 };
 

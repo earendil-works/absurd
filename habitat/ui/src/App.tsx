@@ -31,7 +31,6 @@ import {
 import { logout } from "@/lib/api";
 import Overview from "@/views/Overview";
 import Tasks from "@/views/Tasks";
-import Queues from "@/views/Queues";
 import TaskRuns from "@/views/TaskRuns";
 
 export default function App() {
@@ -120,18 +119,6 @@ export default function App() {
           component={() => (
             <Layout>
               <TaskRuns
-                authenticated={authenticated}
-                onAuthRequired={handleAuthRequired}
-                onLogout={handleLogout}
-              />
-            </Layout>
-          )}
-        />
-        <Route
-          path="/queues"
-          component={() => (
-            <Layout>
-              <Queues
                 authenticated={authenticated}
                 onAuthRequired={handleAuthRequired}
                 onLogout={handleLogout}
@@ -236,14 +223,6 @@ function Layout(props: { children: JSX.Element }) {
           >
             <span class="h-2 w-2 rounded-full bg-blue-500" />
             Tasks
-          </A>
-          <A
-            href="/queues"
-            class="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm font-medium transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-            activeClass="bg-muted"
-          >
-            <span class="h-2 w-2 rounded-full bg-purple-500" />
-            Queues
           </A>
         </nav>
       </aside>
