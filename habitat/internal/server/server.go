@@ -9,7 +9,6 @@ import (
 	"log"
 	"net"
 	"net/http"
-	"strings"
 	"time"
 
 	"habitat/internal/auth"
@@ -176,12 +175,6 @@ func (s *Server) clearSessionCookie(w http.ResponseWriter) {
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
 	})
-}
-
-func (s *Server) userFromRequest(r *http.Request) string {
-	value := r.Context().Value(userContextKey{})
-	username, _ := value.(string)
-	return strings.TrimSpace(username)
 }
 
 type userContextKey struct{}
