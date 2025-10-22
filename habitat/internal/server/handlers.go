@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/lib/pq"
 )
 
 func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
@@ -245,7 +247,7 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		rtable := fmt.Sprintf("r_%s", queueName)
+		rtable := queueTableIdentifier("r", queueName)
 		query := fmt.Sprintf(`
 			SELECT
 				task_id, run_id, queue_name, task_name, status,
@@ -316,13 +318,13 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 	}
 
 	response := TaskListResponse{
-		Items:               filtered[start:end],
-		Total:               total,
-		Page:                page,
-		PerPage:             perPage,
-		AvailableStatuses:   sortedKeys(statusSet),
-		AvailableQueues:     queueNames,
-		AvailableTaskNames:  sortedKeys(taskNameSet),
+		Items:              filtered[start:end],
+		Total:              total,
+		Page:               page,
+		PerPage:            perPage,
+		AvailableStatuses:  sortedKeys(statusSet),
+		AvailableQueues:    queueNames,
+		AvailableTaskNames: sortedKeys(taskNameSet),
 	}
 
 	writeJSON(w, http.StatusOK, response)
@@ -355,7 +357,7 @@ func (s *Server) handleTaskDetail(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Query full task details from r_* table
-	rtable := fmt.Sprintf("r_%s", queueName)
+	rtable := queueTableIdentifier("r", queueName)
 	query := fmt.Sprintf(`
 		SELECT
 			task_id, run_id, queue_name, task_name, status, attempt, max_attempts,
@@ -399,7 +401,7 @@ func (s *Server) handleTaskDetail(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Query checkpoints from s_* table
-	stable := fmt.Sprintf("s_%s", queueName)
+	stable := queueTableIdentifier("s", queueName)
 	checkpointQuery := fmt.Sprintf(`
 		SELECT step_name, state, status, owner_run_id, ephemeral, expires_at, updated_at
 		FROM absurd.%s
@@ -450,7 +452,7 @@ func (s *Server) handleQueues(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Count tasks by status for this queue
-		rtable := fmt.Sprintf("r_%s", queueName)
+		rtable := queueTableIdentifier("r", queueName)
 		countQuery := fmt.Sprintf(`
 			SELECT
 				COUNT(*) FILTER (WHERE status = 'pending') as pending_count,
@@ -492,7 +494,7 @@ func (s *Server) handleQueueTasks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rtable := fmt.Sprintf("r_%s", queueName)
+	rtable := queueTableIdentifier("r", queueName)
 	query := fmt.Sprintf(`
 		SELECT
 			task_id, run_id, queue_name, task_name, status,
@@ -530,6 +532,10 @@ func (s *Server) handleQueueTasks(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, tasks)
+}
+
+func queueTableIdentifier(prefix, queueName string) string {
+	return pq.QuoteIdentifier(prefix + "_" + queueName)
 }
 
 type taskSummaryRecord struct {
@@ -586,16 +592,16 @@ type TaskSummary struct {
 // TaskDetail is the API representation for expanded task details
 type TaskDetail struct {
 	TaskSummary
-	Params         json.RawMessage    `json:"params,omitempty"`
-	RetryStrategy  json.RawMessage    `json:"retryStrategy,omitempty"`
-	Headers        json.RawMessage    `json:"headers,omitempty"`
-	ClaimedBy      *string            `json:"claimedBy,omitempty"`
-	LeaseExpiresAt *time.Time         `json:"leaseExpiresAt,omitempty"`
-	NextWakeAt     *time.Time         `json:"nextWakeAt,omitempty"`
-	WakeEvent      *string            `json:"wakeEvent,omitempty"`
-	FinalStatus    *string            `json:"finalStatus,omitempty"`
-	FinalState     json.RawMessage    `json:"finalState,omitempty"`
-	Checkpoints    []CheckpointState  `json:"checkpoints"`
+	Params         json.RawMessage   `json:"params,omitempty"`
+	RetryStrategy  json.RawMessage   `json:"retryStrategy,omitempty"`
+	Headers        json.RawMessage   `json:"headers,omitempty"`
+	ClaimedBy      *string           `json:"claimedBy,omitempty"`
+	LeaseExpiresAt *time.Time        `json:"leaseExpiresAt,omitempty"`
+	NextWakeAt     *time.Time        `json:"nextWakeAt,omitempty"`
+	WakeEvent      *string           `json:"wakeEvent,omitempty"`
+	FinalStatus    *string           `json:"finalStatus,omitempty"`
+	FinalState     json.RawMessage   `json:"finalState,omitempty"`
+	Checkpoints    []CheckpointState `json:"checkpoints"`
 }
 
 // CheckpointState is the API representation for checkpoint data
