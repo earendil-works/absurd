@@ -1,7 +1,7 @@
 ------------------------------------------------------------
 -- Durable task catalog and helpers
 ------------------------------------------------------------
-create table if not exists absurd.run_catalog (
+create table absurd.run_catalog (
   run_id uuid primary key,
   task_id uuid not null,
   queue_name text not null,
@@ -9,13 +9,13 @@ create table if not exists absurd.run_catalog (
   created_at timestamptz not null default now()
 );
 
-create index if not exists run_catalog_task_idx on absurd.run_catalog (task_id, attempt desc);
-create index if not exists run_catalog_queue_idx on absurd.run_catalog (queue_name);
+create index run_catalog_task_idx on absurd.run_catalog (task_id, attempt desc);
+create index run_catalog_queue_idx on absurd.run_catalog (queue_name);
 
 ------------------------------------------------------------
 -- Durable task functions
 ------------------------------------------------------------
-create or replace function absurd.spawn_task (p_queue_name text, p_task_name text, p_params jsonb, p_options jsonb default '{}'::jsonb)
+create function absurd.spawn_task (p_queue_name text, p_task_name text, p_params jsonb, p_options jsonb default '{}'::jsonb)
   returns table (
     task_id uuid,
     run_id uuid,
@@ -85,7 +85,7 @@ end;
 $$
 language plpgsql;
 
-create or replace function absurd.claim_task (p_queue_name text, p_worker_id text, p_claim_timeout integer default 30, p_qty integer default 1)
+create function absurd.claim_task (p_queue_name text, p_worker_id text, p_claim_timeout integer default 30, p_qty integer default 1)
   returns table (
     run_id uuid,
     task_id uuid,
@@ -191,7 +191,7 @@ end;
 $$ 
 language plpgsql;
 
-create or replace function absurd.complete_run (p_queue_name text, p_run_id uuid, p_final_state jsonb default null, p_archive boolean default false)
+create function absurd.complete_run (p_queue_name text, p_run_id uuid, p_final_state jsonb default null, p_archive boolean default false)
   returns void
   as $$
 declare
@@ -228,11 +228,11 @@ begin
       wake_event = null,
       completed_at = $2,
       final_status = 'completed',
-      final_state = coalesce($3, final_state)
+      final_state = case when $4 then $3 else final_state end
     where
       run_id = $1
   $fmt$, v_rtable)
-  using p_run_id, v_now, p_final_state;
+  using p_run_id, v_now, p_final_state, p_archive;
   execute format($fmt$
     update absurd.%I
     set
@@ -253,7 +253,7 @@ end;
 $$
 language plpgsql;
 
-create or replace function absurd.fail_run (p_queue_name text, p_run_id uuid, p_reason text, p_retry_at timestamptz default null)
+create function absurd.fail_run (p_queue_name text, p_run_id uuid, p_reason text, p_retry_at timestamptz default null)
   returns void
   as $$
 declare
@@ -443,7 +443,7 @@ end;
 $$
 language plpgsql;
 
-create or replace function absurd.schedule_run (p_run_id uuid, p_wake_at timestamptz, p_suspend boolean default true)
+create function absurd.schedule_run (p_run_id uuid, p_wake_at timestamptz, p_suspend boolean default true)
   returns void
   as $$
 declare
@@ -537,7 +537,7 @@ end;
 $$
 language plpgsql;
 
-create or replace function absurd.await_event (p_run_id uuid, p_step_name text, p_event_name text, p_payload jsonb default null)
+create function absurd.await_event (p_run_id uuid, p_step_name text, p_event_name text, p_payload jsonb default null)
   returns table (
     should_suspend boolean,
     payload jsonb
@@ -627,7 +627,7 @@ end;
 $$
 language plpgsql;
 
-create or replace function absurd.emit_event (p_queue_name text, p_event_name text, p_payload jsonb default null)
+create function absurd.emit_event (p_queue_name text, p_event_name text, p_payload jsonb default null)
   returns void
   as $$
 declare
@@ -701,7 +701,7 @@ end;
 $$
 language plpgsql;
 
-create or replace function absurd.set_task_checkpoint_state (p_task_id uuid, p_step_name text, p_state jsonb, p_owner_run uuid, p_ephemeral boolean default false, p_ttl_seconds integer default null)
+create function absurd.set_task_checkpoint_state (p_task_id uuid, p_step_name text, p_state jsonb, p_owner_run uuid, p_ephemeral boolean default false, p_ttl_seconds integer default null)
   returns void
   as $$
 declare
@@ -764,7 +764,7 @@ end;
 $$
 language plpgsql;
 
-create or replace function absurd.get_task_checkpoint_state (p_task_id uuid, p_step_name text, p_include_pending boolean default false)
+create function absurd.get_task_checkpoint_state (p_task_id uuid, p_step_name text, p_include_pending boolean default false)
   returns table (
     checkpoint_name text,
     state jsonb,
@@ -818,7 +818,7 @@ end;
 $$
 language plpgsql;
 
-create or replace function absurd.get_task_checkpoint_states (p_task_id uuid, p_run_id uuid)
+create function absurd.get_task_checkpoint_states (p_task_id uuid, p_run_id uuid)
   returns table (
     checkpoint_name text,
     state jsonb,
@@ -892,7 +892,7 @@ end;
 $$
 language plpgsql;
 
-create or replace function absurd.record_checkpoint_prefetch (p_task_id uuid, p_run_id uuid, p_step_names text[])
+create function absurd.record_checkpoint_prefetch (p_task_id uuid, p_run_id uuid, p_step_names text[])
   returns void
   as $$
 declare

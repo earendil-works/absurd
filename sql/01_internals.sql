@@ -27,7 +27,7 @@ end;
 $$
 language plpgsql;
 
-create or replace function absurd.notify_queue_listeners ()
+create function absurd.notify_queue_listeners ()
   returns trigger
   as $$
 begin
@@ -38,7 +38,7 @@ end;
 $$
 language plpgsql;
 
-create or replace function absurd.enable_notify_insert (queue_name text)
+create function absurd.enable_notify_insert (queue_name text)
   returns void
   as $$
 declare
@@ -53,7 +53,7 @@ end;
 $$
 language plpgsql;
 
-create or replace function absurd.disable_notify_insert (queue_name text)
+create function absurd.disable_notify_insert (queue_name text)
   returns void
   as $$
 declare
@@ -68,7 +68,7 @@ language plpgsql;
 
 -- Fallback function for older postgres versions that do not yet have a uuidv7 function
 -- We generate a uuidv7 from a uuidv4 and fold in a timestamp.
-create or replace function absurd.portable_uuidv7 ()
+create function absurd.portable_uuidv7 ()
   returns uuid
   language plpgsql
   volatile

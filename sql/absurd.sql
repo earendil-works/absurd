@@ -3,12 +3,12 @@
 ------------------------------------------------------------
 -- Schema, tables, records, privileges, indexes, etc
 ------------------------------------------------------------
-create extension if not exists "uuid-ossp";
+create extension "uuid-ossp";
 
-create schema if not exists absurd;
+create schema absurd;
 
 -- Table where queues and metadata about them is stored
-create table if not exists absurd.meta (
+create table absurd.meta (
   queue_name varchar unique not null,
   created_at timestamp with time zone default now() not null
 );
@@ -83,7 +83,7 @@ end;
 $$
 language plpgsql;
 
-create or replace function absurd.notify_queue_listeners ()
+create function absurd.notify_queue_listeners ()
   returns trigger
   as $$
 begin
@@ -94,7 +94,7 @@ end;
 $$
 language plpgsql;
 
-create or replace function absurd.enable_notify_insert (queue_name text)
+create function absurd.enable_notify_insert (queue_name text)
   returns void
   as $$
 declare
@@ -109,7 +109,7 @@ end;
 $$
 language plpgsql;
 
-create or replace function absurd.disable_notify_insert (queue_name text)
+create function absurd.disable_notify_insert (queue_name text)
   returns void
   as $$
 declare
@@ -124,7 +124,7 @@ language plpgsql;
 
 -- Fallback function for older postgres versions that do not yet have a uuidv7 function
 -- We generate a uuidv7 from a uuidv4 and fold in a timestamp.
-create or replace function absurd.portable_uuidv7 ()
+create function absurd.portable_uuidv7 ()
   returns uuid
   language plpgsql
   volatile
@@ -569,13 +569,13 @@ begin
     absurd.validate_queue_name (queue_name);
   perform
     absurd.acquire_queue_lock (queue_name);
-  execute format($QUERY$ create table if not exists absurd.%I (msg_id uuid primary key default absurd.portable_uuidv7(), read_ct int default 0 not null, enqueued_at timestamp with time zone default now() not null, vt timestamp with time zone not null, message jsonb, headers jsonb ) $QUERY$, qtable);
-  execute format($QUERY$ create index if not exists %I on absurd.%I (vt asc);
+  execute format($QUERY$ create table absurd.%I (msg_id uuid primary key default absurd.portable_uuidv7(), read_ct int default 0 not null, enqueued_at timestamp with time zone default now() not null, vt timestamp with time zone not null, message jsonb, headers jsonb ) $QUERY$, qtable);
+  execute format($QUERY$ create index %I on absurd.%I (vt asc);
   $QUERY$,
   qtable || '_vt_idx',
   qtable);
   execute format($QUERY$
-  create table if not exists absurd.%I (
+  create table absurd.%I (
     queue_name text not null default %L check (queue_name = %L),
     task_id uuid not null,
     run_id uuid primary key,
@@ -602,16 +602,16 @@ begin
   rtable,
   queue_name,
   queue_name);
-  execute format($QUERY$ create index if not exists %I on absurd.%I (task_id);
+  execute format($QUERY$ create index %I on absurd.%I (task_id);
   $QUERY$,
   rtable || '_task_idx',
   rtable);
-  execute format($QUERY$ create index if not exists %I on absurd.%I (next_wake_at) where status in ('pending', 'sleeping');
+  execute format($QUERY$ create index %I on absurd.%I (next_wake_at) where status in ('pending', 'sleeping');
   $QUERY$,
   rtable || '_wake_idx',
   rtable);
   execute format($QUERY$
-  create table if not exists absurd.%I (
+  create table absurd.%I (
     id bigserial primary key,
     item_type text not null check (item_type in ('checkpoint', 'checkpoint_read', 'wait', 'event')),
     task_id uuid,
@@ -642,23 +642,23 @@ begin
   )
   $QUERY$,
   stable);
-  execute format($QUERY$ create unique index if not exists %I on absurd.%I (task_id, step_name) where item_type = 'checkpoint';
+  execute format($QUERY$ create unique index %I on absurd.%I (task_id, step_name) where item_type = 'checkpoint';
   $QUERY$,
   stable || '_checkpoint_idx',
   stable);
-  execute format($QUERY$ create unique index if not exists %I on absurd.%I (task_id, run_id, step_name) where item_type = 'checkpoint_read';
+  execute format($QUERY$ create unique index %I on absurd.%I (task_id, run_id, step_name) where item_type = 'checkpoint_read';
   $QUERY$,
   stable || '_checkpoint_read_idx',
   stable);
-  execute format($QUERY$ create unique index if not exists %I on absurd.%I (task_id, run_id, wait_type) where item_type = 'wait';
+  execute format($QUERY$ create unique index %I on absurd.%I (task_id, run_id, wait_type) where item_type = 'wait';
   $QUERY$,
   stable || '_wait_idx',
   stable);
-  execute format($QUERY$ create index if not exists %I on absurd.%I (wake_event) where item_type = 'wait' and wait_type = 'event';
+  execute format($QUERY$ create index %I on absurd.%I (wake_event) where item_type = 'wait' and wait_type = 'event';
   $QUERY$,
   stable || '_wait_event_idx',
   stable);
-  execute format($QUERY$ create unique index if not exists %I on absurd.%I (event_name) where item_type = 'event';
+  execute format($QUERY$ create unique index %I on absurd.%I (event_name) where item_type = 'event';
   $QUERY$,
   stable || '_event_idx',
   stable);
@@ -719,7 +719,7 @@ $$
 language plpgsql;
 
 -- purge queue, deleting all entries in it.
-create or replace function absurd.purge_queue (queue_name text)
+create function absurd.purge_queue (queue_name text)
   returns bigint
   as $$
 declare
@@ -752,7 +752,7 @@ language plpgsql;
 ------------------------------------------------------------
 -- Durable task catalog and helpers
 ------------------------------------------------------------
-create table if not exists absurd.run_catalog (
+create table absurd.run_catalog (
   run_id uuid primary key,
   task_id uuid not null,
   queue_name text not null,
@@ -760,13 +760,13 @@ create table if not exists absurd.run_catalog (
   created_at timestamptz not null default now()
 );
 
-create index if not exists run_catalog_task_idx on absurd.run_catalog (task_id, attempt desc);
-create index if not exists run_catalog_queue_idx on absurd.run_catalog (queue_name);
+create index run_catalog_task_idx on absurd.run_catalog (task_id, attempt desc);
+create index run_catalog_queue_idx on absurd.run_catalog (queue_name);
 
 ------------------------------------------------------------
 -- Durable task functions
 ------------------------------------------------------------
-create or replace function absurd.spawn_task (p_queue_name text, p_task_name text, p_params jsonb, p_options jsonb default '{}'::jsonb)
+create function absurd.spawn_task (p_queue_name text, p_task_name text, p_params jsonb, p_options jsonb default '{}'::jsonb)
   returns table (
     task_id uuid,
     run_id uuid,
@@ -836,7 +836,7 @@ end;
 $$
 language plpgsql;
 
-create or replace function absurd.claim_task (p_queue_name text, p_worker_id text, p_claim_timeout integer default 30, p_qty integer default 1)
+create function absurd.claim_task (p_queue_name text, p_worker_id text, p_claim_timeout integer default 30, p_qty integer default 1)
   returns table (
     run_id uuid,
     task_id uuid,
@@ -942,7 +942,7 @@ end;
 $$ 
 language plpgsql;
 
-create or replace function absurd.complete_run (p_queue_name text, p_run_id uuid, p_final_state jsonb default null, p_archive boolean default false)
+create function absurd.complete_run (p_queue_name text, p_run_id uuid, p_final_state jsonb default null, p_archive boolean default false)
   returns void
   as $$
 declare
@@ -979,11 +979,11 @@ begin
       wake_event = null,
       completed_at = $2,
       final_status = 'completed',
-      final_state = coalesce($3, final_state)
+      final_state = case when $4 then $3 else final_state end
     where
       run_id = $1
   $fmt$, v_rtable)
-  using p_run_id, v_now, p_final_state;
+  using p_run_id, v_now, p_final_state, p_archive;
   execute format($fmt$
     update absurd.%I
     set
@@ -1004,7 +1004,7 @@ end;
 $$
 language plpgsql;
 
-create or replace function absurd.fail_run (p_queue_name text, p_run_id uuid, p_reason text, p_retry_at timestamptz default null)
+create function absurd.fail_run (p_queue_name text, p_run_id uuid, p_reason text, p_retry_at timestamptz default null)
   returns void
   as $$
 declare
@@ -1194,7 +1194,7 @@ end;
 $$
 language plpgsql;
 
-create or replace function absurd.schedule_run (p_run_id uuid, p_wake_at timestamptz, p_suspend boolean default true)
+create function absurd.schedule_run (p_run_id uuid, p_wake_at timestamptz, p_suspend boolean default true)
   returns void
   as $$
 declare
@@ -1288,7 +1288,7 @@ end;
 $$
 language plpgsql;
 
-create or replace function absurd.await_event (p_run_id uuid, p_step_name text, p_event_name text, p_payload jsonb default null)
+create function absurd.await_event (p_run_id uuid, p_step_name text, p_event_name text, p_payload jsonb default null)
   returns table (
     should_suspend boolean,
     payload jsonb
@@ -1378,7 +1378,7 @@ end;
 $$
 language plpgsql;
 
-create or replace function absurd.emit_event (p_queue_name text, p_event_name text, p_payload jsonb default null)
+create function absurd.emit_event (p_queue_name text, p_event_name text, p_payload jsonb default null)
   returns void
   as $$
 declare
@@ -1452,7 +1452,7 @@ end;
 $$
 language plpgsql;
 
-create or replace function absurd.set_task_checkpoint_state (p_task_id uuid, p_step_name text, p_state jsonb, p_owner_run uuid, p_ephemeral boolean default false, p_ttl_seconds integer default null)
+create function absurd.set_task_checkpoint_state (p_task_id uuid, p_step_name text, p_state jsonb, p_owner_run uuid, p_ephemeral boolean default false, p_ttl_seconds integer default null)
   returns void
   as $$
 declare
@@ -1515,7 +1515,7 @@ end;
 $$
 language plpgsql;
 
-create or replace function absurd.get_task_checkpoint_state (p_task_id uuid, p_step_name text, p_include_pending boolean default false)
+create function absurd.get_task_checkpoint_state (p_task_id uuid, p_step_name text, p_include_pending boolean default false)
   returns table (
     checkpoint_name text,
     state jsonb,
@@ -1569,7 +1569,7 @@ end;
 $$
 language plpgsql;
 
-create or replace function absurd.get_task_checkpoint_states (p_task_id uuid, p_run_id uuid)
+create function absurd.get_task_checkpoint_states (p_task_id uuid, p_run_id uuid)
   returns table (
     checkpoint_name text,
     state jsonb,
@@ -1643,7 +1643,7 @@ end;
 $$
 language plpgsql;
 
-create or replace function absurd.record_checkpoint_prefetch (p_task_id uuid, p_run_id uuid, p_step_names text[])
+create function absurd.record_checkpoint_prefetch (p_task_id uuid, p_run_id uuid, p_step_names text[])
   returns void
   as $$
 declare
