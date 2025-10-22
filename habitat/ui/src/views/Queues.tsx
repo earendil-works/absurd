@@ -38,17 +38,6 @@ interface QueuesProps {
   onLogout: () => void;
 }
 
-function formatTimestamp(value: Date | null): string {
-  if (!value || Number.isNaN(value.getTime())) {
-    return "—";
-  }
-
-  return new Intl.DateTimeFormat(undefined, {
-    dateStyle: "medium",
-    timeStyle: "medium",
-  }).format(value);
-}
-
 export default function Queues(props: QueuesProps) {
   const [queues, { refetch: refetchQueues }] =
     createResource<QueueSummary[]>(fetchQueues);
@@ -66,14 +55,6 @@ export default function Queues(props: QueuesProps) {
   const [autoRefreshEnabled, setAutoRefreshEnabled] = createSignal(true);
 
   const allQueues = createMemo(() => queues() ?? []);
-
-  const lastUpdated = createMemo(() => {
-    const items = allQueues();
-    if (!items.length) {
-      return null;
-    }
-    return new Date();
-  });
 
   createEffect(() => {
     const error = queues.error;
@@ -208,13 +189,6 @@ export default function Queues(props: QueuesProps) {
           </p>
         </div>
         <div class="flex flex-col-reverse gap-3 sm:flex-row sm:items-center">
-          <Show when={lastUpdated()}>
-            {(value) => (
-              <p class="text-xs text-muted-foreground">
-                Last updated {formatTimestamp(value())}
-              </p>
-            )}
-          </Show>
           <div class="flex items-center gap-2">
             <AutoRefreshToggle onToggle={setAutoRefreshEnabled} />
             <Show when={props.authenticated()}>

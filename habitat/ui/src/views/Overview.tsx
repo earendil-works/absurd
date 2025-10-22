@@ -52,23 +52,6 @@ export default function Overview(props: OverviewProps) {
     };
   });
 
-  const lastUpdated = createMemo(() => {
-    const items = queues();
-    if (!items.length) {
-      return null;
-    }
-
-    const timestamps = items
-      .map((item) => Date.parse(item.scrapeTime))
-      .filter((value) => Number.isFinite(value));
-
-    if (!timestamps.length) {
-      return null;
-    }
-
-    return new Date(Math.max(...timestamps));
-  });
-
   createEffect(() => {
     const error = metrics.error;
     if (!error) {
@@ -118,13 +101,6 @@ export default function Overview(props: OverviewProps) {
           </p>
         </div>
         <div class="flex flex-col-reverse gap-3 sm:flex-row sm:items-center">
-          <Show when={lastUpdated()}>
-            {(value) => (
-              <p class="text-xs text-muted-foreground">
-                Last updated {formatTimestamp(value())}
-              </p>
-            )}
-          </Show>
           <div class="flex items-center gap-2">
             <Show when={props.authenticated()}>
               <Button

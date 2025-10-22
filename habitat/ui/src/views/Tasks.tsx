@@ -173,23 +173,6 @@ export default function Tasks(props: TasksProps) {
     return <SelectItem item={props.item}>{option().label}</SelectItem>;
   };
 
-  const lastUpdated = createMemo(() => {
-    const items = allTasks();
-    if (!items.length) {
-      return null;
-    }
-
-    const timestamps = items
-      .map((item) => Date.parse(item.updatedAt))
-      .filter((value) => Number.isFinite(value));
-
-    if (!timestamps.length) {
-      return null;
-    }
-
-    return new Date(Math.max(...timestamps));
-  });
-
   createEffect(() => {
     searchTerm();
     queueFilter();
@@ -291,13 +274,6 @@ export default function Tasks(props: TasksProps) {
           </p>
         </div>
         <div class="flex flex-col-reverse gap-3 sm:flex-row sm:items-center">
-          <Show when={lastUpdated()}>
-            {(value) => (
-              <p class="text-xs text-muted-foreground">
-                Last updated {formatTimestamp(value())}
-              </p>
-            )}
-          </Show>
           <div class="flex items-center gap-2">
             <AutoRefreshToggle onToggle={setAutoRefreshEnabled} />
             <Show when={props.authenticated()}>
@@ -570,15 +546,4 @@ function LoadingPlaceholder() {
       <div class="h-10 rounded bg-muted animate-pulse" />
     </div>
   );
-}
-
-function formatTimestamp(value: Date | null): string {
-  if (!value || Number.isNaN(value.getTime())) {
-    return "—";
-  }
-
-  return new Intl.DateTimeFormat(undefined, {
-    dateStyle: "medium",
-    timeStyle: "medium",
-  }).format(value);
 }
