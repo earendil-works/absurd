@@ -29,6 +29,7 @@ import {
   UnauthorizedError,
 } from "@/lib/api";
 import { logout } from "@/lib/api";
+import { IdDisplayProvider } from "@/components/IdDisplay";
 import Overview from "@/views/Overview";
 import Tasks from "@/views/Tasks";
 import TaskRuns from "@/views/TaskRuns";
@@ -88,7 +89,7 @@ export default function App() {
   };
 
   return (
-    <>
+    <IdDisplayProvider>
       <Router>
         <Route
           path="/"
@@ -195,7 +196,7 @@ export default function App() {
           </form>
         </DialogContent>
       </Dialog>
-    </>
+    </IdDisplayProvider>
   );
 }
 
