@@ -327,7 +327,7 @@ func (s *Server) handleTaskDetail(w http.ResponseWriter, r *http.Request) {
 	// Query checkpoints from s_* table
 	stable := queueTableIdentifier("s", queueName)
 	checkpointQuery := fmt.Sprintf(`
-		SELECT step_name, state, status, owner_run_id, ephemeral, expires_at, updated_at
+		SELECT step_name, state, status, owner_run_id, expires_at, updated_at
 		FROM absurd.%s
 		WHERE item_type = 'checkpoint' AND owner_run_id = $1
 		ORDER BY updated_at DESC
@@ -343,7 +343,6 @@ func (s *Server) handleTaskDetail(w http.ResponseWriter, r *http.Request) {
 				&cp.State,
 				&cp.Status,
 				&cp.OwnerRunID,
-				&cp.Ephemeral,
 				&cp.ExpiresAt,
 				&cp.UpdatedAt,
 			); err == nil {
@@ -879,7 +878,6 @@ type checkpointStateRecord struct {
 	State      []byte
 	Status     string
 	OwnerRunID sql.NullString
-	Ephemeral  bool
 	ExpiresAt  sql.NullTime
 	UpdatedAt  time.Time
 }
@@ -933,7 +931,6 @@ type CheckpointState struct {
 	State      json.RawMessage `json:"state"`
 	Status     string          `json:"status"`
 	OwnerRunID *string         `json:"ownerRunId,omitempty"`
-	Ephemeral  bool            `json:"ephemeral"`
 	ExpiresAt  *time.Time      `json:"expiresAt,omitempty"`
 	UpdatedAt  time.Time       `json:"updatedAt"`
 }
@@ -1054,7 +1051,6 @@ func (r taskDetailRecord) AsAPI() TaskDetail {
 			State:      cp.State,
 			Status:     cp.Status,
 			OwnerRunID: nullableString(cp.OwnerRunID),
-			Ephemeral:  cp.Ephemeral,
 			ExpiresAt:  nullableTime(cp.ExpiresAt),
 			UpdatedAt:  cp.UpdatedAt,
 		})

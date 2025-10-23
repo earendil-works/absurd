@@ -307,11 +307,6 @@ function DetailContent(props: { detail: TaskDetail; taskLink?: string }) {
                       {checkpoint.stepName}
                     </span>
                     <TaskStatusBadge status={checkpoint.status} />
-                    <Show when={checkpoint.ephemeral}>
-                      <span class="text-xs text-muted-foreground">
-                        (ephemeral)
-                      </span>
-                    </Show>
                   </div>
                   <div class="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground mb-2">
                     <span>Updated {formatTimestamp(checkpoint.updatedAt)}</span>

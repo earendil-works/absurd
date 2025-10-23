@@ -87,7 +87,6 @@ export interface CheckpointState {
   state: any; // JSON object
   status: string;
   ownerRunId?: string | null;
-  ephemeral: boolean;
   expiresAt?: string | null;
   updatedAt: string;
 }

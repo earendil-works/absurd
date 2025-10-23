@@ -1,4 +1,4 @@
-create function absurd.set_task_checkpoint_state (p_queue_name text, p_task_id uuid, p_step_name text, p_state jsonb, p_owner_run uuid, p_ephemeral boolean default false, p_ttl_seconds integer default null)
+create function absurd.set_task_checkpoint_state (p_queue_name text, p_task_id uuid, p_step_name text, p_state jsonb, p_owner_run uuid, p_ttl_seconds integer default null)
   returns void
   as $$
 declare
@@ -49,19 +49,18 @@ begin
     v_expires_at := null;
   end if;
   execute format($fmt$
-    insert into absurd.%I (item_type, task_id, step_name, owner_run_id, status, state, ephemeral, expires_at, created_at, updated_at)
-    values ('checkpoint', $1, $2, $3, 'complete', $4, $5, $6, $7, $7)
+    insert into absurd.%I (item_type, task_id, step_name, owner_run_id, status, state, expires_at, created_at, updated_at)
+    values ('checkpoint', $1, $2, $3, 'complete', $4, $5, $6, $6)
     on conflict (task_id, step_name)
       where item_type = 'checkpoint'
     do update set
       owner_run_id = excluded.owner_run_id,
       status = excluded.status,
       state = excluded.state,
-      ephemeral = excluded.ephemeral,
       expires_at = excluded.expires_at,
       updated_at = excluded.updated_at
   $fmt$, v_stable)
-  using p_task_id, p_step_name, p_owner_run, p_state, p_ephemeral, v_expires_at, v_now;
+  using p_task_id, p_step_name, p_owner_run, p_state, v_expires_at, v_now;
   execute format($fmt$
     delete from absurd.%I
     where
@@ -80,7 +79,6 @@ create function absurd.get_task_checkpoint_state (p_queue_name text, p_task_id u
     state jsonb,
     status text,
     owner_run_id uuid,
-    ephemeral boolean,
     expires_at timestamptz,
     updated_at timestamptz
   )
@@ -99,7 +97,6 @@ begin
       state,
       status,
       owner_run_id,
-      coalesce(ephemeral, false),
       expires_at,
       updated_at
     from
@@ -124,7 +121,6 @@ create function absurd.get_task_checkpoint_states (p_queue_name text, p_task_id 
     state jsonb,
     status text,
     owner_run_id uuid,
-    ephemeral boolean,
     expires_at timestamptz,
     updated_at timestamptz
   )
@@ -145,7 +141,6 @@ begin
       state,
       status,
       owner_run_id,
-      coalesce(ephemeral, false) as ephemeral,
       expires_at,
       updated_at
     from
@@ -163,7 +158,6 @@ begin
     state := v_row.state;
     status := v_row.status;
     owner_run_id := v_row.owner_run_id;
-    ephemeral := v_row.ephemeral;
     expires_at := v_row.expires_at;
     updated_at := v_row.updated_at;
     execute format($fmt$
