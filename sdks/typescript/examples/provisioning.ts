@@ -1,11 +1,7 @@
 /**
  * Example workflow that provisions a customer account using the Absurd TypeScript SDK.
  *
- * To run from repository root:
- *   1. Prepare the database:
- *        node sdks/typescript/examples/load_absurd_db.ts
- *   2. Execute the workflow demo:
- *        node sdks/typescript/examples/motivating_provisioning.ts
+ * node --experimental-transform-types examples/provisioning.ts
  *
  * Environment:
  *   ABSURD_DB_URL      - PostgreSQL connection string (default: postgresql://localhost/absurd)
@@ -289,20 +285,33 @@ async function main() {
     ),
   );
 
-  const params: ProvisionCustomerParams = {
-    customerId: `cust_${Date.now().toString(36)}`,
-    email: `demo+${Date.now().toString(36)}@example.com`,
-    plan: Math.random() > 0.5 ? "pro" : "basic",
-  };
+  const pendingTasks = [];
+  for (let i = 0; i < 10; i++) {
+    const params: ProvisionCustomerParams = {
+      customerId: `cust_${Date.now().toString(36)}`,
+      email: `demo+${Date.now().toString(36)}@example.com`,
+      plan: Math.random() > 0.5 ? "pro" : "basic",
+    };
 
-  const { task_id, run_id } = await absurd.spawn("provision-customer", params, {
-    maxAttempts: 3,
-  });
-  log("main", "spawned provisioning workflow", {
-    taskId: task_id,
-    runId: run_id,
-    customerId: params.customerId,
-  });
+    pendingTasks.push(
+      (async () => {
+        const { task_id, run_id } = await absurd.spawn(
+          "provision-customer",
+          params,
+          {
+            maxAttempts: 3,
+          },
+        );
+        log("main", "spawned provisioning workflow", {
+          taskId: task_id,
+          runId: run_id,
+          customerId: params.customerId,
+        });
+      })(),
+    );
+  }
+
+  await Promise.all(pendingTasks);
 
   log("main", "workers running", { runtimeMs });
   await sleep(runtimeMs);
@@ -319,5 +328,6 @@ async function main() {
 
 main().catch((err) => {
   log("main", "example failed", { error: err.message });
+  console.log(err);
   process.exitCode = 1;
 });

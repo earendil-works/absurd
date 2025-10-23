@@ -35,6 +35,14 @@ stored procedures.  However those SDKs are what makes the system convenient
 because it abstracts over the lowlevel operations in a way that makes it
 convenient for the language you are working with.
 
+A *task* is dispatches onto a given *queue* from where a *worker* picks it up
+to work on.  Tasks are subdivided into *steps* which are excuted in sequence.
+Tasks can be suspended or fail, and when that happens they execute again.
+To not repeat work, already finished states are loaded from the state storage
+in postgres again.
+
+Additionally tasks can *sleep* or *suspend for events*.
+
 ### TypeScript Example
 
 ```typescript
