@@ -288,8 +288,8 @@ async function main() {
   const pendingTasks = [];
   for (let i = 0; i < 10; i++) {
     const params: ProvisionCustomerParams = {
-      customerId: `cust_${Date.now().toString(36)}`,
-      email: `demo+${Date.now().toString(36)}@example.com`,
+      customerId: crypto.randomUUID(),
+      email: `{crypto.randomUUID()}@example.com`,
       plan: Math.random() > 0.5 ? "pro" : "basic",
     };
 
