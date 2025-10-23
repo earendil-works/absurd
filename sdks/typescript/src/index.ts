@@ -37,20 +37,6 @@ export interface ClaimedMessage {
   event_payload: JsonValue | null;
 }
 
-export interface NormalizedClaimedMessage {
-  run_id: string;
-  task_id: string;
-  task_name: string;
-  attempt: number;
-  params: JsonValue;
-  retry_strategy: RetryStrategy | null;
-  max_attempts: number | null;
-  headers: JsonObject | null;
-  lease_expires_at: Date;
-  wake_event: string | null;
-  event_payload: JsonValue | null;
-}
-
 export interface WorkerOptions {
   workerId?: string;
   claimTimeout?: number;
@@ -100,29 +86,25 @@ export class TaskContext {
   private constructor(
     private readonly pool: pg.Pool,
     private readonly queueName: string,
-    private readonly message: NormalizedClaimedMessage,
+    private readonly message: ClaimedMessage,
     private readonly checkpointCache: Map<string, JsonValue>,
   ) {}
 
   static async create(args: {
     pool: pg.Pool;
     queueName: string;
-    message: NormalizedClaimedMessage;
+    message: ClaimedMessage;
   }): Promise<TaskContext> {
     const { pool, queueName, message } = args;
-
-    // Prefetch all checkpoints for this task run
     const result = await pool.query<CheckpointRow>(
       `SELECT checkpoint_name, state, status, owner_run_id, ephemeral, expires_at, updated_at
        FROM absurd.get_task_checkpoint_states($1, $2, $3)`,
       [queueName, message.task_id, message.run_id],
     );
-
     const cache = new Map<string, JsonValue>();
     for (const row of result.rows) {
       cache.set(row.checkpoint_name, row.state);
     }
-
     return new TaskContext(pool, queueName, message, cache);
   }
 
@@ -137,42 +119,36 @@ export class TaskContext {
     this.stepNameCounter.set(name, count);
     const actualStepName = count === 1 ? name : `${name}#${count}`;
 
-    // Check in-memory cache first
     if (this.checkpointCache.has(actualStepName)) {
       return this.checkpointCache.get(actualStepName) as T;
     }
 
-    // Check database for existing checkpoint
     const result = await this.pool.query<CheckpointRow>(
       `SELECT checkpoint_name, state, status, owner_run_id, ephemeral, expires_at, updated_at
        FROM absurd.get_task_checkpoint_state($1, $2, $3)`,
       [this.queueName, this.message.task_id, actualStepName],
     );
-
     if (result.rows.length > 0) {
       const state = result.rows[0].state;
       this.checkpointCache.set(actualStepName, state);
       return state as T;
     }
 
-    // Execute the function and save checkpoint
-    const value = await fn();
-
+    const rv = await fn();
     await this.pool.query(
       `SELECT absurd.set_task_checkpoint_state($1, $2, $3, $4, $5, $6, $7)`,
       [
         this.queueName,
         this.message.task_id,
         actualStepName,
-        JSON.stringify(value),
+        JSON.stringify(rv),
         this.message.run_id,
         options.ephemeral ?? false,
         options.ttlSeconds ?? null,
       ],
     );
-
-    this.checkpointCache.set(actualStepName, value as JsonValue);
-    return value;
+    this.checkpointCache.set(actualStepName, rv as JsonValue);
+    return rv;
   }
 
   async sleepFor(stepName: string, durationMs: number): Promise<never> {
@@ -204,7 +180,6 @@ export class TaskContext {
   async awaitEvent(
     stepName: string,
     eventName: string,
-    payload?: JsonValue,
   ): Promise<JsonValue | null> {
     if (!eventName) {
       throw new Error("eventName must be a non-empty string");
@@ -218,14 +193,13 @@ export class TaskContext {
       payload: JsonValue | null;
     }>(
       `SELECT should_suspend, payload
-       FROM absurd.await_event($1, $2, $3, $4, $5, $6)`,
+       FROM absurd.await_event($1, $2, $3, $4, $5)`,
       [
         this.queueName,
         this.message.task_id,
         this.message.run_id,
         stepName,
         eventName,
-        JSON.stringify(payload ?? null),
       ],
     );
 
@@ -233,7 +207,7 @@ export class TaskContext {
       throw new Error("Failed to await event");
     }
 
-    const { should_suspend, payload: eventPayload } = result.rows[0];
+    const { should_suspend, payload } = result.rows[0];
 
     if (!should_suspend) {
       await this.pool.query(
@@ -242,15 +216,15 @@ export class TaskContext {
           this.queueName,
           this.message.task_id,
           stepName,
-          JSON.stringify(eventPayload ?? null),
+          JSON.stringify(payload ?? null),
           this.message.run_id,
           true,
           null,
         ],
       );
 
-      this.checkpointCache.set(stepName, (eventPayload ?? null) as JsonValue);
-      return eventPayload ?? null;
+      this.checkpointCache.set(stepName, payload ?? null);
+      return payload ?? null;
     }
 
     throw new SuspendTask();
@@ -277,16 +251,11 @@ export class TaskContext {
   }
 
   async fail(err: unknown): Promise<void> {
-    const retryAt = computeRetryAt(
-      this.message.retry_strategy,
-      this.message.attempt,
-    );
-
     await this.pool.query(`SELECT absurd.fail_run($1, $2, $3, $4)`, [
       this.queueName,
       this.message.run_id,
       JSON.stringify(serializeError(err)),
-      retryAt,
+      null,
     ]);
   }
 }
@@ -428,8 +397,7 @@ export class Absurd {
     );
 
     for (const msg of result.rows) {
-      const deserialized = deserializeClaimedMessage(msg);
-      await this.executeMessage(deserialized);
+      await this.executeMessage(msg);
     }
   }
 
@@ -479,7 +447,7 @@ export class Absurd {
     }
   }
 
-  private async executeMessage(msg: NormalizedClaimedMessage): Promise<void> {
+  private async executeMessage(msg: ClaimedMessage): Promise<void> {
     const registration = this.registry.get(msg.task_name);
     if (!registration) {
       await this.pool.query(`SELECT absurd.fail_run($1, $2, $3, $4)`, [
@@ -534,32 +502,6 @@ function serializeError(err: unknown): JsonValue {
   return { message: String(err) };
 }
 
-function computeRetryAt(
-  strategy: RetryStrategy | null,
-  attempt: number,
-): Date | null {
-  if (!strategy || strategy.kind === "none") {
-    return null;
-  }
-
-  const baseSeconds = strategy.baseSeconds ?? 5;
-  let delaySeconds: number;
-
-  if (strategy.kind === "fixed") {
-    delaySeconds = baseSeconds;
-  } else if (strategy.kind === "exponential") {
-    const factor = strategy.factor ?? 2;
-    delaySeconds = baseSeconds * Math.pow(factor, attempt - 1);
-  } else {
-    return null;
-  }
-
-  const maxSeconds = strategy.maxSeconds ?? Infinity;
-  delaySeconds = Math.min(delaySeconds, maxSeconds);
-
-  return new Date(Date.now() + delaySeconds * 1000);
-}
-
 function normalizeSpawnOptions(options: SpawnOptions): JsonObject {
   const normalized: JsonObject = {};
   if (options.headers !== undefined) {
@@ -588,50 +530,4 @@ function serializeRetryStrategy(strategy: RetryStrategy): JsonObject {
     serialized.max_seconds = strategy.maxSeconds;
   }
   return serialized;
-}
-
-function deserializeClaimedMessage(
-  msg: ClaimedMessage,
-): NormalizedClaimedMessage {
-  return {
-    ...msg,
-    retry_strategy: msg.retry_strategy
-      ? deserializeRetryStrategy(msg.retry_strategy)
-      : null,
-  };
-}
-
-function deserializeRetryStrategy(strategy: JsonValue): RetryStrategy | null {
-  if (!strategy || typeof strategy !== "object" || Array.isArray(strategy)) {
-    return null;
-  }
-
-  const obj = strategy as JsonObject;
-  const kind = obj.kind;
-
-  if (
-    typeof kind !== "string" ||
-    (kind !== "fixed" && kind !== "exponential" && kind !== "none")
-  ) {
-    return null;
-  }
-
-  const result: RetryStrategy = { kind };
-
-  const baseSeconds = obj.base_seconds;
-  if (typeof baseSeconds === "number") {
-    result.baseSeconds = baseSeconds;
-  }
-
-  const factor = obj.factor;
-  if (typeof factor === "number") {
-    result.factor = factor;
-  }
-
-  const maxSeconds = obj.max_seconds;
-  if (typeof maxSeconds === "number") {
-    result.maxSeconds = maxSeconds;
-  }
-
-  return result;
 }

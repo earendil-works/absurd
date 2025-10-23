@@ -1,4 +1,4 @@
-create function absurd.await_event (p_queue_name text, p_task_id uuid, p_run_id uuid, p_step_name text, p_event_name text, p_payload jsonb default null)
+create function absurd.await_event (p_queue_name text, p_task_id uuid, p_run_id uuid, p_step_name text, p_event_name text)
   returns table (
     should_suspend boolean,
     payload jsonb
@@ -55,17 +55,16 @@ begin
   $fmt$, v_stable)
   using p_run_id;
   execute format($fmt$
-    insert into absurd.%I (item_type, task_id, run_id, wait_type, wake_event, payload, step_name, created_at, updated_at)
-    values ('wait', $1, $2, 'event', $3, $4, $5, $6, $6)
+    insert into absurd.%I (item_type, task_id, run_id, wait_type, wake_event, step_name, created_at, updated_at)
+    values ('wait', $1, $2, 'event', $3, $4, $5, $5)
     on conflict (task_id, run_id, wait_type)
       where item_type = 'wait'
     do update set
       wake_event = excluded.wake_event,
-      payload = excluded.payload,
       step_name = excluded.step_name,
       updated_at = excluded.updated_at
   $fmt$, v_stable)
-  using p_task_id, p_run_id, p_event_name, p_payload, p_step_name, v_now;
+  using p_task_id, p_run_id, p_event_name, p_step_name, v_now;
   execute format($fmt$
     update absurd.%I
     set
