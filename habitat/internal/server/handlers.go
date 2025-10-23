@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"sort"
 	"strconv"
@@ -152,24 +153,10 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 		perPage = 200
 	}
 
-	queueRows, err := s.db.QueryContext(ctx, `SELECT DISTINCT queue_name FROM absurd.run_catalog ORDER BY queue_name`)
+	queueNames, err := s.listQueueNames(ctx)
 	if err != nil {
+		log.Printf("handleTasks: failed to list queues: %v", err)
 		http.Error(w, "failed to query queues", http.StatusInternalServerError)
-		return
-	}
-	defer queueRows.Close()
-
-	var queueNames []string
-	for queueRows.Next() {
-		var queueName string
-		if err := queueRows.Scan(&queueName); err != nil {
-			http.Error(w, "failed to scan queue name", http.StatusInternalServerError)
-			return
-		}
-		queueNames = append(queueNames, queueName)
-	}
-	if err := queueRows.Err(); err != nil {
-		http.Error(w, "queue query error", http.StatusInternalServerError)
 		return
 	}
 
@@ -193,6 +180,7 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 
 		rows, err := s.db.QueryContext(ctx, query)
 		if err != nil {
+			log.Printf("handleTasks: failed to query tasks for queue %s: %v", queueName, err)
 			continue // Skip queues that don't exist or have errors
 		}
 
@@ -210,6 +198,7 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 				&record.UpdatedAt,
 				&record.CompletedAt,
 			); err != nil {
+				log.Printf("handleTasks: failed to scan task in queue %s: %v", queueName, err)
 				rows.Close()
 				http.Error(w, "failed to scan task", http.StatusInternalServerError)
 				return
@@ -229,6 +218,9 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		rows.Close()
+		if err := rows.Err(); err != nil {
+			log.Printf("handleTasks: row iteration error for queue %s: %v", queueName, err)
+		}
 	}
 
 	sort.Slice(filtered, func(i, j int) bool {
@@ -276,17 +268,13 @@ func (s *Server) handleTaskDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Find which queue this task belongs to
-	var queueName string
-	err := s.db.QueryRowContext(ctx,
-		`SELECT queue_name FROM absurd.run_catalog WHERE run_id = $1 LIMIT 1`,
-		runID,
-	).Scan(&queueName)
+	queueName, err := s.findQueueForRun(ctx, runID)
 	if err == sql.ErrNoRows {
 		http.Error(w, "task not found", http.StatusNotFound)
 		return
 	}
 	if err != nil {
+		log.Printf("handleTaskDetail: failed to locate queue for run %s: %v", runID, err)
 		http.Error(w, "failed to query task", http.StatusInternalServerError)
 		return
 	}
@@ -435,25 +423,19 @@ func (s *Server) handleQueues(w http.ResponseWriter, r *http.Request) {
 		ts := createdAt
 		queueMap[name] = &queueMeta{name: name, createdAt: &ts}
 	}
+	if err := metaRows.Err(); err != nil {
+		http.Error(w, "failed to iterate queue metadata", http.StatusInternalServerError)
+		return
+	}
 
-	extraRows, err := s.db.QueryContext(ctx, `
-		SELECT DISTINCT queue_name
-		FROM absurd.run_catalog
-		WHERE queue_name NOT IN (SELECT queue_name FROM absurd.meta)
-		ORDER BY queue_name
-	`)
+	allQueues, err := s.listQueueNames(ctx)
 	if err != nil {
+		log.Printf("handleQueues: failed to list queues: %v", err)
 		http.Error(w, "failed to query queues", http.StatusInternalServerError)
 		return
 	}
-	defer extraRows.Close()
 
-	for extraRows.Next() {
-		var name string
-		if err := extraRows.Scan(&name); err != nil {
-			http.Error(w, "failed to scan queue name", http.StatusInternalServerError)
-			return
-		}
+	for _, name := range allQueues {
 		if _, exists := queueMap[name]; !exists {
 			queueMap[name] = &queueMeta{name: name}
 		}
@@ -746,30 +728,19 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		}
 		events = queueEvents
 	} else {
-		metaRows, err := s.db.QueryContext(ctx, `SELECT queue_name FROM absurd.meta ORDER BY queue_name`)
+		queueNames, err := s.listQueueNames(ctx)
 		if err != nil {
+			log.Printf("handleEvents: failed to list queues: %v", err)
 			http.Error(w, "failed to query queues", http.StatusInternalServerError)
 			return
 		}
-		defer metaRows.Close()
 
-		for metaRows.Next() {
-			var queueName string
-			if err := metaRows.Scan(&queueName); err != nil {
-				http.Error(w, "failed to scan queue name", http.StatusInternalServerError)
-				return
-			}
-
+		for _, queueName := range queueNames {
 			queueEvents, err := s.fetchQueueEvents(ctx, queueName, limit, eventFilter)
 			if err != nil {
 				continue
 			}
 			events = append(events, queueEvents...)
-		}
-
-		if err := metaRows.Err(); err != nil {
-			http.Error(w, "failed to iterate queues", http.StatusInternalServerError)
-			return
 		}
 
 		sort.Slice(events, func(i, j int) bool {
@@ -790,6 +761,84 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, events)
+}
+
+func (s *Server) listQueueNames(ctx context.Context) ([]string, error) {
+	names := make(map[string]struct{})
+
+	metaRows, err := s.db.QueryContext(ctx, `SELECT queue_name FROM absurd.meta`)
+	if err != nil {
+		return nil, err
+	}
+	defer metaRows.Close()
+	for metaRows.Next() {
+		var name string
+		if err := metaRows.Scan(&name); err != nil {
+			return nil, err
+		}
+		if name != "" {
+			names[name] = struct{}{}
+		}
+	}
+	if err := metaRows.Err(); err != nil {
+		return nil, err
+	}
+
+	tableRows, err := s.db.QueryContext(ctx, `
+		SELECT table_name
+		FROM information_schema.tables
+		WHERE table_schema = 'absurd' AND table_name LIKE 'r\_%' ESCAPE '\'
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer tableRows.Close()
+
+	for tableRows.Next() {
+		var tableName string
+		if err := tableRows.Scan(&tableName); err != nil {
+			return nil, err
+		}
+		if strings.HasPrefix(tableName, "r_") && len(tableName) > 2 {
+			queueName := tableName[2:]
+			names[queueName] = struct{}{}
+		}
+	}
+	if err := tableRows.Err(); err != nil {
+		return nil, err
+	}
+
+	queueNames := make([]string, 0, len(names))
+	for name := range names {
+		queueNames = append(queueNames, name)
+	}
+	sort.Strings(queueNames)
+	return queueNames, nil
+}
+
+func (s *Server) findQueueForRun(ctx context.Context, runID string) (string, error) {
+	queueNames, err := s.listQueueNames(ctx)
+	if err != nil {
+		return "", err
+	}
+
+	for _, queueName := range queueNames {
+		rtable := queueTableIdentifier("r", queueName)
+		query := fmt.Sprintf(`SELECT 1 FROM absurd.%s WHERE run_id = $1 LIMIT 1`, rtable)
+		var dummy int
+		err := s.db.QueryRowContext(ctx, query, runID).Scan(&dummy)
+		switch {
+		case err == nil:
+			return queueName, nil
+		case err == sql.ErrNoRows:
+			continue
+		default:
+			log.Printf("findQueueForRun: query failed for queue %s: %v", queueName, err)
+			continue
+		}
+	}
+
+	return "", sql.ErrNoRows
 }
 
 func queueTableIdentifier(prefix, queueName string) string {
