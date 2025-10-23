@@ -865,6 +865,7 @@ create function absurd.schedule_run (p_queue_name text, p_run_id uuid, p_wake_at
 declare
   v_task_id uuid;
   v_status text;
+  v_rowcount integer;
   v_now timestamptz := clock_timestamp();
   v_rtable text := absurd.format_table_name (p_queue_name, 'r');
   v_stable text := absurd.format_table_name (p_queue_name, 's');
@@ -880,7 +881,8 @@ begin
   $fmt$, v_rtable)
   using p_run_id
   into v_task_id, v_status;
-  if not found then
+  get diagnostics v_rowcount = row_count;
+  if v_rowcount = 0 then
     raise exception 'run % not found for queue %', p_run_id, p_queue_name;
   end if;
   if p_suspend then
