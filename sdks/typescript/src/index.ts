@@ -297,7 +297,7 @@ export class Absurd {
 
   async createQueue(queueName?: string): Promise<void> {
     const queue = queueName ?? this.queueName;
-    await this.pool.query(`SELECT absurd.create($1)`, [queue]);
+    await this.pool.query(`SELECT absurd.create_queue($1)`, [queue]);
   }
 
   async spawn<P = any>(

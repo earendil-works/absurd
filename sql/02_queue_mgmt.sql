@@ -15,7 +15,7 @@ end;
 $$
 language plpgsql;
 
-create function absurd.create (queue_name text)
+create function absurd.create_queue (queue_name text)
   returns void
   as $$
 declare
@@ -184,24 +184,6 @@ end if;
 end if;
   return true;
 end;
-$$
-language plpgsql;
-
--- purge queue, deleting all entries in it.
-create function absurd.purge_queue (queue_name text)
-  returns bigint
-  as $$
-declare
-  deleted_count bigint;
-  qtable text := absurd.format_table_name (queue_name, 'q');
-begin
-  -- Get the row count before truncating
-  execute format('select count(*) from absurd.%I', qtable) into deleted_count;
-  -- Use truncate for better performance on large tables
-  execute format('truncate table absurd.%I', qtable);
-  -- Return the number of purged rows
-  return deleted_count;
-end
 $$
 language plpgsql;
 
