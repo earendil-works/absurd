@@ -24,16 +24,9 @@ import {
   type TaskSummary,
   fetchTask,
   fetchTasks,
-  UnauthorizedError,
 } from "@/lib/api";
 
-interface TaskRunsProps {
-  authenticated: () => boolean;
-  onAuthRequired: () => void;
-  onLogout: () => void;
-}
-
-export default function TaskRuns(props: TaskRunsProps) {
+export default function TaskRuns() {
   const params = useParams<{ taskId: string }>();
   const taskId = () => params.taskId;
 
@@ -89,12 +82,6 @@ export default function TaskRuns(props: TaskRunsProps) {
       return;
     }
 
-    if (error instanceof UnauthorizedError) {
-      props.onAuthRequired();
-      setRunsError(null);
-      return;
-    }
-
     setRunsError(error.message ?? "Failed to load task runs.");
   });
 
@@ -142,11 +129,6 @@ export default function TaskRuns(props: TaskRunsProps) {
         if (cancelled) {
           return;
         }
-        if (error instanceof UnauthorizedError) {
-          props.onAuthRequired();
-          setDetailError(null);
-          return;
-        }
         console.error("failed to load run details", error);
         setDetailError("Failed to load run details.");
       }
@@ -184,10 +166,6 @@ export default function TaskRuns(props: TaskRunsProps) {
     try {
       await refetchRuns();
     } catch (error) {
-      if (error instanceof UnauthorizedError) {
-        props.onAuthRequired();
-        return;
-      }
       console.error("failed to refresh task runs", error);
       setRunsError("Failed to refresh task runs.");
     }

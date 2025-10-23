@@ -13,7 +13,6 @@ import (
 
 	_ "github.com/lib/pq"
 
-	"habitat/internal/auth"
 	"habitat/internal/config"
 	"habitat/internal/server"
 )
@@ -59,18 +58,7 @@ func run(args []string) error {
 		return fmt.Errorf("ping database: %w", err)
 	}
 
-	var authenticator *auth.Authenticator
-	if cfg.Auth.Enabled() {
-		authenticator, err = auth.LoadFromFile(cfg.Auth.FilePath)
-		if err != nil {
-			return err
-		}
-		log.Printf("authentication enabled using %s", cfg.Auth.FilePath)
-	} else {
-		log.Printf("warning: authentication not configured; dashboard access is open")
-	}
-
-	srv, err := server.New(cfg, db, authenticator)
+	srv, err := server.New(cfg, db)
 	if err != nil {
 		return err
 	}

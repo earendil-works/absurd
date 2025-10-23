@@ -11,23 +11,14 @@ import (
 	"net/http"
 	"time"
 
-	"habitat/internal/auth"
 	"habitat/internal/config"
 	"habitat/internal/web"
 )
 
-const (
-	sessionCookieName = "habitat_session"
-	cookiePath        = "/"
-)
-
 // Server exposes the HTTP API and static UI.
 type Server struct {
-	cfg          config.Config
-	db           *sql.DB
-	auth         *auth.Authenticator
-	sessions     *auth.SessionStore
-	authRequired bool
+	cfg config.Config
+	db  *sql.DB
 
 	staticHandler http.Handler
 	indexHTML     []byte
@@ -36,13 +27,10 @@ type Server struct {
 }
 
 // New constructs a Server instance.
-func New(cfg config.Config, db *sql.DB, authenticator *auth.Authenticator) (*Server, error) {
+func New(cfg config.Config, db *sql.DB) (*Server, error) {
 	s := &Server{
-		cfg:          cfg,
-		db:           db,
-		auth:         authenticator,
-		sessions:     auth.NewSessionStore(12 * time.Hour),
-		authRequired: authenticator != nil && authenticator.Enabled(),
+		cfg: cfg,
+		db:  db,
 	}
 
 	staticFS, err := web.StaticFS()
@@ -116,69 +104,17 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("/_healthz", s.handleHealthz)
 	mux.Handle("/_static/", http.StripPrefix("/_static/", s.staticHandler))
 
-	mux.Handle("/api/metrics", s.requireAuth(http.HandlerFunc(s.handleMetrics)))
-	mux.Handle("/api/tasks", s.requireAuth(http.HandlerFunc(s.handleTasks)))
-	mux.Handle("/api/tasks/", s.requireAuth(http.HandlerFunc(s.handleTaskDetail)))
-	mux.Handle("/api/queues", s.requireAuth(http.HandlerFunc(s.handleQueues)))
-	mux.Handle("/api/queues/", s.requireAuth(http.HandlerFunc(s.handleQueueResource)))
-	mux.Handle("/api/events", s.requireAuth(http.HandlerFunc(s.handleEvents)))
+	mux.Handle("/api/metrics", http.HandlerFunc(s.handleMetrics))
+	mux.Handle("/api/tasks", http.HandlerFunc(s.handleTasks))
+	mux.Handle("/api/tasks/", http.HandlerFunc(s.handleTaskDetail))
+	mux.Handle("/api/queues", http.HandlerFunc(s.handleQueues))
+	mux.Handle("/api/queues/", http.HandlerFunc(s.handleQueueResource))
+	mux.Handle("/api/events", http.HandlerFunc(s.handleEvents))
 	mux.HandleFunc("/api/config", s.handleConfig)
-	mux.HandleFunc("/api/login", s.handleLogin)
-	mux.HandleFunc("/api/logout", s.handleLogout)
 
 	mux.HandleFunc("/", s.handleIndex)
 	return mux
 }
-
-func (s *Server) requireAuth(next http.Handler) http.Handler {
-	if !s.authRequired {
-		return next
-	}
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if username := s.sessionUsername(r); username != "" {
-			ctx := context.WithValue(r.Context(), userContextKey{}, username)
-			next.ServeHTTP(w, r.WithContext(ctx))
-			return
-		}
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
-	})
-}
-
-func (s *Server) sessionUsername(r *http.Request) string {
-	cookie, err := r.Cookie(sessionCookieName)
-	if err != nil {
-		return ""
-	}
-	username, ok := s.sessions.Validate(cookie.Value)
-	if !ok {
-		return ""
-	}
-	return username
-}
-
-func (s *Server) setSessionCookie(w http.ResponseWriter, sessionID string) {
-	http.SetCookie(w, &http.Cookie{
-		Name:     sessionCookieName,
-		Value:    sessionID,
-		Path:     cookiePath,
-		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
-	})
-}
-
-func (s *Server) clearSessionCookie(w http.ResponseWriter) {
-	http.SetCookie(w, &http.Cookie{
-		Name:     sessionCookieName,
-		Value:    "",
-		Expires:  time.Unix(0, 0),
-		MaxAge:   -1,
-		Path:     cookiePath,
-		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
-	})
-}
-
-type userContextKey struct{}
 
 type responseWriter struct {
 	http.ResponseWriter

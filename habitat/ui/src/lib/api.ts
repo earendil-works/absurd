@@ -1,7 +1,3 @@
-export interface ConfigMetadata {
-  authRequired: boolean;
-}
-
 export interface QueueMetrics {
   queueName: string;
   queueLength: number;
@@ -21,21 +17,11 @@ export class APIError extends Error {
   }
 }
 
-export class UnauthorizedError extends APIError {
-  constructor() {
-    super("unauthorized", 401);
-  }
-}
-
 const defaultHeaders = {
   Accept: "application/json",
 };
 
 async function handleResponse<T>(response: Response): Promise<T> {
-  if (response.status === 401) {
-    throw new UnauthorizedError();
-  }
-
   if (!response.ok) {
     const message = await extractErrorMessage(response);
     throw new APIError(message, response.status);
@@ -73,14 +59,6 @@ async function extractErrorMessage(response: Response): Promise<string> {
   return `request failed with status ${response.status}`;
 }
 
-export async function fetchConfig(): Promise<ConfigMetadata> {
-  return handleResponse<ConfigMetadata>(
-    await fetch("/api/config", {
-      headers: defaultHeaders,
-    }),
-  );
-}
-
 export async function fetchMetrics(): Promise<QueueMetrics[]> {
   const result = await handleResponse<{ queues: QueueMetrics[] }>(
     await fetch("/api/metrics", {
@@ -89,35 +67,6 @@ export async function fetchMetrics(): Promise<QueueMetrics[]> {
   );
 
   return result.queues ?? [];
-}
-
-export async function login(username: string, password: string): Promise<void> {
-  await handleResponse(
-    await fetch("/api/login", {
-      method: "POST",
-      headers: {
-        ...defaultHeaders,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ username, password }),
-    }),
-  );
-}
-
-export async function logout(): Promise<void> {
-  try {
-    await handleResponse(
-      await fetch("/api/logout", {
-        method: "POST",
-        headers: defaultHeaders,
-      }),
-    );
-  } catch (error) {
-    // Ignored: logging out is best-effort.
-    if (error instanceof UnauthorizedError) {
-      return;
-    }
-  }
 }
 
 export interface TaskSummary {

@@ -26,67 +26,7 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleConfig(w http.ResponseWriter, _ *http.Request) {
-	response := map[string]any{
-		"authRequired": s.authRequired,
-	}
-	writeJSON(w, http.StatusOK, response)
-}
-
-func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		w.Header().Set("Allow", http.MethodPost)
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	if !s.authRequired {
-		writeJSON(w, http.StatusOK, map[string]any{"authRequired": false})
-		return
-	}
-
-	var req loginRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid json payload", http.StatusBadRequest)
-		return
-	}
-
-	req.Username = strings.TrimSpace(req.Username)
-	if req.Username == "" || req.Password == "" {
-		http.Error(w, "username and password are required", http.StatusBadRequest)
-		return
-	}
-
-	ok, err := s.auth.Authenticate(req.Username, req.Password)
-	if err != nil {
-		http.Error(w, "authentication error", http.StatusInternalServerError)
-		return
-	}
-	if !ok {
-		http.Error(w, "invalid credentials", http.StatusUnauthorized)
-		return
-	}
-
-	sessionID := s.sessions.Create(req.Username)
-	s.setSessionCookie(w, sessionID)
-
-	writeJSON(w, http.StatusOK, map[string]any{
-		"username": req.Username,
-	})
-}
-
-func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		w.Header().Set("Allow", http.MethodPost)
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	cookie, err := r.Cookie(sessionCookieName)
-	if err == nil {
-		s.sessions.Delete(cookie.Value)
-	}
-	s.clearSessionCookie(w)
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	writeJSON(w, http.StatusOK, map[string]any{})
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
@@ -152,11 +92,6 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"queues": metrics,
 	})
-}
-
-type loginRequest struct {
-	Username string `json:"username"`
-	Password string `json:"password"`
 }
 
 type queueMetricsRecord struct {

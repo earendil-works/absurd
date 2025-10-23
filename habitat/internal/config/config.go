@@ -21,7 +21,6 @@ const (
 type Config struct {
 	ListenAddress string
 	DB            DBConfig
-	Auth          AuthConfig
 }
 
 // DBConfig describes how to connect to Postgres.
@@ -33,11 +32,6 @@ type DBConfig struct {
 	Password string
 	Name     string
 	SSLMode  string
-}
-
-// AuthConfig controls optional dashboard authentication.
-type AuthConfig struct {
-	FilePath string
 }
 
 // FromArgs parses command-line arguments and environment variables to produce
@@ -56,9 +50,6 @@ func FromArgs(args []string) (Config, error) {
 			Name:     envDefault("DB_NAME", ""),
 			SSLMode:  envDefault("DB_SSLMODE", defaultDBSSLMode),
 		},
-		Auth: AuthConfig{
-			FilePath: authEnvDefault(),
-		},
 	}
 
 	fs.StringVar(&cfg.ListenAddress, "listen", cfg.ListenAddress, "address to listen on (e.g. :7890)")
@@ -69,7 +60,6 @@ func FromArgs(args []string) (Config, error) {
 	fs.StringVar(&cfg.DB.Password, "db-password", cfg.DB.Password, "Postgres password")
 	fs.StringVar(&cfg.DB.Name, "db-name", cfg.DB.Name, "Postgres database name")
 	fs.StringVar(&cfg.DB.SSLMode, "db-sslmode", cfg.DB.SSLMode, "Postgres sslmode")
-	fs.StringVar(&cfg.Auth.FilePath, "auth-file", cfg.Auth.FilePath, "path to passwd style auth file")
 
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
@@ -124,10 +114,6 @@ func (c DBConfig) ConnectionString() (string, error) {
 	return u.String(), nil
 }
 
-func (a AuthConfig) Enabled() bool {
-	return a.FilePath != ""
-}
-
 func envDefault(name, fallback string) string {
 	if v := os.Getenv(envPrefix + name); v != "" {
 		return v
@@ -142,14 +128,4 @@ func envDefaultInt(name string, fallback int) int {
 		}
 	}
 	return fallback
-}
-
-func authEnvDefault() string {
-	if v := os.Getenv(envPrefix + "AUTH_FILE_"); v != "" {
-		return v
-	}
-	if v := os.Getenv(envPrefix + "AUTH_FILE"); v != "" {
-		return v
-	}
-	return ""
 }

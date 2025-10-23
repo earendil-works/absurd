@@ -11,7 +11,6 @@ import {
   type QueueEvent,
   fetchQueues,
   fetchEvents,
-  UnauthorizedError,
 } from "@/lib/api";
 import { useSearchParams, type NavigateOptions } from "@solidjs/router";
 import { Button } from "@/components/ui/button";
@@ -36,13 +35,7 @@ import {
 } from "@/components/ui/select";
 import { JSONViewer } from "@/components/JSONViewer";
 
-interface EventLogProps {
-  authenticated: () => boolean;
-  onAuthRequired: () => void;
-  onLogout: () => void;
-}
-
-export default function EventLog(props: EventLogProps) {
+export default function EventLog() {
   const [searchParams, setSearchParams] = useSearchParams();
 
   const getParam = (key: string) => searchParams[key] as string | undefined;
@@ -111,11 +104,6 @@ export default function EventLog(props: EventLogProps) {
       setQueuesError(null);
       return;
     }
-    if (error instanceof UnauthorizedError) {
-      props.onAuthRequired();
-      setQueuesError(null);
-      return;
-    }
     const message =
       error instanceof Error
         ? error.message
@@ -145,11 +133,6 @@ export default function EventLog(props: EventLogProps) {
   createEffect(() => {
     const error = events.error;
     if (!error) {
-      setEventsError(null);
-      return;
-    }
-    if (error instanceof UnauthorizedError) {
-      props.onAuthRequired();
       setEventsError(null);
       return;
     }
@@ -203,15 +186,6 @@ export default function EventLog(props: EventLogProps) {
         </div>
         <div class="flex flex-col-reverse gap-3 sm:flex-row sm:items-center">
           <div class="flex items-center gap-2">
-            <Show when={props.authenticated()}>
-              <Button
-                variant="ghost"
-                class="text-xs text-muted-foreground"
-                onClick={props.onLogout}
-              >
-                Log out
-              </Button>
-            </Show>
             <Button
               variant="outline"
               class="min-w-[96px]"

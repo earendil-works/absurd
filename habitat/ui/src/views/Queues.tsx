@@ -7,7 +7,7 @@ import {
   createResource,
   createSignal,
 } from "solid-js";
-import { type QueueSummary, fetchQueues, UnauthorizedError } from "@/lib/api";
+import { type QueueSummary, fetchQueues } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -18,13 +18,7 @@ import {
   CardFooter,
 } from "@/components/ui/card";
 
-interface QueuesProps {
-  authenticated: () => boolean;
-  onAuthRequired: () => void;
-  onLogout: () => void;
-}
-
-export default function Queues(props: QueuesProps) {
+export default function Queues() {
   const [queuesError, setQueuesError] = createSignal<string | null>(null);
 
   const [queues, { refetch: refetchQueues }] =
@@ -33,11 +27,6 @@ export default function Queues(props: QueuesProps) {
   createEffect(() => {
     const error = queues.error;
     if (!error) {
-      setQueuesError(null);
-      return;
-    }
-    if (error instanceof UnauthorizedError) {
-      props.onAuthRequired();
       setQueuesError(null);
       return;
     }
@@ -68,15 +57,6 @@ export default function Queues(props: QueuesProps) {
         </div>
         <div class="flex flex-col-reverse gap-3 sm:flex-row sm:items-center">
           <div class="flex items-center gap-2">
-            <Show when={props.authenticated()}>
-              <Button
-                variant="ghost"
-                class="text-xs text-muted-foreground"
-                onClick={props.onLogout}
-              >
-                Log out
-              </Button>
-            </Show>
             <Button
               variant="outline"
               class="min-w-[96px]"

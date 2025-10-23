@@ -15,17 +15,11 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { type QueueMetrics, fetchMetrics, UnauthorizedError } from "@/lib/api";
+import { type QueueMetrics, fetchMetrics } from "@/lib/api";
 
 const REFRESH_INTERVAL_MS = 15_000;
 
-interface OverviewProps {
-  authenticated: () => boolean;
-  onAuthRequired: () => void;
-  onLogout: () => void;
-}
-
-export default function Overview(props: OverviewProps) {
+export default function Overview() {
   const [metrics, { refetch: refetchMetrics }] =
     createResource<QueueMetrics[]>(fetchMetrics);
   const [metricsError, setMetricsError] = createSignal<string | null>(null);
@@ -55,23 +49,13 @@ export default function Overview(props: OverviewProps) {
   createEffect(() => {
     const error = metrics.error;
     if (!error) {
-      return;
-    }
-
-    if (error instanceof UnauthorizedError) {
-      props.onAuthRequired();
       setMetricsError(null);
       return;
     }
-
     setMetricsError(error.message);
   });
 
   createEffect(() => {
-    if (!props.authenticated()) {
-      return;
-    }
-
     const timer = setInterval(() => {
       refetchMetrics();
     }, REFRESH_INTERVAL_MS);
@@ -83,10 +67,6 @@ export default function Overview(props: OverviewProps) {
     try {
       await refetchMetrics();
     } catch (error) {
-      if (error instanceof UnauthorizedError) {
-        props.onAuthRequired();
-        return;
-      }
       console.error("refresh failed", error);
     }
   };
@@ -102,15 +82,6 @@ export default function Overview(props: OverviewProps) {
         </div>
         <div class="flex flex-col-reverse gap-3 sm:flex-row sm:items-center">
           <div class="flex items-center gap-2">
-            <Show when={props.authenticated()}>
-              <Button
-                variant="ghost"
-                class="text-xs text-muted-foreground"
-                onClick={props.onLogout}
-              >
-                Log out
-              </Button>
-            </Show>
             <Button
               variant="outline"
               class="min-w-[96px]"

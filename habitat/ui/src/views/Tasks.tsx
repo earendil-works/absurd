@@ -16,12 +16,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import {
-  type TaskDetail,
-  fetchTasks,
-  fetchTask,
-  UnauthorizedError,
-} from "@/lib/api";
+import { type TaskDetail, fetchTasks, fetchTask } from "@/lib/api";
 import { TaskStatusBadge } from "@/components/TaskStatusBadge";
 import { IdDisplay } from "@/components/IdDisplay";
 import { AutoRefreshToggle } from "@/components/AutoRefreshToggle";
@@ -90,13 +85,7 @@ function resolveSelectedOption(
   return options.find((option) => option.value === value) ?? options[0];
 }
 
-interface TasksProps {
-  authenticated: () => boolean;
-  onAuthRequired: () => void;
-  onLogout: () => void;
-}
-
-export default function Tasks(props: TasksProps) {
+export default function Tasks() {
   const [searchParams, setSearchParams] = useSearchParams();
 
   const getParam = (key: string) => searchParams[key] as string | undefined;
@@ -278,11 +267,6 @@ export default function Tasks(props: TasksProps) {
   createEffect(() => {
     const error = taskList.error;
     if (!error) {
-      return;
-    }
-
-    if (error instanceof UnauthorizedError) {
-      props.onAuthRequired();
       setTasksError(null);
       return;
     }
@@ -291,7 +275,7 @@ export default function Tasks(props: TasksProps) {
   });
 
   createEffect(() => {
-    if (!props.authenticated() || !autoRefreshEnabled()) {
+    if (!autoRefreshEnabled()) {
       return;
     }
 
@@ -306,10 +290,6 @@ export default function Tasks(props: TasksProps) {
     try {
       await refetchTasks();
     } catch (error) {
-      if (error instanceof UnauthorizedError) {
-        props.onAuthRequired();
-        return;
-      }
       console.error("refresh failed", error);
     }
   };
@@ -328,9 +308,6 @@ export default function Tasks(props: TasksProps) {
         const detail = await fetchTask(runId);
         setTaskDetails({ ...taskDetails(), [runId]: detail });
       } catch (error) {
-        if (error instanceof UnauthorizedError) {
-          props.onAuthRequired();
-        }
         console.error("Failed to fetch task details:", error);
       }
     }
@@ -363,15 +340,6 @@ export default function Tasks(props: TasksProps) {
         <div class="flex flex-col-reverse gap-3 sm:flex-row sm:items-center">
           <div class="flex items-center gap-2">
             <AutoRefreshToggle onToggle={setAutoRefreshEnabled} />
-            <Show when={props.authenticated()}>
-              <Button
-                variant="ghost"
-                class="text-xs text-muted-foreground"
-                onClick={props.onLogout}
-              >
-                Log out
-              </Button>
-            </Show>
             <Button
               variant="outline"
               class="min-w-[96px]"
