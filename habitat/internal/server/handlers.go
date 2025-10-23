@@ -362,7 +362,7 @@ func (s *Server) handleTaskDetail(w http.ResponseWriter, r *http.Request) {
 		SELECT
 			task_id, run_id, queue_name, task_name, status, attempt, max_attempts,
 			params, retry_strategy, headers, claimed_by, lease_expires_at,
-			next_wake_at, wake_event, final_status, final_state,
+			next_wake_at, wake_event, last_claimed_at, final_status, final_state,
 			created_at, updated_at, completed_at
 		FROM absurd.%s
 		WHERE run_id = $1
@@ -385,6 +385,7 @@ func (s *Server) handleTaskDetail(w http.ResponseWriter, r *http.Request) {
 		&task.LeaseExpiresAt,
 		&task.NextWakeAt,
 		&task.WakeEvent,
+		&task.LastClaimedAt,
 		&task.FinalStatus,
 		&task.FinalState,
 		&task.CreatedAt,
@@ -428,6 +429,46 @@ func (s *Server) handleTaskDetail(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	waitQuery := fmt.Sprintf(`
+		SELECT
+			w.wait_type,
+			w.wake_at,
+			w.wake_event,
+			w.step_name,
+			w.payload,
+			ev.payload,
+			w.updated_at,
+			w.last_seen_at,
+			ev.emitted_at
+		FROM absurd.%[1]s AS w
+		LEFT JOIN absurd.%[1]s AS ev
+			ON ev.item_type = 'event'
+			AND ev.event_name = w.wake_event
+		WHERE w.item_type = 'wait' AND w.run_id = $1
+		ORDER BY w.updated_at DESC
+	`, stable)
+
+	waitRows, err := s.db.QueryContext(ctx, waitQuery, runID)
+	if err == nil {
+		defer waitRows.Close()
+		for waitRows.Next() {
+			var wt waitStateRecord
+			if err := waitRows.Scan(
+				&wt.WaitType,
+				&wt.WakeAt,
+				&wt.WakeEvent,
+				&wt.StepName,
+				&wt.Payload,
+				&wt.EventPayload,
+				&wt.UpdatedAt,
+				&wt.LastSeenAt,
+				&wt.EmittedAt,
+			); err == nil {
+				task.WaitStates = append(task.WaitStates, wt)
+			}
+		}
+	}
+
 	writeJSON(w, http.StatusOK, task.AsAPI())
 }
 
@@ -435,21 +476,65 @@ func (s *Server) handleQueues(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
-	// Get all queues
-	queueRows, err := s.db.QueryContext(ctx, `SELECT DISTINCT queue_name FROM absurd.run_catalog ORDER BY queue_name`)
+	type queueMeta struct {
+		name      string
+		createdAt *time.Time
+	}
+
+	queueMap := make(map[string]*queueMeta)
+
+	metaRows, err := s.db.QueryContext(ctx, `SELECT queue_name, created_at FROM absurd.meta ORDER BY queue_name`)
 	if err != nil {
 		http.Error(w, "failed to query queues", http.StatusInternalServerError)
 		return
 	}
-	defer queueRows.Close()
+	defer metaRows.Close()
 
-	var queues []QueueSummary
-	for queueRows.Next() {
-		var queueName string
-		if err := queueRows.Scan(&queueName); err != nil {
+	for metaRows.Next() {
+		var name string
+		var createdAt time.Time
+		if err := metaRows.Scan(&name, &createdAt); err != nil {
+			http.Error(w, "failed to scan queue metadata", http.StatusInternalServerError)
+			return
+		}
+		ts := createdAt
+		queueMap[name] = &queueMeta{name: name, createdAt: &ts}
+	}
+
+	extraRows, err := s.db.QueryContext(ctx, `
+		SELECT DISTINCT queue_name
+		FROM absurd.run_catalog
+		WHERE queue_name NOT IN (SELECT queue_name FROM absurd.meta)
+		ORDER BY queue_name
+	`)
+	if err != nil {
+		http.Error(w, "failed to query queues", http.StatusInternalServerError)
+		return
+	}
+	defer extraRows.Close()
+
+	for extraRows.Next() {
+		var name string
+		if err := extraRows.Scan(&name); err != nil {
 			http.Error(w, "failed to scan queue name", http.StatusInternalServerError)
 			return
 		}
+		if _, exists := queueMap[name]; !exists {
+			queueMap[name] = &queueMeta{name: name}
+		}
+	}
+
+	queueNames := make([]*queueMeta, 0, len(queueMap))
+	for _, meta := range queueMap {
+		queueNames = append(queueNames, meta)
+	}
+	sort.Slice(queueNames, func(i, j int) bool {
+		return queueNames[i].name < queueNames[j].name
+	})
+
+	var queues []QueueSummary
+	for _, meta := range queueNames {
+		queueName := meta.name
 
 		// Count tasks by status for this queue
 		rtable := queueTableIdentifier("r", queueName)
@@ -476,23 +561,52 @@ func (s *Server) handleQueues(w http.ResponseWriter, r *http.Request) {
 			continue // Skip queues with errors
 		}
 
+		if meta.createdAt != nil {
+			ts := *meta.createdAt
+			summary.CreatedAt = &ts
+		}
+
 		queues = append(queues, summary)
 	}
 
 	writeJSON(w, http.StatusOK, queues)
 }
 
-func (s *Server) handleQueueTasks(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
-	defer cancel()
+func (s *Server) handleQueueResource(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimPrefix(r.URL.Path, "/api/queues/")
+	path = strings.Trim(path, "/")
+	if path == "" {
+		http.Error(w, "queue name required", http.StatusBadRequest)
+		return
+	}
 
-	// Extract queue name from URL
-	queueName := strings.TrimPrefix(r.URL.Path, "/api/queues/")
-	queueName = strings.TrimSuffix(queueName, "/tasks")
+	parts := strings.Split(path, "/")
+	queueName := parts[0]
 	if queueName == "" {
 		http.Error(w, "queue name required", http.StatusBadRequest)
 		return
 	}
+
+	if len(parts) == 1 {
+		http.NotFound(w, r)
+		return
+	}
+
+	switch parts[1] {
+	case "tasks":
+		s.handleQueueTasks(w, r, queueName)
+	case "messages":
+		s.handleQueueMessages(w, r, queueName)
+	case "events":
+		s.handleQueueEvents(w, r, queueName)
+	default:
+		http.NotFound(w, r)
+	}
+}
+
+func (s *Server) handleQueueTasks(w http.ResponseWriter, r *http.Request, queueName string) {
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
 
 	rtable := queueTableIdentifier("r", queueName)
 	query := fmt.Sprintf(`
@@ -534,6 +648,215 @@ func (s *Server) handleQueueTasks(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, tasks)
 }
 
+func (s *Server) handleQueueMessages(w http.ResponseWriter, r *http.Request, queueName string) {
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	limit := parsePositiveInt(r.URL.Query().Get("limit"), 50)
+	if limit > 200 {
+		limit = 200
+	}
+
+	qtable := queueTableIdentifier("q", queueName)
+	query := fmt.Sprintf(`
+		SELECT
+			msg_id,
+			read_ct,
+			enqueued_at,
+			vt,
+			message,
+			headers
+		FROM absurd.%s
+		ORDER BY enqueued_at ASC
+		LIMIT $1
+	`, qtable)
+
+	rows, err := s.db.QueryContext(ctx, query, limit)
+	if err != nil {
+		http.Error(w, "failed to query queue messages", http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	var messages []QueueMessage
+	for rows.Next() {
+		var record queueMessageRecord
+		if err := rows.Scan(
+			&record.MessageID,
+			&record.ReadCount,
+			&record.EnqueuedAt,
+			&record.VisibleAt,
+			&record.Message,
+			&record.Headers,
+		); err != nil {
+			http.Error(w, "failed to scan queue message", http.StatusInternalServerError)
+			return
+		}
+		messages = append(messages, record.AsAPI(queueName))
+	}
+
+	if err := rows.Err(); err != nil {
+		http.Error(w, "failed to iterate queue messages", http.StatusInternalServerError)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, messages)
+}
+
+func (s *Server) handleQueueEvents(w http.ResponseWriter, r *http.Request, queueName string) {
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	limit := parsePositiveInt(r.URL.Query().Get("limit"), 100)
+	if limit > 500 {
+		limit = 500
+	}
+
+	eventName := strings.TrimSpace(r.URL.Query().Get("eventName"))
+
+	events, err := s.fetchQueueEvents(ctx, queueName, limit, eventName)
+	if err != nil {
+		http.Error(w, "failed to query queue events", http.StatusInternalServerError)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, events)
+}
+
+func (s *Server) fetchQueueEvents(ctx context.Context, queueName string, limit int, eventName string) ([]QueueEvent, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
+
+	stable := queueTableIdentifier("s", queueName)
+
+	var (
+		params  []any
+		clauses []string
+	)
+	clauses = append(clauses, "item_type = 'event'")
+
+	argPos := 1
+	if eventName != "" {
+		clauses = append(clauses, fmt.Sprintf("event_name = $%d", argPos))
+		params = append(params, eventName)
+		argPos++
+	}
+
+	query := fmt.Sprintf(`
+		SELECT
+			event_name,
+			payload,
+			emitted_at,
+			created_at,
+			updated_at
+		FROM absurd.%s
+		WHERE %s
+		ORDER BY COALESCE(emitted_at, updated_at) DESC
+		LIMIT $%d
+	`, stable, strings.Join(clauses, " AND "), argPos)
+
+	params = append(params, limit)
+
+	rows, err := s.db.QueryContext(ctx, query, params...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var events []QueueEvent
+	for rows.Next() {
+		var record queueEventRecord
+		if err := rows.Scan(
+			&record.EventName,
+			&record.Payload,
+			&record.EmittedAt,
+			&record.CreatedAt,
+			&record.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		events = append(events, record.AsAPI(queueName))
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return events, nil
+}
+
+func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+
+	limit := parsePositiveInt(r.URL.Query().Get("limit"), 100)
+	if limit > 1000 {
+		limit = 1000
+	}
+
+	queueFilter := strings.TrimSpace(r.URL.Query().Get("queue"))
+	eventFilter := strings.TrimSpace(r.URL.Query().Get("eventName"))
+
+	var events []QueueEvent
+
+	if queueFilter != "" {
+		queueEvents, err := s.fetchQueueEvents(ctx, queueFilter, limit, eventFilter)
+		if err != nil {
+			http.Error(w, "failed to query queue events", http.StatusInternalServerError)
+			return
+		}
+		events = queueEvents
+	} else {
+		metaRows, err := s.db.QueryContext(ctx, `SELECT queue_name FROM absurd.meta ORDER BY queue_name`)
+		if err != nil {
+			http.Error(w, "failed to query queues", http.StatusInternalServerError)
+			return
+		}
+		defer metaRows.Close()
+
+		for metaRows.Next() {
+			var queueName string
+			if err := metaRows.Scan(&queueName); err != nil {
+				http.Error(w, "failed to scan queue name", http.StatusInternalServerError)
+				return
+			}
+
+			queueEvents, err := s.fetchQueueEvents(ctx, queueName, limit, eventFilter)
+			if err != nil {
+				continue
+			}
+			events = append(events, queueEvents...)
+		}
+
+		if err := metaRows.Err(); err != nil {
+			http.Error(w, "failed to iterate queues", http.StatusInternalServerError)
+			return
+		}
+
+		sort.Slice(events, func(i, j int) bool {
+			ti := events[i].UpdatedAt
+			if events[i].EmittedAt != nil {
+				ti = *events[i].EmittedAt
+			}
+			tj := events[j].UpdatedAt
+			if events[j].EmittedAt != nil {
+				tj = *events[j].EmittedAt
+			}
+			return ti.After(tj)
+		})
+
+		if len(events) > limit {
+			events = events[:limit]
+		}
+	}
+
+	writeJSON(w, http.StatusOK, events)
+}
+
 func queueTableIdentifier(prefix, queueName string) string {
 	return pq.QuoteIdentifier(prefix + "_" + strings.ToLower(queueName))
 }
@@ -560,9 +883,11 @@ type taskDetailRecord struct {
 	LeaseExpiresAt sql.NullTime
 	NextWakeAt     sql.NullTime
 	WakeEvent      sql.NullString
+	LastClaimedAt  sql.NullTime
 	FinalStatus    sql.NullString
 	FinalState     []byte
 	Checkpoints    []checkpointStateRecord
+	WaitStates     []waitStateRecord
 }
 
 type checkpointStateRecord struct {
@@ -573,6 +898,18 @@ type checkpointStateRecord struct {
 	Ephemeral  bool
 	ExpiresAt  sql.NullTime
 	UpdatedAt  time.Time
+}
+
+type waitStateRecord struct {
+	WaitType     string
+	WakeAt       sql.NullTime
+	WakeEvent    sql.NullString
+	StepName     sql.NullString
+	Payload      []byte
+	EventPayload []byte
+	UpdatedAt    time.Time
+	LastSeenAt   sql.NullTime
+	EmittedAt    sql.NullTime
 }
 
 // TaskSummary is the API representation for task list views
@@ -599,9 +936,11 @@ type TaskDetail struct {
 	LeaseExpiresAt *time.Time        `json:"leaseExpiresAt,omitempty"`
 	NextWakeAt     *time.Time        `json:"nextWakeAt,omitempty"`
 	WakeEvent      *string           `json:"wakeEvent,omitempty"`
+	LastClaimedAt  *time.Time        `json:"lastClaimedAt,omitempty"`
 	FinalStatus    *string           `json:"finalStatus,omitempty"`
 	FinalState     json.RawMessage   `json:"finalState,omitempty"`
 	Checkpoints    []CheckpointState `json:"checkpoints"`
+	Waits          []WaitState       `json:"waits"`
 }
 
 // CheckpointState is the API representation for checkpoint data
@@ -615,14 +954,28 @@ type CheckpointState struct {
 	UpdatedAt  time.Time       `json:"updatedAt"`
 }
 
+// WaitState describes an active or historical wait for a run.
+type WaitState struct {
+	WaitType     string          `json:"waitType"`
+	WakeAt       *time.Time      `json:"wakeAt,omitempty"`
+	WakeEvent    *string         `json:"wakeEvent,omitempty"`
+	StepName     *string         `json:"stepName,omitempty"`
+	Payload      json.RawMessage `json:"payload,omitempty"`
+	EventPayload json.RawMessage `json:"eventPayload,omitempty"`
+	LastSeenAt   *time.Time      `json:"lastSeenAt,omitempty"`
+	EmittedAt    *time.Time      `json:"emittedAt,omitempty"`
+	UpdatedAt    time.Time       `json:"updatedAt"`
+}
+
 // QueueSummary is the API representation for queue list
 type QueueSummary struct {
-	QueueName      string `json:"queueName"`
-	PendingCount   int64  `json:"pendingCount"`
-	RunningCount   int64  `json:"runningCount"`
-	SleepingCount  int64  `json:"sleepingCount"`
-	CompletedCount int64  `json:"completedCount"`
-	FailedCount    int64  `json:"failedCount"`
+	QueueName      string     `json:"queueName"`
+	CreatedAt      *time.Time `json:"createdAt,omitempty"`
+	PendingCount   int64      `json:"pendingCount"`
+	RunningCount   int64      `json:"runningCount"`
+	SleepingCount  int64      `json:"sleepingCount"`
+	CompletedCount int64      `json:"completedCount"`
+	FailedCount    int64      `json:"failedCount"`
 }
 
 type TaskListResponse struct {
@@ -633,6 +986,65 @@ type TaskListResponse struct {
 	AvailableStatuses  []string      `json:"availableStatuses"`
 	AvailableQueues    []string      `json:"availableQueues"`
 	AvailableTaskNames []string      `json:"availableTaskNames"`
+}
+
+type queueMessageRecord struct {
+	MessageID  string
+	ReadCount  int
+	EnqueuedAt time.Time
+	VisibleAt  time.Time
+	Message    []byte
+	Headers    []byte
+}
+
+type QueueMessage struct {
+	QueueName  string          `json:"queueName"`
+	MessageID  string          `json:"messageId"`
+	ReadCount  int             `json:"readCount"`
+	EnqueuedAt time.Time       `json:"enqueuedAt"`
+	VisibleAt  time.Time       `json:"visibleAt"`
+	Message    json.RawMessage `json:"message,omitempty"`
+	Headers    json.RawMessage `json:"headers,omitempty"`
+}
+
+type queueEventRecord struct {
+	EventName string
+	Payload   []byte
+	EmittedAt sql.NullTime
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+type QueueEvent struct {
+	QueueName string          `json:"queueName"`
+	EventName string          `json:"eventName"`
+	Payload   json.RawMessage `json:"payload,omitempty"`
+	EmittedAt *time.Time      `json:"emittedAt,omitempty"`
+	CreatedAt time.Time       `json:"createdAt"`
+	UpdatedAt time.Time       `json:"updatedAt"`
+}
+
+func (r queueMessageRecord) AsAPI(queueName string) QueueMessage {
+	return QueueMessage{
+		QueueName:  queueName,
+		MessageID:  r.MessageID,
+		ReadCount:  r.ReadCount,
+		EnqueuedAt: r.EnqueuedAt,
+		VisibleAt:  r.VisibleAt,
+		Message:    nullableBytes(r.Message),
+		Headers:    nullableBytes(r.Headers),
+	}
+}
+
+func (r queueEventRecord) AsAPI(queueName string) QueueEvent {
+	return QueueEvent{
+		QueueName: queueName,
+		EventName: r.EventName,
+		Payload:   nullableBytes(r.Payload),
+		EmittedAt: nullableTime(r.EmittedAt),
+		CreatedAt: r.CreatedAt,
+		UpdatedAt: r.UpdatedAt,
+	}
 }
 
 func (r taskSummaryRecord) AsAPI() TaskSummary {
@@ -664,6 +1076,21 @@ func (r taskDetailRecord) AsAPI() TaskDetail {
 		})
 	}
 
+	waits := make([]WaitState, 0, len(r.WaitStates))
+	for _, wt := range r.WaitStates {
+		waits = append(waits, WaitState{
+			WaitType:     wt.WaitType,
+			WakeAt:       nullableTime(wt.WakeAt),
+			WakeEvent:    nullableString(wt.WakeEvent),
+			StepName:     nullableString(wt.StepName),
+			Payload:      nullableBytes(wt.Payload),
+			EventPayload: nullableBytes(wt.EventPayload),
+			LastSeenAt:   nullableTime(wt.LastSeenAt),
+			EmittedAt:    nullableTime(wt.EmittedAt),
+			UpdatedAt:    wt.UpdatedAt,
+		})
+	}
+
 	return TaskDetail{
 		TaskSummary:    r.taskSummaryRecord.AsAPI(),
 		Params:         r.Params,
@@ -673,9 +1100,11 @@ func (r taskDetailRecord) AsAPI() TaskDetail {
 		LeaseExpiresAt: nullableTime(r.LeaseExpiresAt),
 		NextWakeAt:     nullableTime(r.NextWakeAt),
 		WakeEvent:      nullableString(r.WakeEvent),
+		LastClaimedAt:  nullableTime(r.LastClaimedAt),
 		FinalStatus:    nullableString(r.FinalStatus),
 		FinalState:     nullableBytes(r.FinalState),
 		Checkpoints:    checkpoints,
+		Waits:          waits,
 	}
 }
 

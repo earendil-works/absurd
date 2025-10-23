@@ -48,9 +48,19 @@ function DetailContent(props: { detail: TaskDetail; taskLink?: string }) {
           <h3 class="text-sm font-semibold mb-2">Basic Information</h3>
           <dl class="space-y-1 text-sm">
             <div class="flex gap-2">
-              <dt class="text-muted-foreground w-32">Status:</dt>
+              <dt class="text-muted-foreground w-32">Current status:</dt>
               <dd>
                 <TaskStatusBadge status={props.detail.status} />
+              </dd>
+            </div>
+            <div class="flex gap-2">
+              <dt class="text-muted-foreground w-32">Final status:</dt>
+              <dd>
+                {props.detail.finalStatus ? (
+                  <TaskStatusBadge status={props.detail.finalStatus} />
+                ) : (
+                  "—"
+                )}
               </dd>
             </div>
             <div class="flex gap-2">
@@ -117,7 +127,13 @@ function DetailContent(props: { detail: TaskDetail; taskLink?: string }) {
         </div>
       </div>
 
-      <Show when={props.detail.claimedBy || props.detail.leaseExpiresAt}>
+      <Show
+        when={
+          props.detail.claimedBy ||
+          props.detail.leaseExpiresAt ||
+          props.detail.lastClaimedAt
+        }
+      >
         <div>
           <h3 class="text-sm font-semibold mb-2">Worker Information</h3>
           <dl class="space-y-1 text-sm">
@@ -125,6 +141,12 @@ function DetailContent(props: { detail: TaskDetail; taskLink?: string }) {
               <div class="flex gap-2">
                 <dt class="text-muted-foreground w-32">Claimed By:</dt>
                 <dd>{props.detail.claimedBy}</dd>
+              </div>
+            </Show>
+            <Show when={props.detail.lastClaimedAt}>
+              <div class="flex gap-2">
+                <dt class="text-muted-foreground w-32">Last Claimed:</dt>
+                <dd>{formatTimestamp(props.detail.lastClaimedAt!)}</dd>
               </div>
             </Show>
             <Show when={props.detail.leaseExpiresAt}>
@@ -154,6 +176,81 @@ function DetailContent(props: { detail: TaskDetail; taskLink?: string }) {
               </div>
             </Show>
           </dl>
+        </div>
+      </Show>
+
+      <Show when={props.detail.waits.length > 0}>
+        <div>
+          <h3 class="text-sm font-semibold mb-2">Wait States</h3>
+          <div class="space-y-3">
+            <For each={props.detail.waits}>
+              {(wait) => (
+                <div class="rounded border p-3 space-y-2">
+                  <div class="flex flex-wrap items-center gap-2">
+                    <span class="font-medium text-sm">
+                      {formatWaitType(wait.waitType)}
+                    </span>
+                    <Show when={wait.stepName}>
+                      {(step) => (
+                        <code class="rounded bg-muted px-1 text-xs">
+                          {step()}
+                        </code>
+                      )}
+                    </Show>
+                  </div>
+                  <dl class="space-y-1 text-xs">
+                    <div class="flex gap-2">
+                      <dt class="text-muted-foreground w-32">Wake at:</dt>
+                      <dd>{formatTimestamp(wait.wakeAt)}</dd>
+                    </div>
+                    <Show when={wait.wakeEvent}>
+                      {(eventName) => (
+                        <div class="flex gap-2">
+                          <dt class="text-muted-foreground w-32">
+                            Wake event:
+                          </dt>
+                          <dd class="break-all">{eventName()}</dd>
+                        </div>
+                      )}
+                    </Show>
+                    <div class="flex gap-2">
+                      <dt class="text-muted-foreground w-32">Updated:</dt>
+                      <dd>{formatTimestamp(wait.updatedAt)}</dd>
+                    </div>
+                    <Show when={wait.emittedAt}>
+                      {(emitted) => (
+                        <div class="flex gap-2">
+                          <dt class="text-muted-foreground w-32">Last emit:</dt>
+                          <dd>{formatTimestamp(emitted())}</dd>
+                        </div>
+                      )}
+                    </Show>
+                    <Show when={wait.lastSeenAt}>
+                      {(lastSeen) => (
+                        <div class="flex gap-2">
+                          <dt class="text-muted-foreground w-32">Last seen:</dt>
+                          <dd>{formatTimestamp(lastSeen())}</dd>
+                        </div>
+                      )}
+                    </Show>
+                  </dl>
+                  <Show when={typeof wait.payload !== "undefined"}>
+                    <div>
+                      <JSONViewer data={wait.payload} label="Wait payload" />
+                    </div>
+                  </Show>
+                  <Show when={typeof wait.eventPayload !== "undefined"}>
+                    <div>
+                      <JSONViewer
+                        data={wait.eventPayload}
+                        label="Event payload"
+                      />
+                    </div>
+                  </Show>
+                </div>
+              )}
+            </For>
+          </div>
         </div>
       </Show>
 
@@ -216,6 +313,22 @@ function DetailContent(props: { detail: TaskDetail; taskLink?: string }) {
                       </span>
                     </Show>
                   </div>
+                  <div class="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground mb-2">
+                    <span>Updated {formatTimestamp(checkpoint.updatedAt)}</span>
+                    <Show when={checkpoint.ownerRunId}>
+                      {(owner) => (
+                        <span class="inline-flex items-center gap-1">
+                          Owner
+                          <IdDisplay value={owner()} class="text-[10px]" />
+                        </span>
+                      )}
+                    </Show>
+                    <Show when={checkpoint.expiresAt}>
+                      {(expires) => (
+                        <span>Expires {formatTimestamp(expires())}</span>
+                      )}
+                    </Show>
+                  </div>
                   <JSONViewer data={checkpoint.state} />
                 </div>
               )}
@@ -225,6 +338,18 @@ function DetailContent(props: { detail: TaskDetail; taskLink?: string }) {
       </Show>
     </>
   );
+}
+
+function formatWaitType(value: string | null | undefined): string {
+  if (!value) return "Wait";
+  const normalized = value.toLowerCase();
+  if (normalized === "sleep") {
+    return "Sleep wait";
+  }
+  if (normalized === "event") {
+    return "Event wait";
+  }
+  return value.charAt(0).toUpperCase() + value.slice(1);
 }
 
 function formatTimestamp(value: string | Date | null | undefined): string {

@@ -143,6 +143,18 @@ export interface CheckpointState {
   updatedAt: string;
 }
 
+export interface WaitState {
+  waitType: string;
+  wakeAt?: string | null;
+  wakeEvent?: string | null;
+  stepName?: string | null;
+  payload?: any;
+  eventPayload?: any;
+  lastSeenAt?: string | null;
+  emittedAt?: string | null;
+  updatedAt: string;
+}
+
 export interface TaskDetail extends TaskSummary {
   params?: any; // JSON object
   retryStrategy?: any | null;
@@ -151,18 +163,40 @@ export interface TaskDetail extends TaskSummary {
   leaseExpiresAt?: string | null;
   nextWakeAt?: string | null;
   wakeEvent?: string | null;
+  lastClaimedAt?: string | null;
   finalStatus?: string | null;
   finalState?: any | null;
   checkpoints: CheckpointState[];
+  waits: WaitState[];
 }
 
 export interface QueueSummary {
   queueName: string;
+  createdAt?: string | null;
   pendingCount: number;
   runningCount: number;
   sleepingCount: number;
   completedCount: number;
   failedCount: number;
+}
+
+export interface QueueMessage {
+  queueName: string;
+  messageId: string;
+  readCount: number;
+  enqueuedAt: string;
+  visibleAt: string;
+  message?: any;
+  headers?: any;
+}
+
+export interface QueueEvent {
+  queueName: string;
+  eventName: string;
+  payload?: any;
+  emittedAt?: string | null;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface TaskListResponse {
@@ -243,6 +277,84 @@ export async function fetchQueueTasks(
 ): Promise<TaskSummary[]> {
   return handleResponse<TaskSummary[]>(
     await fetch(`/api/queues/${queueName}/tasks`, {
+      headers: defaultHeaders,
+    }),
+  );
+}
+
+export async function fetchQueueMessages(
+  queueName: string,
+  limit?: number,
+): Promise<QueueMessage[]> {
+  const params = new URLSearchParams();
+  if (typeof limit === "number" && Number.isFinite(limit)) {
+    params.set("limit", String(limit));
+  }
+  const query = params.toString();
+  const url = query
+    ? `/api/queues/${queueName}/messages?${query}`
+    : `/api/queues/${queueName}/messages`;
+
+  return handleResponse<QueueMessage[]>(
+    await fetch(url, {
+      headers: defaultHeaders,
+    }),
+  );
+}
+
+export interface QueueEventFilters {
+  eventName?: string;
+  limit?: number;
+}
+
+export async function fetchQueueEvents(
+  queueName: string,
+  filters: QueueEventFilters = {},
+): Promise<QueueEvent[]> {
+  const params = new URLSearchParams();
+  if (filters.eventName) {
+    params.set("eventName", filters.eventName);
+  }
+  if (typeof filters.limit === "number" && Number.isFinite(filters.limit)) {
+    params.set("limit", String(filters.limit));
+  }
+  const query = params.toString();
+  const url = query
+    ? `/api/queues/${queueName}/events?${query}`
+    : `/api/queues/${queueName}/events`;
+
+  return handleResponse<QueueEvent[]>(
+    await fetch(url, {
+      headers: defaultHeaders,
+    }),
+  );
+}
+
+export interface EventLogFilters {
+  queue?: string | null;
+  eventName?: string | null;
+  limit?: number;
+}
+
+export async function fetchEvents(
+  filters: EventLogFilters = {},
+): Promise<QueueEvent[]> {
+  const params = new URLSearchParams();
+  if (filters.queue) {
+    params.set("queue", filters.queue);
+  }
+  if (filters.eventName) {
+    params.set("eventName", filters.eventName);
+  }
+  if (typeof filters.limit === "number" && Number.isFinite(filters.limit)) {
+    params.set("limit", String(filters.limit));
+  }
+
+  const query = params.toString();
+  const url = query ? `/api/events?${query}` : "/api/events";
+
+  return handleResponse<QueueEvent[]>(
+    await fetch(url, {
       headers: defaultHeaders,
     }),
   );

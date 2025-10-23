@@ -1,11 +1,7 @@
 /**
  * Example workflow that provisions a customer account using the Absurd TypeScript SDK.
  *
- * To run from repository root:
- *   1. Prepare the database:
- *        node sdks/typescript/examples/load_absurd_db.ts
- *   2. Execute the workflow demo:
- *        node sdks/typescript/examples/motivating_provisioning.ts
+ * node --experimental-transform-types examples/provisioning.ts
  *
  * Environment:
  *   ABSURD_DB_URL      - PostgreSQL connection string (default: postgresql://localhost/absurd)
