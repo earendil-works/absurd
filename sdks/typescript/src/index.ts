@@ -300,6 +300,21 @@ export class Absurd {
     await this.pool.query(`SELECT absurd.create_queue($1)`, [queue]);
   }
 
+  async dropQueue(queueName?: string): Promise<void> {
+    const queue = queueName ?? this.queueName;
+    await this.pool.query(`SELECT absurd.drop_queue($1)`, [queue]);
+  }
+
+  async listQueues(): Promise<Array<string>> {
+    const result = await this.pool.query(`SELECT * FROM absurd.list_queues()`);
+    const rv = [];
+    console.log(result);
+    for (const row of result.rows) {
+      rv.push(row.queue_name);
+    }
+    return rv;
+  }
+
   async spawn<P = any>(
     taskName: string,
     params: P,
