@@ -50,7 +50,7 @@ import { Absurd } from 'absurd';
 
 const app = new Absurd();
 
-app.registerTask('order-fulfillment', async (params, ctx) => {
+app.registerTask({ name: 'order-fulfillment' }, async (params, ctx) => {
   // Each step is checkpointed - if the process crashes, we resume from the last completed step
   const payment = await ctx.step('process-payment', async () => {
     return await stripe.charges.create({ amount: params.amount, ... });

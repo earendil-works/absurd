@@ -27,45 +27,6 @@ end;
 $$
 language plpgsql;
 
-create function absurd.notify_queue_listeners ()
-  returns trigger
-  as $$
-begin
-  perform
-    pg_notify('absurd.' || tg_table_name || '.' || tg_op, null);
-  return new;
-end;
-$$
-language plpgsql;
-
-create function absurd.enable_notify_insert (queue_name text)
-  returns void
-  as $$
-declare
-  qtable text := absurd.format_table_name (queue_name, 'q');
-begin
-  perform
-    absurd.disable_notify_insert (queue_name);
-  execute format($QUERY$ create constraint trigger trigger_notify_queue_insert_listeners
-      after insert on absurd.%I deferrable for each row
-      execute procedure absurd.notify_queue_listeners() $QUERY$, qtable );
-end;
-$$
-language plpgsql;
-
-create function absurd.disable_notify_insert (queue_name text)
-  returns void
-  as $$
-declare
-  qtable text := absurd.format_table_name (queue_name, 'q');
-begin
-  execute format($QUERY$ drop trigger if exists trigger_notify_queue_insert_listeners on absurd.%I;
-  $QUERY$,
-  qtable);
-end;
-$$
-language plpgsql;
-
 -- Fallback function for older postgres versions that do not yet have a uuidv7 function
 -- We generate a uuidv7 from a uuidv4 and fold in a timestamp.
 create function absurd.portable_uuidv7 ()
@@ -97,3 +58,27 @@ begin
   return encode(b, 'hex')::uuid;
 end;
 $$;
+
+-- Sets vt of a message to an absolute timestamp, returns it
+create function absurd.set_vt_at (queue_name text, msg_id uuid, wake_at timestamp with time zone)
+  returns setof absurd.message_record
+  as $$
+declare
+  sql text;
+  qtable text := absurd.format_table_name (queue_name, 'q');
+begin
+  sql := format($QUERY$ update
+      absurd.%I
+    set
+      vt = $2
+      where
+        msg_id = $1
+      returning
+        *;
+  $QUERY$,
+  qtable);
+  return query execute sql
+  using msg_id, wake_at;
+end;
+$$
+language plpgsql;
