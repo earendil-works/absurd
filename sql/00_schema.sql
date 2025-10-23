@@ -52,16 +52,3 @@ create type absurd.metrics_result as (
   scrape_time timestamp with time zone,
   queue_visible_length bigint
 );
-
--- Catalog helpers
-create table absurd.run_catalog (
-  run_id uuid primary key,
-  task_id uuid not null,
-  queue_name text not null,
-  attempt integer not null,
-  created_at timestamptz not null default now()
-);
-
-create index run_catalog_task_idx on absurd.run_catalog (task_id, attempt desc);
-create index run_catalog_queue_idx on absurd.run_catalog (queue_name);
-

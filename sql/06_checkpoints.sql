@@ -1,35 +1,48 @@
-create function absurd.set_task_checkpoint_state (p_task_id uuid, p_step_name text, p_state jsonb, p_owner_run uuid, p_ephemeral boolean default false, p_ttl_seconds integer default null)
+create function absurd.set_task_checkpoint_state (p_queue_name text, p_task_id uuid, p_step_name text, p_state jsonb, p_owner_run uuid, p_ephemeral boolean default false, p_ttl_seconds integer default null)
   returns void
   as $$
 declare
-  v_queue_name text;
   v_stable text;
+  v_rtable text := absurd.format_table_name (p_queue_name, 'r');
   v_expires_at timestamptz;
   v_now timestamptz := clock_timestamp();
+  v_exists boolean;
 begin
+  if p_queue_name is null then
+    raise exception 'set_task_checkpoint_state requires a queue name';
+  end if;
+  execute format($fmt$
+    select
+      true
+    from
+      absurd.%I
+    where
+      task_id = $1
+    limit 1
+  $fmt$, v_rtable)
+  using p_task_id
+  into v_exists;
+  if not v_exists then
+    raise exception 'task % not found in queue %', p_task_id, p_queue_name;
+  end if;
   if p_owner_run is not null then
-    select
-      queue_name into v_queue_name
-    from
-      absurd.run_catalog
-    where
-      run_id = p_owner_run;
+    execute format($fmt$
+      select
+        true
+      from
+        absurd.%I
+      where
+        run_id = $1
+        and task_id = $2
+      limit 1
+    $fmt$, v_rtable)
+    using p_owner_run, p_task_id
+    into v_exists;
+    if not v_exists then
+      raise exception 'run % does not belong to task % in queue %', p_owner_run, p_task_id, p_queue_name;
+    end if;
   end if;
-  if v_queue_name is null then
-    select
-      queue_name into v_queue_name
-    from
-      absurd.run_catalog
-    where
-      task_id = p_task_id
-    order by
-      attempt desc
-    limit 1;
-  end if;
-  if v_queue_name is null then
-    raise exception 'task % not found in catalog', p_task_id;
-  end if;
-  v_stable := absurd.format_table_name (v_queue_name, 's');
+  v_stable := absurd.format_table_name (p_queue_name, 's');
   if p_ttl_seconds is not null then
     v_expires_at := v_now + make_interval(secs => p_ttl_seconds);
   else
@@ -61,7 +74,7 @@ end;
 $$
 language plpgsql;
 
-create function absurd.get_task_checkpoint_state (p_task_id uuid, p_step_name text, p_include_pending boolean default false)
+create function absurd.get_task_checkpoint_state (p_queue_name text, p_task_id uuid, p_step_name text, p_include_pending boolean default false)
   returns table (
     checkpoint_name text,
     state jsonb,
@@ -73,22 +86,12 @@ create function absurd.get_task_checkpoint_state (p_task_id uuid, p_step_name te
   )
   as $$
 declare
-  v_queue_name text;
   v_stable text;
 begin
-  select
-    queue_name into v_queue_name
-  from
-    absurd.run_catalog
-  where
-    task_id = p_task_id
-  order by
-    attempt desc
-  limit 1;
-  if v_queue_name is null then
+  if p_queue_name is null then
     return;
   end if;
-  v_stable := absurd.format_table_name (v_queue_name, 's');
+  v_stable := absurd.format_table_name (p_queue_name, 's');
   return query
   execute format($fmt$
     select
@@ -115,7 +118,7 @@ end;
 $$
 language plpgsql;
 
-create function absurd.get_task_checkpoint_states (p_task_id uuid, p_run_id uuid)
+create function absurd.get_task_checkpoint_states (p_queue_name text, p_task_id uuid, p_run_id uuid)
   returns table (
     checkpoint_name text,
     state jsonb,
@@ -127,24 +130,14 @@ create function absurd.get_task_checkpoint_states (p_task_id uuid, p_run_id uuid
   )
   as $$
 declare
-  v_queue_name text;
   v_stable text;
   v_row record;
   v_now timestamptz := clock_timestamp();
 begin
-  select
-    queue_name into v_queue_name
-  from
-    absurd.run_catalog
-  where
-    task_id = p_task_id
-  order by
-    attempt desc
-  limit 1;
-  if v_queue_name is null then
+  if p_queue_name is null then
     return;
   end if;
-  v_stable := absurd.format_table_name (v_queue_name, 's');
+  v_stable := absurd.format_table_name (p_queue_name, 's');
   for v_row in
   execute format($fmt$
     select

@@ -50,7 +50,7 @@ function log(scope: string, message: string, detail?: Record<string, unknown>) {
 
 function registerTasks(absurd: Absurd) {
   absurd.registerTask<ProvisionCustomerParams, unknown>(
-    "provision-customer",
+    { name: "provision-customer" },
     async (params, ctx: TaskContext) => {
       const customer = await ctx.step("create-customer-record", async () => {
         const createdAt = new Date().toISOString();
@@ -140,7 +140,7 @@ function registerTasks(absurd: Absurd) {
   const simulatedFailureTracker = new Map<string, number>();
 
   absurd.registerTask(
-    "send-activation-email",
+    { name: "send-activation-email" },
     async (
       params: { customerId: string; email: string },
       ctx: TaskContext,
@@ -186,7 +186,7 @@ function registerTasks(absurd: Absurd) {
   );
 
   absurd.registerTask<ActivationSimulatorParams>(
-    "activation-simulator",
+    { name: "activation-simulator" },
     async (params, ctx: TaskContext) => {
       const delayMs = await ctx.step("activation-delay", async () => {
         const range = params.maxDelayMs - params.minDelayMs;
@@ -232,7 +232,7 @@ function registerTasks(absurd: Absurd) {
   );
 
   absurd.registerTask<ActivationAuditParams>(
-    "post-activation-audit",
+    { name: "post-activation-audit" },
     async (params, ctx: TaskContext) => {
       const auditEntry = await ctx.step("record-audit", async () => {
         const recordedAt = new Date().toISOString();

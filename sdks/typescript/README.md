@@ -22,15 +22,18 @@ const absurd = new Absurd(pool, "my-queue");
 const absurd = new Absurd("postgresql://localhost/mydb");
 
 // Register a task handler
-absurd.registerTask("send-email", async (params, ctx) => {
-  const sent = await ctx.step("send-attempt", async () => {
-    // This code runs once, result is checkpointed
-    await sendEmail(params.to, params.body);
-    return true;
-  });
+absurd.registerTask(
+  { name: "send-email", defaultMaxAttempts: 5 },
+  async (params, ctx) => {
+    const sent = await ctx.step("send-attempt", async () => {
+      // This code runs once, result is checkpointed
+      await sendEmail(params.to, params.body);
+      return true;
+    });
 
-  return { success: sent };
-});
+    return { success: sent };
+  },
+);
 
 // Spawn a task
 const { task_id, run_id } = await absurd.spawn("send-email", {
@@ -74,9 +77,15 @@ new Absurd(poolOrUrl: pg.Pool | string, queueName?: string)
 
 #### Methods
 
-**`registerTask<P, R>(name: string, handler: TaskHandler<P, R>): void`**
+**`registerTask<P, R>(options: TaskRegistrationOptions, handler: TaskHandler<P, R>): void`**
 
 Register a task handler function.
+
+`TaskRegistrationOptions`:
+
+- `name: string` - Task name
+- `queue?: string` - Queue to bind the task to (defaults to the client's queue when omitted)
+- `defaultMaxAttempts?: number` - Default max attempts used when spawning without an explicit override
 
 **`spawn<P>(taskName: string, params: P, options?: SpawnOptions): Promise<SpawnResult>`**
 
@@ -87,6 +96,7 @@ Options:
 - `maxAttempts?: number` - Maximum retry attempts
 - `retryStrategy?: RetryStrategy` - Retry configuration
 - `headers?: JsonObject` - Custom headers
+- `queue?: string` - Required when spawning unregistered tasks; ignored for registered tasks
 
 **`workOnce(workerId?: string, claimTimeout?: number, batchSize?: number): Promise<void>`**
 
@@ -148,7 +158,7 @@ Mark the task as failed. Retries will be scheduled according to the retry strate
 ### Durable Workflow with Retries
 
 ```typescript
-absurd.registerTask("process-order", async (params, ctx) => {
+absurd.registerTask({ name: "process-order" }, async (params, ctx) => {
   // Step 1: Reserve inventory (idempotent via checkpointing)
   const reservation = await ctx.step("reserve-inventory", async () => {
     return await reserveInventory(params.orderId);
@@ -189,7 +199,7 @@ absurd.registerTask("process-order", async (params, ctx) => {
 
 ```typescript
 // Task 1: Wait for approval
-absurd.registerTask("wait-for-approval", async (params, ctx) => {
+absurd.registerTask({ name: "wait-for-approval" }, async (params, ctx) => {
   await ctx.step("request-approval", async () => {
     await sendApprovalRequest(params.userId);
   });
@@ -202,7 +212,7 @@ absurd.registerTask("wait-for-approval", async (params, ctx) => {
 });
 
 // Task 2: Approve request
-absurd.registerTask("approve-request", async (params, ctx) => {
+absurd.registerTask({ name: "approve-request" }, async (params, ctx) => {
   await ctx.emitEvent(`approval:${params.requestId}`, {
     approvedBy: params.approver,
     timestamp: new Date(),

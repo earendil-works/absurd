@@ -165,12 +165,6 @@ end if;
   execute format($QUERY$ drop table if exists absurd.%I $QUERY$, qtable);
   execute format($QUERY$ drop table if exists absurd.%I $QUERY$, rtable);
   execute format($QUERY$ drop table if exists absurd.%I $QUERY$, stable);
-  begin
-    execute format($QUERY$ delete from absurd.run_catalog where queue_name = %L $QUERY$, queue_name);
-  exception
-    when undefined_table then
-      null;
-  end;
   if exists (
     select
       1

@@ -60,8 +60,6 @@ begin
     values ($1, $2, $3, $4, $5, $6, 'pending', $7, $8, $9, $9, $10)
   $fmt$, v_rtable)
   using p_queue_name, v_task_id, v_run_id, v_attempt, p_task_name, p_params, v_max_attempts, v_retry_strategy, v_now, v_headers;
-  insert into absurd.run_catalog (run_id, task_id, queue_name, attempt, created_at)
-    values (v_run_id, v_task_id, p_queue_name, v_attempt, v_now);
   return query
   select
     v_task_id,
@@ -450,8 +448,6 @@ begin
       )
     $fmt$, v_rtable)
     using p_queue_name, v_task_id, v_new_run_id, v_next_attempt, v_task_name, v_params, v_new_status, v_max_attempts, v_retry_strategy, v_effective_retry_at, v_now, v_headers;
-    insert into absurd.run_catalog (run_id, task_id, queue_name, attempt, created_at)
-      values (v_new_run_id, v_task_id, p_queue_name, v_next_attempt, v_now);
     execute format($fmt$
       update absurd.%I
       set
@@ -463,7 +459,7 @@ begin
     using v_task_id;
     if v_effective_retry_at > v_now then
       perform
-        absurd.schedule_run (v_new_run_id, v_effective_retry_at, true);
+        absurd.schedule_run (p_queue_name, v_new_run_id, v_effective_retry_at, true);
     end if;
   else
     execute format($fmt$
@@ -480,32 +476,19 @@ end;
 $$
 language plpgsql;
 
-create function absurd.schedule_run (p_run_id uuid, p_wake_at timestamptz, p_suspend boolean default true)
+create function absurd.schedule_run (p_queue_name text, p_run_id uuid, p_wake_at timestamptz, p_suspend boolean default true)
   returns void
   as $$
 declare
-  v_queue_name text;
   v_task_id uuid;
   v_status text;
   v_now timestamptz := clock_timestamp();
-  v_rtable text;
-  v_stable text;
+  v_rtable text := absurd.format_table_name (p_queue_name, 'r');
+  v_stable text := absurd.format_table_name (p_queue_name, 's');
 begin
-  select
-    rc.queue_name,
-    rc.task_id into v_queue_name,
-    v_task_id
-  from
-    absurd.run_catalog rc
-  where
-    rc.run_id = p_run_id;
-  if v_queue_name is null then
-    raise exception 'run % not found', p_run_id;
-  end if;
-  v_rtable := absurd.format_table_name (v_queue_name, 'r');
-  v_stable := absurd.format_table_name (v_queue_name, 's');
   execute format($fmt$
     select
+      task_id,
       status
     from
       absurd.%I
@@ -513,7 +496,10 @@ begin
       run_id = $1
   $fmt$, v_rtable)
   using p_run_id
-  into v_status;
+  into v_task_id, v_status;
+  if not found then
+    raise exception 'run % not found for queue %', p_run_id, p_queue_name;
+  end if;
   if p_suspend then
     execute format($fmt$
       insert into absurd.%I (item_type, task_id, run_id, wait_type, wake_at, created_at, updated_at)
@@ -569,7 +555,7 @@ begin
   $fmt$, v_rtable)
   using p_run_id, p_wake_at, p_suspend, v_now, v_status;
   perform
-    absurd.set_vt_at (v_queue_name, p_run_id, p_wake_at);
+    absurd.set_vt_at (p_queue_name, p_run_id, p_wake_at);
 end;
 $$
 language plpgsql;

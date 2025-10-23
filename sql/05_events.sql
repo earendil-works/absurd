@@ -1,33 +1,34 @@
-create function absurd.await_event (p_run_id uuid, p_step_name text, p_event_name text, p_payload jsonb default null)
+create function absurd.await_event (p_queue_name text, p_task_id uuid, p_run_id uuid, p_step_name text, p_event_name text, p_payload jsonb default null)
   returns table (
     should_suspend boolean,
     payload jsonb
   )
   as $$
 declare
-  v_queue_name text;
-  v_task_id uuid;
   v_now timestamptz := clock_timestamp();
   v_event_payload jsonb;
-  v_rtable text;
-  v_stable text;
+  v_rtable text := absurd.format_table_name (p_queue_name, 'r');
+  v_stable text := absurd.format_table_name (p_queue_name, 's');
+  v_exists boolean;
 begin
   if p_event_name is null then
     raise exception 'await_event requires a non-null event name';
   end if;
-  select
-    rc.queue_name,
-    rc.task_id into v_queue_name,
-    v_task_id
-  from
-    absurd.run_catalog rc
-  where
-    rc.run_id = p_run_id;
-  if v_queue_name is null then
-    raise exception 'run % not found', p_run_id;
+  execute format($fmt$
+    select
+      true
+    from
+      absurd.%I
+    where
+      run_id = $1
+      and task_id = $2
+    limit 1
+  $fmt$, v_rtable)
+  using p_run_id, p_task_id
+  into v_exists;
+  if not v_exists then
+    raise exception 'run % for task % not found in queue %', p_run_id, p_task_id, p_queue_name;
   end if;
-  v_rtable := absurd.format_table_name (v_queue_name, 'r');
-  v_stable := absurd.format_table_name (v_queue_name, 's');
   execute format($fmt$
     select
       payload
@@ -64,7 +65,7 @@ begin
       step_name = excluded.step_name,
       updated_at = excluded.updated_at
   $fmt$, v_stable)
-  using v_task_id, p_run_id, p_event_name, p_payload, p_step_name, v_now;
+  using p_task_id, p_run_id, p_event_name, p_payload, p_step_name, v_now;
   execute format($fmt$
     update absurd.%I
     set
@@ -79,7 +80,7 @@ begin
   $fmt$, v_rtable)
   using p_run_id, p_event_name, v_now;
   perform
-    absurd.set_vt_at (v_queue_name, p_run_id, 'infinity'::timestamptz);
+    absurd.set_vt_at (p_queue_name, p_run_id, 'infinity'::timestamptz);
   should_suspend := true;
   payload := null;
   return next;
@@ -140,7 +141,7 @@ begin
     using v_wait.task_id, v_wait.run_id, p_payload, v_now;
     if v_wait.step_name is not null then
       perform
-        absurd.set_task_checkpoint_state (v_wait.task_id, v_wait.step_name, p_payload, v_wait.run_id, true, null);
+        absurd.set_task_checkpoint_state (p_queue_name, v_wait.task_id, v_wait.step_name, p_payload, v_wait.run_id, true, null);
     end if;
     execute format($fmt$
       update absurd.%I
