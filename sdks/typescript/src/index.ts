@@ -95,6 +95,8 @@ interface RegisteredTask {
 }
 
 export class TaskContext {
+  private stepNameCounter: Map<string, number> = new Map();
+
   private constructor(
     private readonly pool: pg.Pool,
     private readonly queueName: string,
@@ -129,21 +131,27 @@ export class TaskContext {
     fn: () => Promise<T>,
     options: { ephemeral?: boolean; ttlSeconds?: number } = {},
   ): Promise<T> {
+    // Generate unique step name with counter for duplicates to allow the use
+    // of steps in loops.
+    const count = (this.stepNameCounter.get(name) ?? 0) + 1;
+    this.stepNameCounter.set(name, count);
+    const actualStepName = count === 1 ? name : `${name}#${count}`;
+
     // Check in-memory cache first
-    if (this.checkpointCache.has(name)) {
-      return this.checkpointCache.get(name) as T;
+    if (this.checkpointCache.has(actualStepName)) {
+      return this.checkpointCache.get(actualStepName) as T;
     }
 
     // Check database for existing checkpoint
     const result = await this.pool.query<CheckpointRow>(
       `SELECT checkpoint_name, state, status, owner_run_id, ephemeral, expires_at, updated_at
        FROM absurd.get_task_checkpoint_state($1, $2, $3)`,
-      [this.queueName, this.message.task_id, name],
+      [this.queueName, this.message.task_id, actualStepName],
     );
 
     if (result.rows.length > 0) {
       const state = result.rows[0].state;
-      this.checkpointCache.set(name, state);
+      this.checkpointCache.set(actualStepName, state);
       return state as T;
     }
 
@@ -155,7 +163,7 @@ export class TaskContext {
       [
         this.queueName,
         this.message.task_id,
-        name,
+        actualStepName,
         JSON.stringify(value),
         this.message.run_id,
         options.ephemeral ?? false,
@@ -163,7 +171,7 @@ export class TaskContext {
       ],
     );
 
-    this.checkpointCache.set(name, value as JsonValue);
+    this.checkpointCache.set(actualStepName, value as JsonValue);
     return value;
   }
 
