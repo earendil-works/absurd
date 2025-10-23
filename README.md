@@ -12,56 +12,72 @@ needing any other services to run in addition to Postgres.
 
 *… because it's absurd how much you can over-design such a simple thing.*
 
+## Early Preview
+
+**Disclaimer:** this is an early experiment and should not be used in production.
+It's an exploration of if such a system can be built in a way that the majority
+of the complexity sits with the database and not the client SDKs.
+
 ## Push vs Pull
 
 Absurd is a pull based system which means that your code pulls tasks from
 Postgres as it has capacity.  It does not support push at all, which would
 require another service to run.  Push systems have the inherent disadvantage
-that you need to take greater care of system load constraints and that's a path
-we don't want to go down without going into IaC.  If you need this, you can
-write yourself a simple service that pulls from Postgres and invokes tasks.
+that you need to take greater care of system load constraints.  If you need
+this, you can write yourself a simple service that pulls from Postgres and
+invokes tasks via HTTP or whatever.
 
 ## Queues and State
 
 Absurd keeps both queues and state in Postgres as you would expect.  The state
 is stored according to TTLing policies which permits efficient state expiration
 by dropping entire partitions.  Queues are modelled after
-[pqgm](https://github.com/pgmq/pgmq).
+[pgmq](https://github.com/pgmq/pgmq).
 
 ## Highlevel Operations
 
-Absurd is built on super tiny SDKs that just execute the underlying
-stored procedures.  However those SDKs are what makes the system convenient
-because it abstracts over the lowlevel operations in a way that makes it
-convenient for the language you are working with.
+Absurd is built on small SDKs that just execute the underlying stored functions.
+However those SDKs are what makes the system convenient because it abstracts
+over the lowlevel operations in a way that makes it convenient for the language
+you are working with.
 
 A *task* is dispatches onto a given *queue* from where a *worker* picks it up
-to work on.  Tasks are subdivided into *steps* which are excuted in sequence.
-Tasks can be suspended or fail, and when that happens they execute again.
-To not repeat work, already finished states are loaded from the state storage
-in postgres again.
+to work on.  Tasks are subdivided into *steps* which are excuted in sequence
+by the worker.  Tasks can be suspended or fail, and when that happens they
+execute again.  To not repeat work, already finished states are loaded from the
+state storage in postgres again.
 
 Additionally tasks can *sleep* or *suspend for events*.
 
-### TypeScript Example
+## Example
+
+This demonstrates this for TypeScript.
 
 ```typescript
 import { Absurd } from 'absurd';
 
 const app = new Absurd();
 
+// A task represents a series of operations.  It can be decomposed into
+// steps which act as checkpoints.  Once a step has been passed
+// successfully the return value is retained and it won't execute again.
+// if it fails, the entire task is retried.  Code that runs outside of
+// steps will potentially be executed multiple times.
 app.registerTask({ name: 'order-fulfillment' }, async (params, ctx) => {
-  // Each step is checkpointed - if the process crashes, we resume from the last completed step
+
+  // Each step is checkpointed - if the process crashes, we resume
+  // from the last completed step
   const payment = await ctx.step('process-payment', async () => {
     return await stripe.charges.create({ amount: params.amount, ... });
   });
 
-  // ensure we have the inventory reserved which will also trigger
   const inventory = await ctx.step('reserve-inventory', async () => {
     return await db.reserveItems(params.items);
   });
 
-  // Wait indefinitely for a warehouse event - the task suspends until the event arrives
+  // Wait indefinitely for a warehouse event - the task suspends
+  // until the event arrives.  Events are cached like step checkpoints
+  // which means that this is race-free.
   const shipment = await ctx.awaitEvent('await-shipment', `shipment.packed:${params.orderId}`);
 
   // ready to send a notification!
