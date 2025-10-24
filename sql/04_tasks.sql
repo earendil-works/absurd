@@ -94,7 +94,7 @@ begin
       where
         q.vt <= $2
       order by
-        q.msg_id asc
+        q.vt asc, q.msg_id asc
       limit $1
       for update
         skip locked
