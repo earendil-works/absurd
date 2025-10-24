@@ -106,12 +106,6 @@ export interface TaskDetail extends TaskSummary {
   params?: any; // JSON object
   retryStrategy?: any | null;
   headers?: any | null;
-  claimedBy?: string | null;
-  leaseExpiresAt?: string | null;
-  nextWakeAt?: string | null;
-  wakeEvent?: string | null;
-  lastClaimedAt?: string | null;
-  finalStatus?: string | null;
   state?: any | null;
   checkpoints: CheckpointState[];
   waits: WaitState[];

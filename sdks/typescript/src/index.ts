@@ -32,7 +32,6 @@ export interface ClaimedMessage {
   retry_strategy: JsonValue;
   max_attempts: number | null;
   headers: JsonObject | null;
-  lease_expires_at: Date;
   wake_event: string | null;
   event_payload: JsonValue | null;
 }
@@ -397,7 +396,7 @@ export class Absurd {
   ): Promise<void> {
     const result = await this.pool.query<ClaimedMessage>(
       `SELECT run_id, task_id, attempt, task_name, params, retry_strategy, max_attempts,
-              headers, lease_expires_at, wake_event, event_payload
+              headers, wake_event, event_payload
        FROM absurd.claim_task($1, $2, $3, $4)`,
       [this.queueName, workerId, claimTimeout, batchSize],
     );

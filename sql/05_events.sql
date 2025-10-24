@@ -67,15 +67,11 @@ begin
     update absurd.%I
     set
       status = 'sleeping',
-      wake_event = $2,
-      next_wake_at = null,
-      lease_expires_at = null,
-      claimed_by = null,
-      updated_at = $3
+      updated_at = $2
     where
       run_id = $1
   $fmt$, v_rtable)
-  using p_run_id, p_event_name, v_now;
+  using p_run_id, v_now;
   perform
     absurd.set_vt_at (p_queue_name, p_run_id, 'infinity'::timestamptz);
   should_suspend := true;
@@ -141,11 +137,7 @@ begin
       update absurd.%I
       set
         status = 'pending',
-        wake_event = null,
-        next_wake_at = null,
-        updated_at = $2,
-        lease_expires_at = null,
-        claimed_by = null
+        updated_at = $2
       where
         run_id = $1
     $fmt$, v_rtable)

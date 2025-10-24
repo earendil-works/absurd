@@ -174,7 +174,9 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 		query := fmt.Sprintf(`
 			SELECT
 				task_id, run_id, %s AS queue_name, task_name, status,
-				attempt, max_attempts, created_at, updated_at, completed_at
+				attempt,
+				(options ->> 'max_attempts')::bigint,
+				created_at, updated_at, completed_at
 			FROM absurd.%s
 			ORDER BY created_at DESC
 		`, queueLiteral, rtable)
@@ -285,10 +287,20 @@ func (s *Server) handleTaskDetail(w http.ResponseWriter, r *http.Request) {
 	queueLiteral := pq.QuoteLiteral(queueName)
 	query := fmt.Sprintf(`
 		SELECT
-			task_id, run_id, %s AS queue_name, task_name, status, attempt, max_attempts,
-			params, retry_strategy, headers, claimed_by, lease_expires_at,
-			next_wake_at, wake_event, last_claimed_at, final_status, state,
-			created_at, updated_at, completed_at
+			task_id,
+			run_id,
+			%s AS queue_name,
+			task_name,
+			status,
+			attempt,
+			(options ->> 'max_attempts')::bigint AS max_attempts,
+			params,
+			options -> 'retry_strategy' AS retry_strategy,
+			options -> 'headers' AS headers,
+			state,
+			created_at,
+			updated_at,
+			completed_at
 		FROM absurd.%s
 		WHERE run_id = $1
 		LIMIT 1
@@ -306,12 +318,6 @@ func (s *Server) handleTaskDetail(w http.ResponseWriter, r *http.Request) {
 		&task.Params,
 		&task.RetryStrategy,
 		&task.Headers,
-		&task.ClaimedBy,
-		&task.LeaseExpiresAt,
-		&task.NextWakeAt,
-		&task.WakeEvent,
-		&task.LastClaimedAt,
-		&task.FinalStatus,
 		&task.State,
 		&task.CreatedAt,
 		&task.UpdatedAt,
@@ -534,7 +540,9 @@ func (s *Server) handleQueueTasks(w http.ResponseWriter, r *http.Request, queueN
 	query := fmt.Sprintf(`
 		SELECT
 			task_id, run_id, %s AS queue_name, task_name, status,
-			attempt, max_attempts, created_at, updated_at, completed_at
+			attempt,
+			(options ->> 'max_attempts')::bigint,
+			created_at, updated_at, completed_at
 		FROM absurd.%s
 		ORDER BY created_at DESC
 	`, queueLiteral, rtable)
@@ -588,7 +596,7 @@ func (s *Server) handleQueueMessages(w http.ResponseWriter, r *http.Request, que
 			q.enqueued_at,
 			q.vt,
 			q.message,
-			r.headers
+			r.options -> 'headers'
 		FROM absurd.%s AS q
 		LEFT JOIN absurd.%s AS r
 			ON r.run_id = q.msg_id
@@ -869,18 +877,12 @@ type taskSummaryRecord struct {
 
 type taskDetailRecord struct {
 	taskSummaryRecord
-	Params         []byte
-	RetryStrategy  []byte
-	Headers        []byte
-	ClaimedBy      sql.NullString
-	LeaseExpiresAt sql.NullTime
-	NextWakeAt     sql.NullTime
-	WakeEvent      sql.NullString
-	LastClaimedAt  sql.NullTime
-	FinalStatus    sql.NullString
-	State          []byte
-	Checkpoints    []checkpointStateRecord
-	WaitStates     []waitStateRecord
+	Params        []byte
+	RetryStrategy []byte
+	Headers       []byte
+	State         []byte
+	Checkpoints   []checkpointStateRecord
+	WaitStates    []waitStateRecord
 }
 
 type checkpointStateRecord struct {
@@ -920,18 +922,12 @@ type TaskSummary struct {
 // TaskDetail is the API representation for expanded task details
 type TaskDetail struct {
 	TaskSummary
-	Params         json.RawMessage   `json:"params,omitempty"`
-	RetryStrategy  json.RawMessage   `json:"retryStrategy,omitempty"`
-	Headers        json.RawMessage   `json:"headers,omitempty"`
-	ClaimedBy      *string           `json:"claimedBy,omitempty"`
-	LeaseExpiresAt *time.Time        `json:"leaseExpiresAt,omitempty"`
-	NextWakeAt     *time.Time        `json:"nextWakeAt,omitempty"`
-	WakeEvent      *string           `json:"wakeEvent,omitempty"`
-	LastClaimedAt  *time.Time        `json:"lastClaimedAt,omitempty"`
-	FinalStatus    *string           `json:"finalStatus,omitempty"`
-	State          json.RawMessage   `json:"state,omitempty"`
-	Checkpoints    []CheckpointState `json:"checkpoints"`
-	Waits          []WaitState       `json:"waits"`
+	Params        json.RawMessage   `json:"params,omitempty"`
+	RetryStrategy json.RawMessage   `json:"retryStrategy,omitempty"`
+	Headers       json.RawMessage   `json:"headers,omitempty"`
+	State         json.RawMessage   `json:"state,omitempty"`
+	Checkpoints   []CheckpointState `json:"checkpoints"`
+	Waits         []WaitState       `json:"waits"`
 }
 
 // CheckpointState is the API representation for checkpoint data
@@ -1076,19 +1072,13 @@ func (r taskDetailRecord) AsAPI() TaskDetail {
 	}
 
 	return TaskDetail{
-		TaskSummary:    r.taskSummaryRecord.AsAPI(),
-		Params:         r.Params,
-		RetryStrategy:  nullableBytes(r.RetryStrategy),
-		Headers:        nullableBytes(r.Headers),
-		ClaimedBy:      nullableString(r.ClaimedBy),
-		LeaseExpiresAt: nullableTime(r.LeaseExpiresAt),
-		NextWakeAt:     nullableTime(r.NextWakeAt),
-		WakeEvent:      nullableString(r.WakeEvent),
-		LastClaimedAt:  nullableTime(r.LastClaimedAt),
-		FinalStatus:    nullableString(r.FinalStatus),
-		State:          nullableBytes(r.State),
-		Checkpoints:    checkpoints,
-		Waits:          waits,
+		TaskSummary:   r.taskSummaryRecord.AsAPI(),
+		Params:        r.Params,
+		RetryStrategy: nullableBytes(r.RetryStrategy),
+		Headers:       nullableBytes(r.Headers),
+		State:         nullableBytes(r.State),
+		Checkpoints:   checkpoints,
+		Waits:         waits,
 	}
 }
 

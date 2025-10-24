@@ -198,28 +198,17 @@ begin
       task_name text not null,
       params jsonb not null,
       status text not null default 'pending' check (status in ('pending', 'running', 'sleeping', 'completed', 'failed', 'abandoned')),
-      final_status text not null default 'pending' check (final_status in ('pending', 'completed', 'failed', 'abandoned')),
-      max_attempts integer,
-      retry_strategy jsonb,
-      next_wake_at timestamptz,
-      wake_event text,
-      last_claimed_at timestamptz,
-      claimed_by text,
-      lease_expires_at timestamptz,
       created_at timestamptz not null default now(),
       updated_at timestamptz not null default now(),
       completed_at timestamptz,
       state jsonb,
-      headers jsonb,
+      options jsonb not null default '{}'::jsonb,
       unique (task_id, attempt)
     )
   $QUERY$, rtable);
   execute format($QUERY$
     create index if not exists %I on absurd.%I (task_id);
   $QUERY$, rtable || '_task_idx', rtable);
-  execute format($QUERY$
-    create index if not exists %I on absurd.%I (next_wake_at) where status in ('pending', 'sleeping');
-  $QUERY$, rtable || '_wake_idx',rtable);
   execute format($QUERY$
     create table if not exists absurd.%I (
       task_id uuid not null,
@@ -392,20 +381,41 @@ declare
   v_retry_strategy jsonb;
   v_max_attempts integer;
   v_message jsonb;
-  v_options jsonb := coalesce(p_options, '{}'::jsonb);
+  v_raw_options jsonb := coalesce(p_options, '{}'::jsonb);
+  v_sanitized_options jsonb;
   v_qtable text := absurd.format_table_name (p_queue_name, 'q');
   v_rtable text := absurd.format_table_name (p_queue_name, 'r');
   v_now timestamptz := clock_timestamp();
 begin
-  v_headers := v_options -> 'headers';
-  v_retry_strategy := v_options -> 'retry_strategy';
-  if v_options ? 'max_attempts' then
-    v_max_attempts := (v_options ->> 'max_attempts')::integer;
+  v_headers := v_raw_options -> 'headers';
+  v_retry_strategy := v_raw_options -> 'retry_strategy';
+  if v_raw_options ? 'max_attempts' then
+    v_max_attempts := (v_raw_options ->> 'max_attempts')::integer;
     if v_max_attempts < 1 then
       raise exception 'max_attempts must be at least 1';
     end if;
   else
     v_max_attempts := null;
+  end if;
+  v_sanitized_options := v_raw_options;
+  if v_max_attempts is not null then
+    v_sanitized_options := v_sanitized_options || jsonb_build_object('max_attempts', v_max_attempts);
+  else
+    v_sanitized_options := v_sanitized_options - 'max_attempts';
+  end if;
+  if v_retry_strategy is not null then
+    v_sanitized_options := v_sanitized_options || jsonb_build_object('retry_strategy', v_retry_strategy);
+  else
+    v_sanitized_options := v_sanitized_options - 'retry_strategy';
+  end if;
+  if v_headers is not null then
+    v_sanitized_options := v_sanitized_options || jsonb_build_object('headers', v_headers);
+  else
+    v_sanitized_options := v_sanitized_options - 'headers';
+  end if;
+  v_sanitized_options := jsonb_strip_nulls(v_sanitized_options);
+  if v_sanitized_options is null then
+    v_sanitized_options := '{}'::jsonb;
   end if;
   v_message := jsonb_build_object('task_id', v_task_id, 'run_id', v_run_id, 'attempt', v_attempt);
   perform
@@ -418,15 +428,13 @@ begin
       task_name,
       params,
       status,
-      max_attempts,
-      retry_strategy,
       created_at,
       updated_at,
-      headers
+      options
     )
-    values ($1, $2, $3, $4, $5, 'pending', $6, $7, $8, $8, $9)
+    values ($1, $2, $3, $4, $5, 'pending', $6, $6, $7)
   $fmt$, v_rtable)
-  using v_task_id, v_run_id, v_attempt, p_task_name, p_params, v_max_attempts, v_retry_strategy, v_now, v_headers;
+  using v_task_id, v_run_id, v_attempt, p_task_name, p_params, v_now, v_sanitized_options;
   return query
   select
     v_task_id,
@@ -446,7 +454,6 @@ create function absurd.claim_task (p_queue_name text, p_worker_id text, p_claim_
     retry_strategy jsonb,
     max_attempts integer,
     headers jsonb,
-    lease_expires_at timestamptz,
     wake_event text,
     event_payload jsonb
   )
@@ -495,8 +502,6 @@ begin
         r.attempt,
         r.task_name,
         r.params,
-        r.retry_strategy,
-        r.max_attempts,
         w.wake_event,
         w.payload
       from
@@ -534,12 +539,7 @@ begin
         absurd.%I as r
       set
         status = 'running',
-        claimed_by = $4,
-        last_claimed_at = $5,
-        lease_expires_at = $6,
-        next_wake_at = null,
-        wake_event = null,
-        updated_at = $5
+        updated_at = $4
       from
         claimable c
       where
@@ -550,9 +550,7 @@ begin
         r.attempt,
         r.task_name,
         r.params,
-        r.retry_strategy,
-        r.max_attempts,
-        r.headers as headers
+        r.options as options
     ),
     delete_waits as (
       delete from absurd.%I as w
@@ -566,10 +564,9 @@ begin
       u.attempt,
       u.task_name,
       u.params,
-      u.retry_strategy,
-      u.max_attempts,
-      u.headers,
-      $6 as lease_expires_at,
+      u.options -> 'retry_strategy' as retry_strategy,
+      case when u.options ? 'max_attempts' then (u.options ->> 'max_attempts')::integer else null end as max_attempts,
+      u.options -> 'headers' as headers,
       c.wake_event,
       c.payload as event_payload
     from
@@ -582,7 +579,7 @@ begin
         c.msg_id asc
   $fmt$, v_qtable, v_qtable, v_rtable, v_rtable, v_wtable, v_qtable, v_rtable, v_wtable);
   return query execute v_sql
-  using p_qty, v_claimed_at, v_lease_expires, p_worker_id, v_claimed_at, v_lease_expires;
+  using p_qty, v_claimed_at, v_lease_expires, v_claimed_at;
 end;
 $$
 language plpgsql;
@@ -618,26 +615,12 @@ begin
     set
       status = 'completed',
       updated_at = $2,
-      lease_expires_at = null,
-      claimed_by = null,
-      next_wake_at = null,
-      wake_event = null,
       completed_at = $2,
-      final_status = 'completed',
       state = $3
     where
       run_id = $1
   $fmt$, v_rtable)
   using p_run_id, v_now, p_state;
-  execute format($fmt$
-    update absurd.%I
-    set
-      final_status = 'completed',
-      completed_at = coalesce(completed_at, $2)
-    where
-      task_id = $1
-  $fmt$, v_rtable)
-  using v_task_id, v_now;
   execute format($fmt$
     delete from absurd.%I
     where
@@ -656,6 +639,7 @@ declare
   v_attempt integer;
   v_max_attempts integer;
   v_retry_strategy jsonb;
+  v_options jsonb;
   v_should_retry boolean;
   v_next_attempt integer;
   v_new_run_id uuid;
@@ -679,9 +663,7 @@ begin
     select
       task_id,
       attempt,
-      max_attempts,
-      retry_strategy,
-      headers,
+      options,
       task_name,
       params
     from
@@ -692,24 +674,25 @@ begin
   using p_run_id
   into v_task_id,
   v_attempt,
-  v_max_attempts,
-  v_retry_strategy,
-  v_headers,
+  v_options,
   v_task_name,
   v_params;
   get diagnostics v_rowcount = row_count;
   if v_rowcount = 0 then
     raise exception 'run % not found for queue %', p_run_id, p_queue_name;
   end if;
+  v_headers := v_options -> 'headers';
+  if v_options ? 'max_attempts' then
+    v_max_attempts := (v_options ->> 'max_attempts')::integer;
+  else
+    v_max_attempts := null;
+  end if;
+  v_retry_strategy := v_options -> 'retry_strategy';
   execute format($fmt$
     update absurd.%I
     set
       status = 'failed',
       updated_at = $2,
-      lease_expires_at = null,
-      claimed_by = null,
-      next_wake_at = null,
-      wake_event = null,
       state = $3
     where
       run_id = $1
@@ -776,12 +759,9 @@ begin
         task_name,
         params,
         status,
-        max_attempts,
-        retry_strategy,
-        next_wake_at,
         created_at,
         updated_at,
-        headers
+        options
       )
       values (
         $1,
@@ -791,37 +771,15 @@ begin
         $5,
         $6,
         $7,
-        $8,
-        case when $6 = 'sleeping' then $9 else null end,
-        $10,
-        $10,
-        $11
+        $7,
+        $8
       )
     $fmt$, v_rtable)
-    using v_task_id, v_new_run_id, v_next_attempt, v_task_name, v_params, v_new_status, v_max_attempts, v_retry_strategy, v_effective_retry_at, v_now, v_headers;
-    execute format($fmt$
-      update absurd.%I
-      set
-        final_status = 'pending',
-        completed_at = null
-      where
-        task_id = $1
-    $fmt$, v_rtable)
-    using v_task_id;
+    using v_task_id, v_new_run_id, v_next_attempt, v_task_name, v_params, v_new_status, v_now, v_options;
     if v_effective_retry_at > v_now then
       perform
         absurd.schedule_run (p_queue_name, v_new_run_id, v_effective_retry_at, true);
     end if;
-  else
-    execute format($fmt$
-      update absurd.%I
-      set
-        final_status = 'failed',
-        completed_at = coalesce(completed_at, $2)
-      where
-        task_id = $1
-    $fmt$, v_rtable)
-    using v_task_id, v_now;
   end if;
 end;
 $$
@@ -845,19 +803,7 @@ begin
       else
         status
       end,
-      next_wake_at = $2,
-      wake_event = null,
-      updated_at = $4,
-      lease_expires_at = case when $3 then
-        null
-      else
-        lease_expires_at
-      end,
-      claimed_by = case when $3 then
-        null
-      else
-        claimed_by
-      end
+      updated_at = $4
     where
       run_id = $1
     returning
@@ -969,15 +915,11 @@ begin
     update absurd.%I
     set
       status = 'sleeping',
-      wake_event = $2,
-      next_wake_at = null,
-      lease_expires_at = null,
-      claimed_by = null,
-      updated_at = $3
+      updated_at = $2
     where
       run_id = $1
   $fmt$, v_rtable)
-  using p_run_id, p_event_name, v_now;
+  using p_run_id, v_now;
   perform
     absurd.set_vt_at (p_queue_name, p_run_id, 'infinity'::timestamptz);
   should_suspend := true;
@@ -1043,11 +985,7 @@ begin
       update absurd.%I
       set
         status = 'pending',
-        wake_event = null,
-        next_wake_at = null,
-        updated_at = $2,
-        lease_expires_at = null,
-        claimed_by = null
+        updated_at = $2
       where
         run_id = $1
     $fmt$, v_rtable)

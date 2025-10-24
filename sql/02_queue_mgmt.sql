@@ -60,28 +60,17 @@ begin
       task_name text not null,
       params jsonb not null,
       status text not null default 'pending' check (status in ('pending', 'running', 'sleeping', 'completed', 'failed', 'abandoned')),
-      final_status text not null default 'pending' check (final_status in ('pending', 'completed', 'failed', 'abandoned')),
-      max_attempts integer,
-      retry_strategy jsonb,
-      next_wake_at timestamptz,
-      wake_event text,
-      last_claimed_at timestamptz,
-      claimed_by text,
-      lease_expires_at timestamptz,
       created_at timestamptz not null default now(),
       updated_at timestamptz not null default now(),
       completed_at timestamptz,
       state jsonb,
-      headers jsonb,
+      options jsonb not null default '{}'::jsonb,
       unique (task_id, attempt)
     )
   $QUERY$, rtable);
   execute format($QUERY$
     create index if not exists %I on absurd.%I (task_id);
   $QUERY$, rtable || '_task_idx', rtable);
-  execute format($QUERY$
-    create index if not exists %I on absurd.%I (next_wake_at) where status in ('pending', 'sleeping');
-  $QUERY$, rtable || '_wake_idx',rtable);
   execute format($QUERY$
     create table if not exists absurd.%I (
       task_id uuid not null,
