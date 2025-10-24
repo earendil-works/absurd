@@ -143,28 +143,52 @@ export class TaskContext {
     return rv;
   }
 
-  async sleepFor(stepName: string, durationMs: number): Promise<never> {
-    const wakeAt = new Date(Date.now() + durationMs);
+  async sleepFor(stepName: string, durationMs: number): Promise<void> {
+    return await this.sleepUntil(stepName, new Date(Date.now() + durationMs));
+  }
 
-    await this.pool.query(`SELECT absurd.schedule_run($1, $2, $3, $4)`, [
-      this.queueName,
-      this.message.run_id,
-      wakeAt,
-      true,
-    ]);
+  async sleepUntil(stepName: string, wakeAt: Date): Promise<void> {
+    const cachedWakeAt = this.getCachedWakeAt(stepName);
+    const targetWakeAt = cachedWakeAt ?? wakeAt;
+    if (!cachedWakeAt) {
+      await this.persistWakeAt(stepName, targetWakeAt);
+    }
 
+    if (Date.now() >= targetWakeAt.getTime()) {
+      return;
+    }
+
+    await this.scheduleRun(targetWakeAt);
+    throw new SuspendTask();
+  }
+
+  private getCachedWakeAt(stepName: string): Date | null {
+    const rawValue = this.checkpointCache.get(stepName);
+    return typeof rawValue === "string" ? new Date(rawValue) : null;
+  }
+
+  private async persistWakeAt(stepName: string, wakeAt: Date): Promise<void> {
+    const iso = wakeAt.toISOString();
     await this.pool.query(
       `SELECT absurd.set_task_checkpoint_state($1, $2, $3, $4, $5)`,
       [
         this.queueName,
         this.message.task_id,
         stepName,
-        JSON.stringify(wakeAt.toISOString()),
+        JSON.stringify(iso),
         this.message.run_id,
       ],
     );
+    this.checkpointCache.set(stepName, iso);
+  }
 
-    throw new SuspendTask();
+  private async scheduleRun(wakeAt: Date): Promise<void> {
+    await this.pool.query(`SELECT absurd.schedule_run($1, $2, $3, $4)`, [
+      this.queueName,
+      this.message.run_id,
+      wakeAt,
+      true,
+    ]);
   }
 
   async awaitEvent(
