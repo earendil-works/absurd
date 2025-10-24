@@ -63,7 +63,7 @@ begin
     created_at timestamptz not null default now(),
     updated_at timestamptz not null default now(),
     completed_at timestamptz,
-    final_state jsonb,
+    state jsonb,
     headers jsonb,
     unique (task_id, attempt)
   )

@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/lib/pq"
 )
 
@@ -285,7 +286,7 @@ func (s *Server) handleTaskDetail(w http.ResponseWriter, r *http.Request) {
 		SELECT
 			task_id, run_id, queue_name, task_name, status, attempt, max_attempts,
 			params, retry_strategy, headers, claimed_by, lease_expires_at,
-			next_wake_at, wake_event, last_claimed_at, final_status, final_state,
+			next_wake_at, wake_event, last_claimed_at, final_status, state,
 			created_at, updated_at, completed_at
 		FROM absurd.%s
 		WHERE run_id = $1
@@ -310,7 +311,7 @@ func (s *Server) handleTaskDetail(w http.ResponseWriter, r *http.Request) {
 		&task.WakeEvent,
 		&task.LastClaimedAt,
 		&task.FinalStatus,
-		&task.FinalState,
+		&task.State,
 		&task.CreatedAt,
 		&task.UpdatedAt,
 		&task.CompletedAt,
@@ -324,17 +325,26 @@ func (s *Server) handleTaskDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Query checkpoints from s_* table
+	// Query checkpoints from s_* table. Checkpoints belong to a task, so fetch
+	// by task_id and keep owner attribution for display.
 	stable := queueTableIdentifier("s", queueName)
 	checkpointQuery := fmt.Sprintf(`
-		SELECT step_name, state, status, owner_run_id, expires_at, updated_at
+		SELECT step_name, state, status, owner_run_id, NULL::timestamptz AS expires_at, updated_at
 		FROM absurd.%s
-		WHERE item_type = 'checkpoint' AND owner_run_id = $1
+		WHERE item_type = 'checkpoint' AND task_id = $1::uuid
 		ORDER BY updated_at DESC
 	`, stable)
 
-	checkpointRows, err := s.db.QueryContext(ctx, checkpointQuery, runID)
-	if err == nil {
+	taskUUID, err := uuid.Parse(task.TaskID)
+	if err != nil {
+		log.Printf("handleTaskDetail: invalid task id %q: %v", task.TaskID, err)
+	} else {
+		checkpointRows, err := s.db.QueryContext(ctx, checkpointQuery, taskUUID)
+		if err != nil {
+			log.Printf("handleTaskDetail: checkpoint query failed for task %s: %v", task.TaskID, err)
+			http.Error(w, "failed to query checkpoints", http.StatusInternalServerError)
+			return
+		}
 		defer checkpointRows.Close()
 		for checkpointRows.Next() {
 			var cp checkpointStateRecord
@@ -868,7 +878,7 @@ type taskDetailRecord struct {
 	WakeEvent      sql.NullString
 	LastClaimedAt  sql.NullTime
 	FinalStatus    sql.NullString
-	FinalState     []byte
+	State          []byte
 	Checkpoints    []checkpointStateRecord
 	WaitStates     []waitStateRecord
 }
@@ -920,7 +930,7 @@ type TaskDetail struct {
 	WakeEvent      *string           `json:"wakeEvent,omitempty"`
 	LastClaimedAt  *time.Time        `json:"lastClaimedAt,omitempty"`
 	FinalStatus    *string           `json:"finalStatus,omitempty"`
-	FinalState     json.RawMessage   `json:"finalState,omitempty"`
+	State          json.RawMessage   `json:"state,omitempty"`
 	Checkpoints    []CheckpointState `json:"checkpoints"`
 	Waits          []WaitState       `json:"waits"`
 }
@@ -1082,7 +1092,7 @@ func (r taskDetailRecord) AsAPI() TaskDetail {
 		WakeEvent:      nullableString(r.WakeEvent),
 		LastClaimedAt:  nullableTime(r.LastClaimedAt),
 		FinalStatus:    nullableString(r.FinalStatus),
-		FinalState:     nullableBytes(r.FinalState),
+		State:          nullableBytes(r.State),
 		Checkpoints:    checkpoints,
 		Waits:          waits,
 	}

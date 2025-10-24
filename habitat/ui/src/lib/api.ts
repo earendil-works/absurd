@@ -113,7 +113,7 @@ export interface TaskDetail extends TaskSummary {
   wakeEvent?: string | null;
   lastClaimedAt?: string | null;
   finalStatus?: string | null;
-  finalState?: any | null;
+  state?: any | null;
   checkpoints: CheckpointState[];
   waits: WaitState[];
 }

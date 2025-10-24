@@ -131,7 +131,7 @@ export class TaskContext {
   async sleepUntil(stepName: string, wakeAt: Date): Promise<void> {
     const checkpointName = this.getCheckpointName(stepName);
     const state = await this.lookupCheckpoint(checkpointName);
-    let actualWakeAt = (typeof state === "string") ? new Date(state) : wakeAt;
+    let actualWakeAt = typeof state === "string" ? new Date(state) : wakeAt;
     if (!state) {
       await this.persistCheckpoint(checkpointName, wakeAt.toISOString());
     }
@@ -149,7 +149,9 @@ export class TaskContext {
     return actualStepName;
   }
 
-  private async lookupCheckpoint(checkpointName: string): Promise<JsonValue | undefined> {
+  private async lookupCheckpoint(
+    checkpointName: string,
+  ): Promise<JsonValue | undefined> {
     const cached = this.checkpointCache.get(checkpointName);
     if (cached !== undefined) {
       return cached;
@@ -168,7 +170,10 @@ export class TaskContext {
     return undefined;
   }
 
-  private async persistCheckpoint(checkpointName: string, value: JsonValue) : Promise<void> {
+  private async persistCheckpoint(
+    checkpointName: string,
+    value: JsonValue,
+  ): Promise<void> {
     await this.pool.query(
       `SELECT absurd.set_task_checkpoint_state($1, $2, $3, $4, $5)`,
       [

@@ -40,7 +40,7 @@ export function JSONViewer(props: JSONViewerProps) {
           </button>
         </div>
       </Show>
-      <pre class="overflow-x-auto p-3 text-xs">
+      <pre class="overflow-x-auto p-3 text-xs whitespace-pre-wrap">
         <code>{jsonString()}</code>
       </pre>
     </div>

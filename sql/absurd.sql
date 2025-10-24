@@ -202,7 +202,7 @@ begin
     created_at timestamptz not null default now(),
     updated_at timestamptz not null default now(),
     completed_at timestamptz,
-    final_state jsonb,
+    state jsonb,
     headers jsonb,
     unique (task_id, attempt)
   )
@@ -599,7 +599,7 @@ end;
 $$
 language plpgsql;
 
-create function absurd.complete_run (p_queue_name text, p_run_id uuid, p_final_state jsonb default null, p_archive boolean default false)
+create function absurd.complete_run (p_queue_name text, p_run_id uuid, p_state jsonb default null, p_archive boolean default false)
   returns void
   as $$
 declare
@@ -636,11 +636,11 @@ begin
       wake_event = null,
       completed_at = $2,
       final_status = 'completed',
-      final_state = case when $4 then $3 else final_state end
+      state = case when $4 then $3 else state end
     where
       run_id = $1
   $fmt$, v_rtable)
-  using p_run_id, v_now, p_final_state, p_archive;
+  using p_run_id, v_now, p_state, p_archive;
   execute format($fmt$
     update absurd.%I
     set
@@ -661,7 +661,7 @@ end;
 $$
 language plpgsql;
 
-create function absurd.fail_run (p_queue_name text, p_run_id uuid, p_reason text, p_retry_at timestamptz default null)
+create function absurd.fail_run (p_queue_name text, p_run_id uuid, p_reason jsonb, p_retry_at timestamptz default null)
   returns void
   as $$
 declare
@@ -722,11 +722,12 @@ begin
       lease_expires_at = null,
       claimed_by = null,
       next_wake_at = null,
-      wake_event = null
+      wake_event = null,
+      state = $3
     where
       run_id = $1
   $fmt$, v_rtable)
-  using p_run_id, v_now;
+  using p_run_id, v_now, p_reason;
   execute format($fmt$
     delete from absurd.%I
     where

@@ -30,6 +30,9 @@ export function TaskDetailView(props: TaskDetailViewProps) {
 }
 
 function DetailContent(props: { detail: TaskDetail; taskLink?: string }) {
+  const stateLabel = () =>
+    props.detail.status?.toLowerCase() === "failed" ? "Failure" : "Final State";
+
   return (
     <>
       <Show when={props.taskLink}>
@@ -289,9 +292,9 @@ function DetailContent(props: { detail: TaskDetail; taskLink?: string }) {
         </div>
       </Show>
 
-      <Show when={props.detail.finalState}>
+      <Show when={props.detail.state !== undefined}>
         <div>
-          <JSONViewer data={props.detail.finalState} label="Final State" />
+          <JSONViewer data={props.detail.state} label={stateLabel()} />
         </div>
       </Show>
 
