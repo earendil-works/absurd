@@ -289,13 +289,13 @@ async function main() {
   for (let i = 0; i < 10; i++) {
     const params: ProvisionCustomerParams = {
       customerId: crypto.randomUUID(),
-      email: `{crypto.randomUUID()}@example.com`,
+      email: `${crypto.randomUUID()}@example.com`,
       plan: Math.random() > 0.5 ? "pro" : "basic",
     };
 
     pendingTasks.push(
       (async () => {
-        const { task_id, run_id } = await absurd.spawn(
+        const { taskID, runID } = await absurd.spawn(
           "provision-customer",
           params,
           {
@@ -303,8 +303,8 @@ async function main() {
           },
         );
         log("main", "spawned provisioning workflow", {
-          taskId: task_id,
-          runId: run_id,
+          taskId: taskID,
+          runId: runID,
           customerId: params.customerId,
         });
       })(),

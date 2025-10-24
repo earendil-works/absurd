@@ -1,0 +1,26 @@
+{
+  "name": "absurd-agent-loop-example",
+  "version": "0.1.0",
+  "description": "Agent loop example with Vercel AI SDK and Claude demonstrating durable execution with state persistence",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "node --experimental-transform-types agent-loop.ts"
+  },
+  "dependencies": {
+    "ai": "^5.0.78",
+    "@ai-sdk/anthropic": "^2.0.37",
+    "absurd-sdk": "file:../../",
+    "dotenv": "^16.4.7",
+    "pg": "^8.13.1",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/pg": "^8.11.10",
+    "typescript": "^5.9.3"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

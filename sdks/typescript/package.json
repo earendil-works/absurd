@@ -3,10 +3,10 @@
   "version": "0.1.0",
   "description": "TypeScript SDK for Absurd - PostgreSQL-based durable task execution",
   "type": "module",
-  "main": "./index.ts",
-  "types": "./index.ts",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
   "exports": {
-    ".": "./index.ts"
+    ".": "./src/index.ts"
   },
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
