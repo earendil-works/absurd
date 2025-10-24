@@ -1,10 +1,9 @@
-create function absurd.set_task_checkpoint_state (p_queue_name text, p_task_id uuid, p_step_name text, p_state jsonb, p_owner_run uuid, p_ttl_seconds integer default null)
+create function absurd.set_task_checkpoint_state (p_queue_name text, p_task_id uuid, p_step_name text, p_state jsonb, p_owner_run uuid)
   returns void
   as $$
 declare
   v_stable text;
   v_rtable text := absurd.format_table_name (p_queue_name, 'r');
-  v_expires_at timestamptz;
   v_now timestamptz := clock_timestamp();
   v_exists boolean;
 begin
@@ -43,24 +42,18 @@ begin
     end if;
   end if;
   v_stable := absurd.format_table_name (p_queue_name, 's');
-  if p_ttl_seconds is not null then
-    v_expires_at := v_now + make_interval(secs => p_ttl_seconds);
-  else
-    v_expires_at := null;
-  end if;
   execute format($fmt$
-    insert into absurd.%I (item_type, task_id, step_name, owner_run_id, status, state, expires_at, created_at, updated_at)
-    values ('checkpoint', $1, $2, $3, 'complete', $4, $5, $6, $6)
+    insert into absurd.%I (item_type, task_id, step_name, owner_run_id, status, state, created_at, updated_at)
+    values ('checkpoint', $1, $2, $3, 'complete', $4, $5, $5)
     on conflict (task_id, step_name)
       where item_type = 'checkpoint'
     do update set
       owner_run_id = excluded.owner_run_id,
       status = excluded.status,
       state = excluded.state,
-      expires_at = excluded.expires_at,
       updated_at = excluded.updated_at
   $fmt$, v_stable)
-  using p_task_id, p_step_name, p_owner_run, p_state, v_expires_at, v_now;
+  using p_task_id, p_step_name, p_owner_run, p_state, v_now;
   execute format($fmt$
     delete from absurd.%I
     where
@@ -79,7 +72,6 @@ create function absurd.get_task_checkpoint_state (p_queue_name text, p_task_id u
     state jsonb,
     status text,
     owner_run_id uuid,
-    expires_at timestamptz,
     updated_at timestamptz
   )
   as $$
@@ -97,7 +89,6 @@ begin
       state,
       status,
       owner_run_id,
-      expires_at,
       updated_at
     from
       absurd.%I
@@ -107,8 +98,6 @@ begin
       and step_name = $2
       and (status = 'complete'
         or $3)
-      and (expires_at is null
-        or expires_at > clock_timestamp())
   $fmt$, v_stable)
   using p_task_id, p_step_name, p_include_pending;
 end;
@@ -121,7 +110,6 @@ create function absurd.get_task_checkpoint_states (p_queue_name text, p_task_id 
     state jsonb,
     status text,
     owner_run_id uuid,
-    expires_at timestamptz,
     updated_at timestamptz
   )
   as $$
@@ -141,7 +129,6 @@ begin
       state,
       status,
       owner_run_id,
-      expires_at,
       updated_at
     from
       absurd.%I
@@ -149,16 +136,13 @@ begin
       item_type = 'checkpoint'
       and task_id = $1
       and status = 'complete'
-      and (expires_at is null
-        or expires_at > $2)
   $fmt$, v_stable)
-  using p_task_id, v_now
+  using p_task_id
   loop
     checkpoint_name := v_row.step_name;
     state := v_row.state;
     status := v_row.status;
     owner_run_id := v_row.owner_run_id;
-    expires_at := v_row.expires_at;
     updated_at := v_row.updated_at;
     execute format($fmt$
       insert into absurd.%I (item_type, task_id, run_id, step_name, last_seen_at, created_at, updated_at)

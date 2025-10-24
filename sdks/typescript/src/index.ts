@@ -50,7 +50,6 @@ interface CheckpointRow {
   state: JsonValue;
   status: string;
   owner_run_id: string;
-  expires_at: Date | null;
   updated_at: Date;
 }
 
@@ -96,7 +95,7 @@ export class TaskContext {
   }): Promise<TaskContext> {
     const { pool, queueName, message } = args;
     const result = await pool.query<CheckpointRow>(
-      `SELECT checkpoint_name, state, status, owner_run_id, expires_at, updated_at
+      `SELECT checkpoint_name, state, status, owner_run_id, updated_at
        FROM absurd.get_task_checkpoint_states($1, $2, $3)`,
       [queueName, message.task_id, message.run_id],
     );
@@ -107,11 +106,7 @@ export class TaskContext {
     return new TaskContext(pool, queueName, message, cache);
   }
 
-  async step<T>(
-    name: string,
-    fn: () => Promise<T>,
-    options: { ttlSeconds?: number } = {},
-  ): Promise<T> {
+  async step<T>(name: string, fn: () => Promise<T>): Promise<T> {
     // Generate unique step name with counter for duplicates to allow the use
     // of steps in loops.
     const count = (this.stepNameCounter.get(name) ?? 0) + 1;
@@ -123,7 +118,7 @@ export class TaskContext {
     }
 
     const result = await this.pool.query<CheckpointRow>(
-      `SELECT checkpoint_name, state, status, owner_run_id, expires_at, updated_at
+      `SELECT checkpoint_name, state, status, owner_run_id, updated_at
        FROM absurd.get_task_checkpoint_state($1, $2, $3)`,
       [this.queueName, this.message.task_id, actualStepName],
     );
@@ -135,14 +130,13 @@ export class TaskContext {
 
     const rv = await fn();
     await this.pool.query(
-      `SELECT absurd.set_task_checkpoint_state($1, $2, $3, $4, $5, $6)`,
+      `SELECT absurd.set_task_checkpoint_state($1, $2, $3, $4, $5)`,
       [
         this.queueName,
         this.message.task_id,
         actualStepName,
         JSON.stringify(rv),
         this.message.run_id,
-        options.ttlSeconds ?? null,
       ],
     );
     this.checkpointCache.set(actualStepName, rv as JsonValue);
@@ -160,14 +154,13 @@ export class TaskContext {
     ]);
 
     await this.pool.query(
-      `SELECT absurd.set_task_checkpoint_state($1, $2, $3, $4, $5, $6)`,
+      `SELECT absurd.set_task_checkpoint_state($1, $2, $3, $4, $5)`,
       [
         this.queueName,
         this.message.task_id,
         stepName,
         JSON.stringify(wakeAt.toISOString()),
         this.message.run_id,
-        Math.floor(durationMs / 1000),
       ],
     );
 
@@ -208,14 +201,13 @@ export class TaskContext {
 
     if (!should_suspend) {
       await this.pool.query(
-        `SELECT absurd.set_task_checkpoint_state($1, $2, $3, $4, $5, $6)`,
+        `SELECT absurd.set_task_checkpoint_state($1, $2, $3, $4, $5)`,
         [
           this.queueName,
           this.message.task_id,
           stepName,
           JSON.stringify(payload ?? null),
           this.message.run_id,
-          null,
         ],
       );
 

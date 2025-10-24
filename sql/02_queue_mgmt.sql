@@ -90,7 +90,6 @@ begin
     status text,
     state jsonb,
     payload jsonb,
-    expires_at timestamptz,
     wake_at timestamptz,
     wait_type text,
     wake_event text,

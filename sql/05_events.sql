@@ -140,7 +140,7 @@ begin
     using v_wait.task_id, v_wait.run_id, p_payload, v_now;
     if v_wait.step_name is not null then
       perform
-        absurd.set_task_checkpoint_state (p_queue_name, v_wait.task_id, v_wait.step_name, p_payload, v_wait.run_id, null);
+        absurd.set_task_checkpoint_state (p_queue_name, v_wait.task_id, v_wait.step_name, p_payload, v_wait.run_id);
     end if;
     execute format($fmt$
       update absurd.%I
