@@ -13,7 +13,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/lib/pq"
 )
 
@@ -325,39 +324,34 @@ func (s *Server) handleTaskDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Query checkpoints from s_* table. Checkpoints belong to a task, so fetch
-	// by task_id and keep owner attribution for display.
+	// Query checkpoints from s_* table. Checkpoints belong to a specific run,
+	// so fetch by owner_run_id to show only checkpoints for this run.
 	stable := queueTableIdentifier("s", queueName)
 	checkpointQuery := fmt.Sprintf(`
 		SELECT step_name, state, status, owner_run_id, NULL::timestamptz AS expires_at, updated_at
 		FROM absurd.%s
-		WHERE item_type = 'checkpoint' AND task_id = $1::uuid
+		WHERE item_type = 'checkpoint' AND owner_run_id = $1
 		ORDER BY updated_at DESC
 	`, stable)
 
-	taskUUID, err := uuid.Parse(task.TaskID)
+	checkpointRows, err := s.db.QueryContext(ctx, checkpointQuery, runID)
 	if err != nil {
-		log.Printf("handleTaskDetail: invalid task id %q: %v", task.TaskID, err)
-	} else {
-		checkpointRows, err := s.db.QueryContext(ctx, checkpointQuery, taskUUID)
-		if err != nil {
-			log.Printf("handleTaskDetail: checkpoint query failed for task %s: %v", task.TaskID, err)
-			http.Error(w, "failed to query checkpoints", http.StatusInternalServerError)
-			return
-		}
-		defer checkpointRows.Close()
-		for checkpointRows.Next() {
-			var cp checkpointStateRecord
-			if err := checkpointRows.Scan(
-				&cp.StepName,
-				&cp.State,
-				&cp.Status,
-				&cp.OwnerRunID,
-				&cp.ExpiresAt,
-				&cp.UpdatedAt,
-			); err == nil {
-				task.Checkpoints = append(task.Checkpoints, cp)
-			}
+		log.Printf("handleTaskDetail: checkpoint query failed for run %s: %v", runID, err)
+		http.Error(w, "failed to query checkpoints", http.StatusInternalServerError)
+		return
+	}
+	defer checkpointRows.Close()
+	for checkpointRows.Next() {
+		var cp checkpointStateRecord
+		if err := checkpointRows.Scan(
+			&cp.StepName,
+			&cp.State,
+			&cp.Status,
+			&cp.OwnerRunID,
+			&cp.ExpiresAt,
+			&cp.UpdatedAt,
+		); err == nil {
+			task.Checkpoints = append(task.Checkpoints, cp)
 		}
 	}
 
@@ -370,7 +364,6 @@ func (s *Server) handleTaskDetail(w http.ResponseWriter, r *http.Request) {
 			w.payload,
 			ev.payload,
 			w.updated_at,
-			w.last_seen_at,
 			ev.emitted_at
 		FROM absurd.%[1]s AS w
 		LEFT JOIN absurd.%[1]s AS ev
@@ -393,7 +386,6 @@ func (s *Server) handleTaskDetail(w http.ResponseWriter, r *http.Request) {
 				&wt.Payload,
 				&wt.EventPayload,
 				&wt.UpdatedAt,
-				&wt.LastSeenAt,
 				&wt.EmittedAt,
 			); err == nil {
 				task.WaitStates = append(task.WaitStates, wt)
@@ -900,7 +892,6 @@ type waitStateRecord struct {
 	Payload      []byte
 	EventPayload []byte
 	UpdatedAt    time.Time
-	LastSeenAt   sql.NullTime
 	EmittedAt    sql.NullTime
 }
 
@@ -953,7 +944,6 @@ type WaitState struct {
 	StepName     *string         `json:"stepName,omitempty"`
 	Payload      json.RawMessage `json:"payload,omitempty"`
 	EventPayload json.RawMessage `json:"eventPayload,omitempty"`
-	LastSeenAt   *time.Time      `json:"lastSeenAt,omitempty"`
 	EmittedAt    *time.Time      `json:"emittedAt,omitempty"`
 	UpdatedAt    time.Time       `json:"updatedAt"`
 }
@@ -1075,7 +1065,6 @@ func (r taskDetailRecord) AsAPI() TaskDetail {
 			StepName:     nullableString(wt.StepName),
 			Payload:      nullableBytes(wt.Payload),
 			EventPayload: nullableBytes(wt.EventPayload),
-			LastSeenAt:   nullableTime(wt.LastSeenAt),
 			EmittedAt:    nullableTime(wt.EmittedAt),
 			UpdatedAt:    wt.UpdatedAt,
 		})

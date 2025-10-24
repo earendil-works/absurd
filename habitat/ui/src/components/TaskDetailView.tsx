@@ -228,14 +228,6 @@ function DetailContent(props: { detail: TaskDetail; taskLink?: string }) {
                         </div>
                       )}
                     </Show>
-                    <Show when={wait.lastSeenAt}>
-                      {(lastSeen) => (
-                        <div class="flex gap-2">
-                          <dt class="text-muted-foreground w-32">Last seen:</dt>
-                          <dd>{formatTimestamp(lastSeen())}</dd>
-                        </div>
-                      )}
-                    </Show>
                   </dl>
                   <Show when={typeof wait.payload !== "undefined"}>
                     <div>
@@ -313,14 +305,6 @@ function DetailContent(props: { detail: TaskDetail; taskLink?: string }) {
                   </div>
                   <div class="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground mb-2">
                     <span>Updated {formatTimestamp(checkpoint.updatedAt)}</span>
-                    <Show when={checkpoint.ownerRunId}>
-                      {(owner) => (
-                        <span class="inline-flex items-center gap-1">
-                          Owner
-                          <IdDisplay value={owner()} class="text-[10px]" />
-                        </span>
-                      )}
-                    </Show>
                     <Show when={checkpoint.expiresAt}>
                       {(expires) => (
                         <span>Expires {formatTimestamp(expires())}</span>

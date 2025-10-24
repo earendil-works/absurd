@@ -82,7 +82,7 @@ begin
   execute format($QUERY$
   create table if not exists absurd.%I (
     id bigserial primary key,
-    item_type text not null check (item_type in ('checkpoint', 'checkpoint_read', 'wait', 'event')),
+    item_type text not null check (item_type in ('checkpoint', 'wait', 'event')),
     task_id uuid,
     run_id uuid,
     step_name text,
@@ -94,7 +94,6 @@ begin
     wait_type text,
     wake_event text,
     event_name text,
-    last_seen_at timestamptz,
     emitted_at timestamptz,
     created_at timestamptz not null default now(),
     updated_at timestamptz not null default now(),
@@ -112,10 +111,6 @@ begin
   execute format($QUERY$ create unique index if not exists %I on absurd.%I (task_id, step_name) where item_type = 'checkpoint';
   $QUERY$,
   stable || '_checkpoint_idx',
-  stable);
-  execute format($QUERY$ create unique index if not exists %I on absurd.%I (task_id, run_id, step_name) where item_type = 'checkpoint_read';
-  $QUERY$,
-  stable || '_checkpoint_read_idx',
   stable);
   execute format($QUERY$ create unique index if not exists %I on absurd.%I (task_id, run_id, wait_type) where item_type = 'wait';
   $QUERY$,

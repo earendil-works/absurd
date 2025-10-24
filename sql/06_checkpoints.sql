@@ -54,14 +54,6 @@ begin
       updated_at = excluded.updated_at
   $fmt$, v_stable)
   using p_task_id, p_step_name, p_owner_run, p_state, v_now;
-  execute format($fmt$
-    delete from absurd.%I
-    where
-      item_type = 'checkpoint_read'
-      and task_id = $1
-      and step_name = $2
-  $fmt$, v_stable)
-  using p_task_id, p_step_name;
 end;
 $$
 language plpgsql;
@@ -116,7 +108,6 @@ create function absurd.get_task_checkpoint_states (p_queue_name text, p_task_id 
 declare
   v_stable text;
   v_row record;
-  v_now timestamptz := clock_timestamp();
 begin
   if p_queue_name is null then
     return;
@@ -144,16 +135,6 @@ begin
     status := v_row.status;
     owner_run_id := v_row.owner_run_id;
     updated_at := v_row.updated_at;
-    execute format($fmt$
-      insert into absurd.%I (item_type, task_id, run_id, step_name, last_seen_at, created_at, updated_at)
-      values ('checkpoint_read', $1, $2, $3, $4, $5, $5)
-      on conflict (task_id, run_id, step_name)
-        where item_type = 'checkpoint_read'
-      do update set
-        last_seen_at = excluded.last_seen_at,
-        updated_at = excluded.updated_at
-    $fmt$, v_stable)
-    using p_task_id, p_run_id, v_row.step_name, v_now, v_now;
     return next;
   end loop;
 end;

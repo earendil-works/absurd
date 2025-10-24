@@ -98,7 +98,6 @@ export interface WaitState {
   stepName?: string | null;
   payload?: any;
   eventPayload?: any;
-  lastSeenAt?: string | null;
   emittedAt?: string | null;
   updatedAt: string;
 }
