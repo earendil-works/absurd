@@ -113,39 +113,14 @@ export class TaskContext {
   }
 
   async step<T>(name: string, fn: () => Promise<T>): Promise<T> {
-    // Generate unique step name with counter for duplicates to allow the use
-    // of steps in loops.
-    const count = (this.stepNameCounter.get(name) ?? 0) + 1;
-    this.stepNameCounter.set(name, count);
-    const actualStepName = count === 1 ? name : `${name}#${count}`;
-
-    if (this.checkpointCache.has(actualStepName)) {
-      return this.checkpointCache.get(actualStepName) as T;
-    }
-
-    const result = await this.pool.query<CheckpointRow>(
-      `SELECT checkpoint_name, state, status, owner_run_id, updated_at
-       FROM absurd.get_task_checkpoint_state($1, $2, $3)`,
-      [this.queueName, this.message.task_id, actualStepName],
-    );
-    if (result.rows.length > 0) {
-      const state = result.rows[0].state;
-      this.checkpointCache.set(actualStepName, state);
+    const checkpointName = this.getCheckpointName(name);
+    const state = await this.lookupCheckpoint(checkpointName);
+    if (state !== undefined) {
       return state as T;
     }
 
     const rv = await fn();
-    await this.pool.query(
-      `SELECT absurd.set_task_checkpoint_state($1, $2, $3, $4, $5)`,
-      [
-        this.queueName,
-        this.message.task_id,
-        actualStepName,
-        JSON.stringify(rv),
-        this.message.run_id,
-      ],
-    );
-    this.checkpointCache.set(actualStepName, rv as JsonValue);
+    await this.persistCheckpoint(checkpointName, rv as JsonValue);
     return rv;
   }
 
@@ -154,38 +129,57 @@ export class TaskContext {
   }
 
   async sleepUntil(stepName: string, wakeAt: Date): Promise<void> {
-    const cachedWakeAt = this.getCachedWakeAt(stepName);
-    const targetWakeAt = cachedWakeAt ?? wakeAt;
-    if (!cachedWakeAt) {
-      await this.persistWakeAt(stepName, targetWakeAt);
+    const checkpointName = this.getCheckpointName(stepName);
+    const state = await this.lookupCheckpoint(checkpointName);
+    let actualWakeAt = (typeof state === "string") ? new Date(state) : wakeAt;
+    if (!state) {
+      await this.persistCheckpoint(checkpointName, wakeAt.toISOString());
     }
 
-    if (Date.now() >= targetWakeAt.getTime()) {
-      return;
+    if (Date.now() < actualWakeAt.getTime()) {
+      await this.scheduleRun(actualWakeAt);
+      throw new SuspendTask();
+    }
+  }
+
+  private getCheckpointName(name: string): string {
+    const count = (this.stepNameCounter.get(name) ?? 0) + 1;
+    this.stepNameCounter.set(name, count);
+    const actualStepName = count === 1 ? name : `${name}#${count}`;
+    return actualStepName;
+  }
+
+  private async lookupCheckpoint(checkpointName: string): Promise<JsonValue | undefined> {
+    const cached = this.checkpointCache.get(checkpointName);
+    if (cached !== undefined) {
+      return cached;
     }
 
-    await this.scheduleRun(targetWakeAt);
-    throw new SuspendTask();
+    const result = await this.pool.query<CheckpointRow>(
+      `SELECT checkpoint_name, state, status, owner_run_id, updated_at
+       FROM absurd.get_task_checkpoint_state($1, $2, $3)`,
+      [this.queueName, this.message.task_id, checkpointName],
+    );
+    if (result.rows.length > 0) {
+      const state = result.rows[0].state;
+      this.checkpointCache.set(checkpointName, state);
+      return state;
+    }
+    return undefined;
   }
 
-  private getCachedWakeAt(stepName: string): Date | null {
-    const rawValue = this.checkpointCache.get(stepName);
-    return typeof rawValue === "string" ? new Date(rawValue) : null;
-  }
-
-  private async persistWakeAt(stepName: string, wakeAt: Date): Promise<void> {
-    const iso = wakeAt.toISOString();
+  private async persistCheckpoint(checkpointName: string, value: JsonValue) : Promise<void> {
     await this.pool.query(
       `SELECT absurd.set_task_checkpoint_state($1, $2, $3, $4, $5)`,
       [
         this.queueName,
         this.message.task_id,
-        stepName,
-        JSON.stringify(iso),
+        checkpointName,
+        JSON.stringify(value),
         this.message.run_id,
       ],
     );
-    this.checkpointCache.set(stepName, iso);
+    this.checkpointCache.set(checkpointName, value);
   }
 
   private async scheduleRun(wakeAt: Date): Promise<void> {
@@ -204,10 +198,7 @@ export class TaskContext {
     if (!eventName) {
       throw new Error("eventName must be a non-empty string");
     }
-    if (this.checkpointCache.has(stepName)) {
-      return this.checkpointCache.get(stepName) ?? null;
-    }
-
+    const checkpointName = this.getCheckpointName(stepName);
     const result = await this.pool.query<{
       should_suspend: boolean;
       payload: JsonValue | null;
@@ -218,7 +209,7 @@ export class TaskContext {
         this.queueName,
         this.message.task_id,
         this.message.run_id,
-        stepName,
+        checkpointName,
         eventName,
       ],
     );
@@ -230,18 +221,7 @@ export class TaskContext {
     const { should_suspend, payload } = result.rows[0];
 
     if (!should_suspend) {
-      await this.pool.query(
-        `SELECT absurd.set_task_checkpoint_state($1, $2, $3, $4, $5)`,
-        [
-          this.queueName,
-          this.message.task_id,
-          stepName,
-          JSON.stringify(payload),
-          this.message.run_id,
-        ],
-      );
-
-      this.checkpointCache.set(stepName, payload);
+      this.persistCheckpoint(checkpointName, payload);
       return payload;
     }
 
@@ -269,6 +249,7 @@ export class TaskContext {
   }
 
   async fail(err: unknown): Promise<void> {
+    console.error("[absurd] task execution failed:", err);
     await this.pool.query(`SELECT absurd.fail_run($1, $2, $3, $4)`, [
       this.queueName,
       this.message.run_id,
@@ -466,24 +447,16 @@ export class Absurd {
 
   private async executeMessage(msg: ClaimedMessage): Promise<void> {
     const registration = this.registry.get(msg.task_name);
-    if (!registration) {
-      await this.pool.query(`SELECT absurd.fail_run($1, $2, $3, $4)`, [
-        this.queueName,
-        msg.run_id,
-        JSON.stringify({ error: "unknown-task" }),
-        null,
-      ]);
-      return;
-    }
-
     const ctx = await TaskContext.create({
       pool: this.pool,
-      queueName: registration.queue,
+      queueName: registration?.queue ?? "unknown",
       message: msg,
     });
 
     try {
-      if (registration.queue !== this.queueName) {
+      if (!registration) {
+        throw new Error("Unknown task");
+      } else if (registration.queue !== this.queueName) {
         throw new Error("Misconfigured task (queue mismatch)");
       }
       const result = await registration.handler(msg.params, ctx);
