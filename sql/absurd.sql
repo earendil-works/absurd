@@ -594,7 +594,7 @@ end;
 $$
 language plpgsql;
 
-create function absurd.complete_run (p_queue_name text, p_run_id uuid, p_state jsonb default null, p_archive boolean default false)
+create function absurd.complete_run (p_queue_name text, p_run_id uuid, p_state jsonb default null)
   returns void
   as $$
 declare
@@ -631,11 +631,11 @@ begin
       wake_event = null,
       completed_at = $2,
       final_status = 'completed',
-      state = case when $4 then $3 else state end
+      state = $3
     where
       run_id = $1
   $fmt$, v_rtable)
-  using p_run_id, v_now, p_state, p_archive;
+  using p_run_id, v_now, p_state;
   execute format($fmt$
     update absurd.%I
     set

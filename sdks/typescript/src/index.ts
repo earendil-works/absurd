@@ -245,11 +245,10 @@ export class TaskContext {
   }
 
   async complete(result?: any): Promise<void> {
-    await this.pool.query(`SELECT absurd.complete_run($1, $2, $3, $4)`, [
+    await this.pool.query(`SELECT absurd.complete_run($1, $2, $3)`, [
       this.queueName,
       this.message.run_id,
       JSON.stringify(result ?? null),
-      true,
     ]);
   }
 

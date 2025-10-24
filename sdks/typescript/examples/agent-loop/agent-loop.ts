@@ -74,18 +74,11 @@ absurd.registerTask(
       console.log(stepState);
       messages.push(...stepState.newMessages);
       if (stepState.finishReason !== "tool-calls") {
-        break;
+        return messages[messages.length - 1].content;
       }
     }
   },
 );
-
-const messages: ModelMessage[] = [
-  {
-    role: "user",
-    content: "Get the weather in New York and San Francisco",
-  },
-];
 
 async function main() {
   await absurd.createQueue();
