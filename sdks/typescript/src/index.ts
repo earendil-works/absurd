@@ -53,6 +53,12 @@ interface CheckpointRow {
   updated_at: Date;
 }
 
+interface SpawnResult {
+  taskID: string;
+  runID: string;
+  attempt: number;
+}
+
 export type TaskHandler<P = any, R = any> = (
   params: P,
   ctx: TaskContext,
@@ -230,13 +236,13 @@ export class TaskContext {
           this.queueName,
           this.message.task_id,
           stepName,
-          JSON.stringify(payload ?? null),
+          JSON.stringify(payload),
           this.message.run_id,
         ],
       );
 
-      this.checkpointCache.set(stepName, payload ?? null);
-      return payload ?? null;
+      this.checkpointCache.set(stepName, payload);
+      return payload;
     }
 
     throw new SuspendTask();
@@ -348,7 +354,7 @@ export class Absurd {
     taskName: string,
     params: P,
     options: SpawnOptions = {},
-  ): Promise<{ task_id: string; run_id: string; attempt: number }> {
+  ): Promise<SpawnResult> {
     const registration = this.registry.get(taskName);
     let queue: string | undefined;
     if (registration) {
@@ -358,13 +364,10 @@ export class Absurd {
           `Task "${taskName}" is registered for queue "${registration.queue}" but spawn requested queue "${options.queue}".`,
         );
       }
-    } else {
-      queue = options.queue;
-      if (!queue) {
-        throw new Error(
-          `Task "${taskName}" is not registered. Provide options.queue when spawning unregistered tasks.`,
-        );
-      }
+    } else if (!options.queue) {
+      throw new Error(
+        `Task "${taskName}" is not registered. Provide options.queue when spawning unregistered tasks.`,
+      );
     }
     const effectiveMaxAttempts =
       options.maxAttempts !== undefined
@@ -374,6 +377,7 @@ export class Absurd {
       ...options,
       maxAttempts: effectiveMaxAttempts,
     });
+
     const result = await this.pool.query<{
       task_id: string;
       run_id: string;
@@ -393,7 +397,12 @@ export class Absurd {
       throw new Error("Failed to spawn task");
     }
 
-    return result.rows[0];
+    const row = result.rows[0];
+    return {
+      taskID: row.task_id,
+      runID: row.run_id,
+      attempt: row.attempt,
+    };
   }
 
   async workOnce(
@@ -435,14 +444,10 @@ export class Absurd {
       while (running) {
         try {
           await this.workOnce(workerId, claimTimeout, batchSize);
-
-          // If no tasks were claimed, wait before polling again
-          await new Promise((resolve) => setTimeout(resolve, pollInterval));
         } catch (err) {
           onError(err as Error);
-          // Wait a bit before retrying after an error
-          await new Promise((resolve) => setTimeout(resolve, pollInterval * 2));
         }
+        await sleep(pollInterval);
       }
     })();
 
@@ -471,19 +476,6 @@ export class Absurd {
       return;
     }
 
-    if (registration.queue !== this.queueName) {
-      await this.pool.query(`SELECT absurd.fail_run($1, $2, $3, $4)`, [
-        this.queueName,
-        msg.run_id,
-        JSON.stringify({
-          error: "misconfigured-task",
-          expected_queue: registration.queue,
-        }),
-        null,
-      ]);
-      return;
-    }
-
     const ctx = await TaskContext.create({
       pool: this.pool,
       queueName: registration.queue,
@@ -491,6 +483,9 @@ export class Absurd {
     });
 
     try {
+      if (registration.queue !== this.queueName) {
+        throw new Error("Misconfigured task (queue mismatch)");
+      }
       const result = await registration.handler(msg.params, ctx);
       await ctx.complete(result);
     } catch (err) {
@@ -542,4 +537,8 @@ function serializeRetryStrategy(strategy: RetryStrategy): JsonObject {
     serialized.max_seconds = strategy.maxSeconds;
   }
   return serialized;
+}
+
+async function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
