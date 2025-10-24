@@ -681,11 +681,10 @@ func (s *Server) fetchQueueEvents(ctx context.Context, queueName string, limit i
 			event_name,
 			payload,
 			emitted_at,
-			created_at,
-			updated_at
+			created_at
 		FROM absurd.%s
 		%s
-		ORDER BY COALESCE(emitted_at, updated_at) DESC
+		ORDER BY COALESCE(emitted_at, created_at) DESC
 		LIMIT $%d
 	`, etable, whereClause, limitPos)
 
@@ -703,7 +702,6 @@ func (s *Server) fetchQueueEvents(ctx context.Context, queueName string, limit i
 			&record.Payload,
 			&record.EmittedAt,
 			&record.CreatedAt,
-			&record.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -755,11 +753,11 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		}
 
 		sort.Slice(events, func(i, j int) bool {
-			ti := events[i].UpdatedAt
+			ti := events[i].CreatedAt
 			if events[i].EmittedAt != nil {
 				ti = *events[i].EmittedAt
 			}
-			tj := events[j].UpdatedAt
+			tj := events[j].CreatedAt
 			if events[j].EmittedAt != nil {
 				tj = *events[j].EmittedAt
 			}
@@ -1003,7 +1001,6 @@ type queueEventRecord struct {
 	Payload   []byte
 	EmittedAt sql.NullTime
 	CreatedAt time.Time
-	UpdatedAt time.Time
 }
 
 type QueueEvent struct {
@@ -1012,7 +1009,6 @@ type QueueEvent struct {
 	Payload   json.RawMessage `json:"payload,omitempty"`
 	EmittedAt *time.Time      `json:"emittedAt,omitempty"`
 	CreatedAt time.Time       `json:"createdAt"`
-	UpdatedAt time.Time       `json:"updatedAt"`
 }
 
 func (r queueMessageRecord) AsAPI(queueName string) QueueMessage {
@@ -1034,7 +1030,6 @@ func (r queueEventRecord) AsAPI(queueName string) QueueEvent {
 		Payload:   nullableBytes(r.Payload),
 		EmittedAt: nullableTime(r.EmittedAt),
 		CreatedAt: r.CreatedAt,
-		UpdatedAt: r.UpdatedAt,
 	}
 }
 

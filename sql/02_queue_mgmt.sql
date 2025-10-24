@@ -119,8 +119,7 @@ begin
     event_name text primary key,
     payload jsonb,
     emitted_at timestamptz,
-    created_at timestamptz not null default now(),
-    updated_at timestamptz not null default now()
+    created_at timestamptz not null default now()
   )
   $QUERY$,
   etable);

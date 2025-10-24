@@ -143,7 +143,6 @@ export interface QueueEvent {
   payload?: any;
   emittedAt?: string | null;
   createdAt: string;
-  updatedAt: string;
 }
 
 export interface TaskListResponse {

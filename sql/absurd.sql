@@ -257,8 +257,7 @@ begin
     event_name text primary key,
     payload jsonb,
     emitted_at timestamptz,
-    created_at timestamptz not null default now(),
-    updated_at timestamptz not null default now()
+    created_at timestamptz not null default now()
   )
   $QUERY$,
   etable);
@@ -1006,13 +1005,12 @@ begin
     raise exception 'emit_event requires a non-null event name';
   end if;
   execute format($fmt$
-    insert into absurd.%I (event_name, payload, emitted_at, updated_at)
-    values ($1, $2, $3, $3)
+    insert into absurd.%I (event_name, payload, emitted_at)
+    values ($1, $2, $3)
     on conflict (event_name)
     do update set
       payload = excluded.payload,
-      emitted_at = excluded.emitted_at,
-      updated_at = excluded.updated_at
+      emitted_at = excluded.emitted_at
   $fmt$, v_etable)
   using p_event_name, p_payload, v_now;
   for v_wait in
