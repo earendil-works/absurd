@@ -37,6 +37,22 @@ for ensuring progress without double execution.  It's the promise of
 "exactly-once" semantics in distributed systems, but expressed as code you can
 read and reason about.
 
+## Comparison
+
+Absurd wants to be absurdly simple.  There are many systems on the market you
+might want to look at if you think you need more:
+
+* [Cadence](https://github.com/cadence-workflow/cadence) in many ways is the
+  OG of durable execution systems.  It was built at Uber and has inspired many
+  systems since.
+* [Temporal](https://temporal.io/) was built by the Cadence authors to be a
+  more modern interpreation of it.  What sets it apart, is that it takes strong
+  control of the runtime environment within the target language to help you build
+  deterministic workflows.
+* [Inngest](https://www.inngest.com/) is an event driven workflow system.  It's
+  self hostable and can run locally, but it's licensed under a fair-source
+  inspired license.
+
 ## Push vs Pull
 
 Absurd is a pull based system which means that your code pulls tasks from
