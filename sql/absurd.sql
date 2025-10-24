@@ -332,33 +332,33 @@ begin
 end
 $$
 language plpgsql;
-create function absurd.send (queue_name text, msg jsonb, headers jsonb, delay timestamp with time zone)
+create function absurd.send (queue_name text, msg_id uuid, msg jsonb, headers jsonb, delay timestamp with time zone)
   returns setof uuid
   as $$
 declare
   sql text;
   qtable text := absurd.format_table_name (queue_name, 'q');
 begin
-  sql := format($QUERY$ insert into absurd.%I (vt, message, headers)
-      values ($2, $1, $3)
+  sql := format($QUERY$ insert into absurd.%I (msg_id, vt, message, headers)
+      values ($1, $3, $2, $4)
     returning
       msg_id;
   $QUERY$,
   qtable);
   return query execute sql
-  using msg, delay, headers;
+  using msg_id, msg, delay, headers;
 end;
 $$
 language plpgsql;
 
--- send: 3 args
-create function absurd.send (queue_name text, msg jsonb, headers jsonb)
+-- send: 4 args
+create function absurd.send (queue_name text, msg_id uuid, msg jsonb, headers jsonb)
   returns setof uuid
   as $$
   select
     *
   from
-    absurd.send (queue_name, msg, headers, clock_timestamp());
+    absurd.send (queue_name, msg_id, msg, headers, clock_timestamp());
 $$
 language sql;
 
@@ -392,7 +392,7 @@ create function absurd.spawn_task (p_queue_name text, p_task_name text, p_params
   as $$
 declare
   v_task_id uuid := absurd.portable_uuidv7 ();
-  v_run_id uuid;
+  v_run_id uuid := absurd.portable_uuidv7 ();
   v_attempt integer := 1;
   v_headers jsonb;
   v_retry_strategy jsonb;
@@ -413,17 +413,9 @@ begin
   else
     v_max_attempts := null;
   end if;
-  select
-    s.msg_id into v_run_id
-  from
-    absurd.send (p_queue_name, jsonb_build_object('task_id', v_task_id, 'attempt', v_attempt), v_headers) as s (msg_id)
-  limit 1;
-  if v_run_id is null then
-    raise exception 'failed to enqueue task % for queue %', p_task_name, p_queue_name;
-  end if;
   v_message := jsonb_build_object('task_id', v_task_id, 'run_id', v_run_id, 'attempt', v_attempt);
-  execute format($fmt$update absurd.%I set message = $2 where msg_id = $1$fmt$, v_qtable)
-  using v_run_id, v_message;
+  perform
+    absurd.send (p_queue_name, v_run_id, v_message, v_headers);
   execute format($fmt$
     insert into absurd.%I (
       queue_name,
@@ -787,16 +779,9 @@ begin
     else
       'pending'
     end;
-    select
-      s.msg_id into v_new_run_id
-    from
-      absurd.send (p_queue_name, jsonb_build_object('task_id', v_task_id, 'attempt', v_next_attempt), v_headers, v_effective_retry_at) as s (msg_id)
-    limit 1;
-    if v_new_run_id is null then
-      raise exception 'failed to enqueue retry for run %', p_run_id;
-    end if;
-    execute format($fmt$update absurd.%I set message = $2 where msg_id = $1$fmt$, v_qtable)
-    using v_new_run_id, jsonb_build_object('task_id', v_task_id, 'run_id', v_new_run_id, 'attempt', v_next_attempt);
+    v_new_run_id := absurd.portable_uuidv7();
+    perform
+      absurd.send (p_queue_name, v_new_run_id, jsonb_build_object('task_id', v_task_id, 'run_id', v_new_run_id, 'attempt', v_next_attempt), v_headers, v_effective_retry_at);
     execute format($fmt$
       insert into absurd.%I (
         queue_name,

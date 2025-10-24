@@ -1,30 +1,30 @@
-create function absurd.send (queue_name text, msg jsonb, headers jsonb, delay timestamp with time zone)
+create function absurd.send (queue_name text, msg_id uuid, msg jsonb, headers jsonb, delay timestamp with time zone)
   returns setof uuid
   as $$
 declare
   sql text;
   qtable text := absurd.format_table_name (queue_name, 'q');
 begin
-  sql := format($QUERY$ insert into absurd.%I (vt, message, headers)
-      values ($2, $1, $3)
+  sql := format($QUERY$ insert into absurd.%I (msg_id, vt, message, headers)
+      values ($1, $3, $2, $4)
     returning
       msg_id;
   $QUERY$,
   qtable);
   return query execute sql
-  using msg, delay, headers;
+  using msg_id, msg, delay, headers;
 end;
 $$
 language plpgsql;
 
--- send: 3 args
-create function absurd.send (queue_name text, msg jsonb, headers jsonb)
+-- send: 4 args
+create function absurd.send (queue_name text, msg_id uuid, msg jsonb, headers jsonb)
   returns setof uuid
   as $$
   select
     *
   from
-    absurd.send (queue_name, msg, headers, clock_timestamp());
+    absurd.send (queue_name, msg_id, msg, headers, clock_timestamp());
 $$
 language sql;
 
