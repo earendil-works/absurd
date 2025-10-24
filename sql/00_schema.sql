@@ -33,8 +33,7 @@ create type absurd.message_record as (
   read_ct integer,
   enqueued_at timestamp with time zone,
   vt timestamp with time zone,
-  message jsonb,
-  headers jsonb
+  message jsonb
 );
 
 create type absurd.queue_record as (

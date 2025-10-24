@@ -2,7 +2,7 @@ create function absurd.set_task_checkpoint_state (p_queue_name text, p_task_id u
   returns void
   as $$
 declare
-  v_stable text;
+  v_ctable text;
   v_rtable text := absurd.format_table_name (p_queue_name, 'r');
   v_now timestamptz := clock_timestamp();
   v_exists boolean;
@@ -41,18 +41,17 @@ begin
       raise exception 'run % does not belong to task % in queue %', p_owner_run, p_task_id, p_queue_name;
     end if;
   end if;
-  v_stable := absurd.format_table_name (p_queue_name, 's');
+  v_ctable := absurd.format_table_name (p_queue_name, 'c');
   execute format($fmt$
-    insert into absurd.%I (item_type, task_id, step_name, owner_run_id, status, state, created_at, updated_at)
-    values ('checkpoint', $1, $2, $3, 'complete', $4, $5, $5)
+    insert into absurd.%I (task_id, step_name, owner_run_id, status, state, updated_at)
+    values ($1, $2, $3, 'complete', $4, $5)
     on conflict (task_id, step_name)
-      where item_type = 'checkpoint'
     do update set
       owner_run_id = excluded.owner_run_id,
       status = excluded.status,
       state = excluded.state,
       updated_at = excluded.updated_at
-  $fmt$, v_stable)
+  $fmt$, v_ctable)
   using p_task_id, p_step_name, p_owner_run, p_state, v_now;
 end;
 $$
@@ -68,12 +67,12 @@ create function absurd.get_task_checkpoint_state (p_queue_name text, p_task_id u
   )
   as $$
 declare
-  v_stable text;
+  v_ctable text;
 begin
   if p_queue_name is null then
     return;
   end if;
-  v_stable := absurd.format_table_name (p_queue_name, 's');
+  v_ctable := absurd.format_table_name (p_queue_name, 'c');
   return query
   execute format($fmt$
     select
@@ -85,12 +84,11 @@ begin
     from
       absurd.%I
     where
-      item_type = 'checkpoint'
-      and task_id = $1
+      task_id = $1
       and step_name = $2
       and (status = 'complete'
         or $3)
-  $fmt$, v_stable)
+  $fmt$, v_ctable)
   using p_task_id, p_step_name, p_include_pending;
 end;
 $$
@@ -106,13 +104,13 @@ create function absurd.get_task_checkpoint_states (p_queue_name text, p_task_id 
   )
   as $$
 declare
-  v_stable text;
+  v_ctable text;
   v_row record;
 begin
   if p_queue_name is null then
     return;
   end if;
-  v_stable := absurd.format_table_name (p_queue_name, 's');
+  v_ctable := absurd.format_table_name (p_queue_name, 'c');
   for v_row in
   execute format($fmt$
     select
@@ -124,10 +122,9 @@ begin
     from
       absurd.%I
     where
-      item_type = 'checkpoint'
-      and task_id = $1
+      task_id = $1
       and status = 'complete'
-  $fmt$, v_stable)
+  $fmt$, v_ctable)
   using p_task_id
   loop
     checkpoint_name := v_row.step_name;

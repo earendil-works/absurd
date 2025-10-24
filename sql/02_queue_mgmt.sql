@@ -21,7 +21,9 @@ create function absurd.create_queue (queue_name text)
 declare
   qtable text := absurd.format_table_name (queue_name, 'q');
   rtable text := absurd.format_table_name (queue_name, 'r');
-  stable text := absurd.format_table_name (queue_name, 's');
+  ctable text := absurd.format_table_name (queue_name, 'c');
+  wtable text := absurd.format_table_name (queue_name, 'w');
+  etable text := absurd.format_table_name (queue_name, 'e');
 begin
   perform
     absurd.validate_queue_name (queue_name);
@@ -38,14 +40,13 @@ begin
       and table_schema = 'absurd') then
     return;
   end if;
-  execute format($QUERY$ create table if not exists absurd.%I (msg_id uuid primary key default absurd.portable_uuidv7(), read_ct int default 0 not null, enqueued_at timestamp with time zone default now() not null, vt timestamp with time zone not null, message jsonb, headers jsonb ) $QUERY$, qtable);
+  execute format($QUERY$ create table if not exists absurd.%I (msg_id uuid primary key default absurd.portable_uuidv7(), read_ct int default 0 not null, enqueued_at timestamp with time zone default now() not null, vt timestamp with time zone not null, message jsonb ) $QUERY$, qtable);
   execute format($QUERY$ create index if not exists %I on absurd.%I (vt asc);
   $QUERY$,
   qtable || '_vt_idx',
   qtable);
   execute format($QUERY$
   create table if not exists absurd.%I (
-    queue_name text not null default %L check (queue_name = %L),
     task_id uuid not null,
     run_id uuid primary key,
     attempt integer not null,
@@ -68,9 +69,7 @@ begin
     unique (task_id, attempt)
   )
   $QUERY$,
-  rtable,
-  queue_name,
-  queue_name);
+  rtable);
   execute format($QUERY$ create index if not exists %I on absurd.%I (task_id);
   $QUERY$,
   rtable || '_task_idx',
@@ -81,49 +80,50 @@ begin
   rtable);
   execute format($QUERY$
   create table if not exists absurd.%I (
-    id bigserial primary key,
-    item_type text not null check (item_type in ('checkpoint', 'wait', 'event')),
-    task_id uuid,
-    run_id uuid,
-    step_name text,
+    task_id uuid not null,
+    step_name text not null,
     owner_run_id uuid,
-    status text,
+    status text not null default 'complete' check (status in ('pending', 'complete')),
     state jsonb,
-    payload jsonb,
-    wake_at timestamptz,
-    wait_type text,
-    wake_event text,
-    event_name text,
-    emitted_at timestamptz,
-    created_at timestamptz not null default now(),
     updated_at timestamptz not null default now(),
-    check (
-      item_type <> 'checkpoint'
-      or status in ('pending', 'complete')
-    ),
-    check (
-      item_type <> 'wait'
-      or wait_type in ('sleep', 'event')
-    )
+    primary key (task_id, step_name)
   )
   $QUERY$,
-  stable);
-  execute format($QUERY$ create unique index if not exists %I on absurd.%I (task_id, step_name) where item_type = 'checkpoint';
+  ctable);
+  execute format($QUERY$
+  create table if not exists absurd.%I (
+    task_id uuid not null,
+    run_id uuid not null,
+    wait_type text not null check (wait_type in ('sleep', 'event')),
+    step_name text,
+    wake_at timestamptz,
+    wake_event text,
+    payload jsonb,
+    updated_at timestamptz not null default now(),
+    primary key (task_id, run_id, wait_type)
+  )
   $QUERY$,
-  stable || '_checkpoint_idx',
-  stable);
-  execute format($QUERY$ create unique index if not exists %I on absurd.%I (task_id, run_id, wait_type) where item_type = 'wait';
+  wtable);
+  execute format($QUERY$
+  create index if not exists %I on absurd.%I (run_id);
   $QUERY$,
-  stable || '_wait_idx',
-  stable);
-  execute format($QUERY$ create index if not exists %I on absurd.%I (wake_event) where item_type = 'wait' and wait_type = 'event';
+  wtable || '_run_idx',
+  wtable);
+  execute format($QUERY$
+  create index if not exists %I on absurd.%I (wake_event) where wait_type = 'event';
   $QUERY$,
-  stable || '_wait_event_idx',
-  stable);
-  execute format($QUERY$ create unique index if not exists %I on absurd.%I (event_name) where item_type = 'event';
+  wtable || '_wait_event_idx',
+  wtable);
+  execute format($QUERY$
+  create table if not exists absurd.%I (
+    event_name text primary key,
+    payload jsonb,
+    emitted_at timestamptz,
+    created_at timestamptz not null default now(),
+    updated_at timestamptz not null default now()
+  )
   $QUERY$,
-  stable || '_event_idx',
-  stable);
+  etable);
   execute format($QUERY$ insert into absurd.meta (queue_name)
       values (%L) on conflict
       do nothing;
@@ -139,7 +139,9 @@ create function absurd.drop_queue (queue_name text)
 declare
   qtable text := absurd.format_table_name (queue_name, 'q');
   rtable text := absurd.format_table_name (queue_name, 'r');
-  stable text := absurd.format_table_name (queue_name, 's');
+  ctable text := absurd.format_table_name (queue_name, 'c');
+  wtable text := absurd.format_table_name (queue_name, 'w');
+  etable text := absurd.format_table_name (queue_name, 'e');
 begin
   perform
     absurd.acquire_queue_lock (queue_name);
@@ -157,7 +159,9 @@ begin
 end if;
   execute format($QUERY$ drop table if exists absurd.%I $QUERY$, qtable);
   execute format($QUERY$ drop table if exists absurd.%I $QUERY$, rtable);
-  execute format($QUERY$ drop table if exists absurd.%I $QUERY$, stable);
+  execute format($QUERY$ drop table if exists absurd.%I $QUERY$, etable);
+  execute format($QUERY$ drop table if exists absurd.%I $QUERY$, wtable);
+  execute format($QUERY$ drop table if exists absurd.%I $QUERY$, ctable);
   if exists (
     select
       1

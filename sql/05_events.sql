@@ -8,7 +8,8 @@ declare
   v_now timestamptz := clock_timestamp();
   v_event_payload jsonb;
   v_rtable text := absurd.format_table_name (p_queue_name, 'r');
-  v_stable text := absurd.format_table_name (p_queue_name, 's');
+  v_wtable text := absurd.format_table_name (p_queue_name, 'w');
+  v_etable text := absurd.format_table_name (p_queue_name, 'e');
   v_exists boolean;
 begin
   if p_event_name is null then
@@ -35,9 +36,8 @@ begin
     from
       absurd.%I
     where
-      item_type = 'event'
-      and event_name = $1
-  $fmt$, v_stable)
+      event_name = $1
+  $fmt$, v_etable)
   using p_event_name
   into v_event_payload;
   if found then
@@ -49,21 +49,19 @@ begin
   execute format($fmt$
     delete from absurd.%I
     where
-      item_type = 'wait'
-      and run_id = $1
+      run_id = $1
       and wait_type = 'sleep'
-  $fmt$, v_stable)
+  $fmt$, v_wtable)
   using p_run_id;
   execute format($fmt$
-    insert into absurd.%I (item_type, task_id, run_id, wait_type, wake_event, step_name, created_at, updated_at)
-    values ('wait', $1, $2, 'event', $3, $4, $5, $5)
+    insert into absurd.%I (task_id, run_id, wait_type, wake_event, step_name, updated_at)
+    values ($1, $2, 'event', $3, $4, $5)
     on conflict (task_id, run_id, wait_type)
-      where item_type = 'wait'
     do update set
       wake_event = excluded.wake_event,
       step_name = excluded.step_name,
       updated_at = excluded.updated_at
-  $fmt$, v_stable)
+  $fmt$, v_wtable)
   using p_task_id, p_run_id, p_event_name, p_step_name, v_now;
   execute format($fmt$
     update absurd.%I
@@ -95,21 +93,21 @@ declare
   v_wait record;
   v_now timestamptz := clock_timestamp();
   v_rtable text := absurd.format_table_name (p_queue_name, 'r');
-  v_stable text := absurd.format_table_name (p_queue_name, 's');
+  v_wtable text := absurd.format_table_name (p_queue_name, 'w');
+  v_etable text := absurd.format_table_name (p_queue_name, 'e');
 begin
   if p_event_name is null then
     raise exception 'emit_event requires a non-null event name';
   end if;
   execute format($fmt$
-    insert into absurd.%I (item_type, event_name, payload, emitted_at, updated_at)
-    values ('event', $1, $2, $3, $3)
+    insert into absurd.%I (event_name, payload, emitted_at, updated_at)
+    values ($1, $2, $3, $3)
     on conflict (event_name)
-      where item_type = 'event'
     do update set
       payload = excluded.payload,
       emitted_at = excluded.emitted_at,
       updated_at = excluded.updated_at
-  $fmt$, v_stable)
+  $fmt$, v_etable)
   using p_event_name, p_payload, v_now;
   for v_wait in
   execute format($fmt$
@@ -120,10 +118,9 @@ begin
     from
       absurd.%I
     where
-      item_type = 'wait'
-      and wait_type = 'event'
+      wait_type = 'event'
       and wake_event = $1
-  $fmt$, v_stable)
+  $fmt$, v_wtable)
   using p_event_name
   loop
     execute format($fmt$
@@ -132,11 +129,10 @@ begin
         payload = $3,
         updated_at = $4
       where
-        item_type = 'wait'
-        and task_id = $1
+        task_id = $1
         and run_id = $2
         and wait_type = 'event'
-    $fmt$, v_stable)
+    $fmt$, v_wtable)
     using v_wait.task_id, v_wait.run_id, p_payload, v_now;
     if v_wait.step_name is not null then
       perform

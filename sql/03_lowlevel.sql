@@ -5,14 +5,14 @@ declare
   sql text;
   qtable text := absurd.format_table_name (queue_name, 'q');
 begin
-  sql := format($QUERY$ insert into absurd.%I (msg_id, vt, message, headers)
-      values ($1, $3, $2, $4)
+  sql := format($QUERY$ insert into absurd.%I (msg_id, vt, message)
+      values ($1, $3, $2)
     returning
       msg_id;
   $QUERY$,
   qtable);
   return query execute sql
-  using msg_id, msg, delay, headers;
+  using msg_id, msg, delay;
 end;
 $$
 language plpgsql;

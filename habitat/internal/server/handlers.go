@@ -170,13 +170,14 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 		}
 
 		rtable := queueTableIdentifier("r", queueName)
+		queueLiteral := pq.QuoteLiteral(queueName)
 		query := fmt.Sprintf(`
 			SELECT
-				task_id, run_id, queue_name, task_name, status,
+				task_id, run_id, %s AS queue_name, task_name, status,
 				attempt, max_attempts, created_at, updated_at, completed_at
 			FROM absurd.%s
 			ORDER BY created_at DESC
-		`, rtable)
+		`, queueLiteral, rtable)
 
 		rows, err := s.db.QueryContext(ctx, query)
 		if err != nil {
@@ -281,16 +282,17 @@ func (s *Server) handleTaskDetail(w http.ResponseWriter, r *http.Request) {
 
 	// Query full task details from r_* table
 	rtable := queueTableIdentifier("r", queueName)
+	queueLiteral := pq.QuoteLiteral(queueName)
 	query := fmt.Sprintf(`
 		SELECT
-			task_id, run_id, queue_name, task_name, status, attempt, max_attempts,
+			task_id, run_id, %s AS queue_name, task_name, status, attempt, max_attempts,
 			params, retry_strategy, headers, claimed_by, lease_expires_at,
 			next_wake_at, wake_event, last_claimed_at, final_status, state,
 			created_at, updated_at, completed_at
 		FROM absurd.%s
 		WHERE run_id = $1
 		LIMIT 1
-	`, rtable)
+	`, queueLiteral, rtable)
 
 	var task taskDetailRecord
 	err = s.db.QueryRowContext(ctx, query, runID).Scan(
@@ -324,15 +326,17 @@ func (s *Server) handleTaskDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Query checkpoints from s_* table. Checkpoints belong to a specific run,
+	// Query checkpoints from c_* table. Checkpoints belong to a specific run,
 	// so fetch by owner_run_id to show only checkpoints for this run.
-	stable := queueTableIdentifier("s", queueName)
+	ctable := queueTableIdentifier("c", queueName)
+	wtable := queueTableIdentifier("w", queueName)
+	etable := queueTableIdentifier("e", queueName)
 	checkpointQuery := fmt.Sprintf(`
 		SELECT step_name, state, status, owner_run_id, NULL::timestamptz AS expires_at, updated_at
 		FROM absurd.%s
-		WHERE item_type = 'checkpoint' AND owner_run_id = $1
+		WHERE owner_run_id = $1
 		ORDER BY updated_at DESC
-	`, stable)
+	`, ctable)
 
 	checkpointRows, err := s.db.QueryContext(ctx, checkpointQuery, runID)
 	if err != nil {
@@ -366,12 +370,11 @@ func (s *Server) handleTaskDetail(w http.ResponseWriter, r *http.Request) {
 			w.updated_at,
 			ev.emitted_at
 		FROM absurd.%[1]s AS w
-		LEFT JOIN absurd.%[1]s AS ev
-			ON ev.item_type = 'event'
-			AND ev.event_name = w.wake_event
-		WHERE w.item_type = 'wait' AND w.run_id = $1
+		LEFT JOIN absurd.%[2]s AS ev
+			ON ev.event_name = w.wake_event
+		WHERE w.run_id = $1
 		ORDER BY w.updated_at DESC
-	`, stable)
+	`, wtable, etable)
 
 	waitRows, err := s.db.QueryContext(ctx, waitQuery, runID)
 	if err == nil {
@@ -527,13 +530,14 @@ func (s *Server) handleQueueTasks(w http.ResponseWriter, r *http.Request, queueN
 	defer cancel()
 
 	rtable := queueTableIdentifier("r", queueName)
+	queueLiteral := pq.QuoteLiteral(queueName)
 	query := fmt.Sprintf(`
 		SELECT
-			task_id, run_id, queue_name, task_name, status,
+			task_id, run_id, %s AS queue_name, task_name, status,
 			attempt, max_attempts, created_at, updated_at, completed_at
 		FROM absurd.%s
 		ORDER BY created_at DESC
-	`, rtable)
+	`, queueLiteral, rtable)
 
 	rows, err := s.db.QueryContext(ctx, query)
 	if err != nil {
@@ -576,18 +580,21 @@ func (s *Server) handleQueueMessages(w http.ResponseWriter, r *http.Request, que
 	}
 
 	qtable := queueTableIdentifier("q", queueName)
+	rtable := queueTableIdentifier("r", queueName)
 	query := fmt.Sprintf(`
 		SELECT
-			msg_id,
-			read_ct,
-			enqueued_at,
-			vt,
-			message,
-			headers
-		FROM absurd.%s
-		ORDER BY enqueued_at ASC
+			q.msg_id,
+			q.read_ct,
+			q.enqueued_at,
+			q.vt,
+			q.message,
+			r.headers
+		FROM absurd.%s AS q
+		LEFT JOIN absurd.%s AS r
+			ON r.run_id = q.msg_id
+		ORDER BY q.enqueued_at ASC
 		LIMIT $1
-	`, qtable)
+	`, qtable, rtable)
 
 	rows, err := s.db.QueryContext(ctx, query, limit)
 	if err != nil {
@@ -649,19 +656,24 @@ func (s *Server) fetchQueueEvents(ctx context.Context, queueName string, limit i
 		limit = 1000
 	}
 
-	stable := queueTableIdentifier("s", queueName)
+	etable := queueTableIdentifier("e", queueName)
 
 	var (
 		params  []any
 		clauses []string
 	)
-	clauses = append(clauses, "item_type = 'event'")
 
-	argPos := 1
 	if eventName != "" {
-		clauses = append(clauses, fmt.Sprintf("event_name = $%d", argPos))
 		params = append(params, eventName)
-		argPos++
+		clauses = append(clauses, fmt.Sprintf("event_name = $%d", len(params)))
+	}
+
+	params = append(params, limit)
+	limitPos := len(params)
+
+	whereClause := ""
+	if len(clauses) > 0 {
+		whereClause = "WHERE " + strings.Join(clauses, " AND ")
 	}
 
 	query := fmt.Sprintf(`
@@ -672,12 +684,10 @@ func (s *Server) fetchQueueEvents(ctx context.Context, queueName string, limit i
 			created_at,
 			updated_at
 		FROM absurd.%s
-		WHERE %s
+		%s
 		ORDER BY COALESCE(emitted_at, updated_at) DESC
 		LIMIT $%d
-	`, stable, strings.Join(clauses, " AND "), argPos)
-
-	params = append(params, limit)
+	`, etable, whereClause, limitPos)
 
 	rows, err := s.db.QueryContext(ctx, query, params...)
 	if err != nil {
