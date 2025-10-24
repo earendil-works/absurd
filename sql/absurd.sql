@@ -848,23 +848,39 @@ create function absurd.schedule_run (p_queue_name text, p_run_id uuid, p_wake_at
   as $$
 declare
   v_task_id uuid;
-  v_status text;
   v_rowcount integer;
   v_now timestamptz := clock_timestamp();
   v_rtable text := absurd.format_table_name (p_queue_name, 'r');
   v_stable text := absurd.format_table_name (p_queue_name, 's');
 begin
   execute format($fmt$
-    select
-      task_id,
-      status
-    from
-      absurd.%I
+    update absurd.%I
+    set
+      status = case when $3 then
+        'sleeping'
+      else
+        status
+      end,
+      next_wake_at = $2,
+      wake_event = null,
+      updated_at = $4,
+      lease_expires_at = case when $3 then
+        null
+      else
+        lease_expires_at
+      end,
+      claimed_by = case when $3 then
+        null
+      else
+        claimed_by
+      end
     where
       run_id = $1
+    returning
+      task_id
   $fmt$, v_rtable)
-  using p_run_id
-  into v_task_id, v_status;
+  using p_run_id, p_wake_at, p_suspend, v_now
+  into v_task_id;
   get diagnostics v_rowcount = row_count;
   if v_rowcount = 0 then
     raise exception 'run % not found for queue %', p_run_id, p_queue_name;
@@ -898,31 +914,6 @@ begin
       and wait_type = 'event'
   $fmt$, v_stable)
   using p_run_id;
-  execute format($fmt$
-    update absurd.%I
-    set
-      status = case when $3 then
-        'sleeping'
-      else
-        $5
-      end,
-      next_wake_at = $2,
-      wake_event = null,
-      updated_at = $4,
-      lease_expires_at = case when $3 then
-        null
-      else
-        lease_expires_at
-      end,
-      claimed_by = case when $3 then
-        null
-      else
-        claimed_by
-      end
-    where
-      run_id = $1
-  $fmt$, v_rtable)
-  using p_run_id, p_wake_at, p_suspend, v_now, v_status;
   perform
     absurd.set_vt_at (p_queue_name, p_run_id, p_wake_at);
 end;
