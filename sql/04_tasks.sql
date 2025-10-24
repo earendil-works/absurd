@@ -115,6 +115,8 @@ begin
       for update
         skip locked
     ),
+    -- we want to clean up any orphaned queue entries that have no corresponding run
+    -- this should not happen, but if it does, we want to avoid clogging the queue
     deleted_orphans as (
       delete from absurd.%I as q
       using candidate c
