@@ -11,6 +11,7 @@ declare
   v_wtable text := absurd.format_table_name (p_queue_name, 'w');
   v_etable text := absurd.format_table_name (p_queue_name, 'e');
   v_exists boolean;
+  v_rowcount integer;
 begin
   if p_event_name is null then
     raise exception 'await_event requires a non-null event name';
@@ -40,7 +41,8 @@ begin
   $fmt$, v_etable)
   using p_event_name
   into v_event_payload;
-  if found then
+  get diagnostics v_rowcount = row_count;
+  if v_rowcount > 0 then
     should_suspend := false;
     payload := v_event_payload;
     return next;
