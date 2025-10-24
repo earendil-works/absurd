@@ -12,34 +12,46 @@ needing any other services to run in addition to Postgres.
 
 *… because it's absurd how much you can over-design such a simple thing.*
 
-## Early Preview
-
-**Disclaimer:** this is an early experiment and should not be used in production.
+**Warning:** *this is an early experiment and should not be used in production.
 It's an exploration of if such a system can be built in a way that the majority
-of the complexity sits with the database and not the client SDKs.
+of the complexity sits with the database and not the client SDKs.*
+
+## What is Durable Execution?
+
+Durable execution (or durable workflows) is a way to run long-lived, reliable
+functions that can survive crashes, restarts, and network failures without losing
+state or duplicating work.  Durable execution can be thought of as the combination
+of a queue system and a state store that remembers the most recently seen state.
+
+Instead of running your logic in memory, a durable execution system decomposes
+a task into smaller pieces (step functions) and record every step and decision.
+When the process stops (fails, intentionally suspends or a machine dies), the
+engine can replay those events to restore the exact state and continue where it
+left off, as if nothing happened.
+
+In practice, that makes it possible to build dependable systems for things like
+LLM basd agents, payments, email scheduling, order processing, really anything
+that spans minutes, days, or even years.  Rather than bolting on ad-hoc retry
+logic and database checkpoints, durable workflows give you one consistent model
+for ensuring progress without double execution.  It's the promise of
+"exactly-once" semantics in distributed systems, but expressed as code you can
+read and reason about.
 
 ## Push vs Pull
 
 Absurd is a pull based system which means that your code pulls tasks from
 Postgres as it has capacity.  It does not support push at all, which would
-require another service to run.  Push systems have the inherent disadvantage
-that you need to take greater care of system load constraints.  If you need
-this, you can write yourself a simple service that pulls from Postgres and
-invokes tasks via HTTP or whatever.
-
-## Queues and State
-
-Absurd keeps both queues and state in Postgres as you would expect.  The state
-is stored according to TTLing policies which permits efficient state expiration
-by dropping entire partitions.  Queues are modelled after
-[pgmq](https://github.com/pgmq/pgmq).
+require a coordinator to run and call HTTP endpoints or similar.  Push systems
+have the inherent disadvantage that you need to take greater care of system load
+constraints.  If you need this, you can write yourself a simple service that
+consumes messages and makes HTTP requests.
 
 ## Highlevel Operations
 
-Absurd is built on small SDKs that just execute the underlying stored functions.
-However those SDKs are what makes the system convenient because it abstracts
-over the lowlevel operations in a way that makes it convenient for the language
-you are working with.
+Absurd's goal is to move the complexity of SDKs into the underlying stored
+functions.  The goal os the SDKs is that they make the system convenient by
+abstracting over the lowlevel operations in a way that leverages the ergonomics
+of the language you are working with.
 
 A *task* is dispatches onto a given *queue* from where a *worker* picks it up
 to work on.  Tasks are subdivided into *steps* which are excuted in sequence
