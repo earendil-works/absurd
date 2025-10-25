@@ -1,3 +1,35 @@
+-- Absurd installs a Postgres-native durable workflow system that can be dropped
+-- into an existing database.
+--
+-- It bootstraps the `absurd` schema and required extensions so that jobs, runs,
+-- checkpoints, and workflow events all live alongside application data without
+-- external services.
+--
+-- Each queue is materialized as its own set of tables that share a prefix:
+-- * `t_` for tasks (what is to be run)
+-- * `r_` for runs (attempts to run a task)
+-- * `c_` for checkpoints (saved states)
+-- * `e_` for emitted events
+-- * `w_` for wait registrations
+--
+-- The `ensure_queue_tables` helper builds those tables on demand, while
+-- `create_queue`, `drop_queue`, and `list_queues` provide the management
+-- surface for provisioning queues safely.
+--
+-- Task execution flows through `spawn_task`, which records the logical task and
+-- its first run, and `claim_task`, which hands work to workers with leasing
+-- semantics, state transitions, and cancellation checks.  Runtime routines
+-- such as `complete_run`, `schedule_run`, and `fail_run` advance or retry work,
+-- enforce attempt accounting, and keep the task and run tables synchronized.
+--
+-- Long-running or event-driven workflows rely on lightweight persistence
+-- primitives.  Checkpoint helpers (`set_task_checkpoint_state`,
+-- `get_task_checkpoint_state`, `get_task_checkpoint_states`) write arbitrary
+-- JSON payloads keyed by task and step, while `await_event` and `emit_event`
+-- coordinate sleepers and external signals so that tasks can suspend and resume
+-- without losing context.  Events are uniquely indexed and can only be fired
+-- once per name.
+
 create extension if not exists "uuid-ossp";
 
 create schema if not exists absurd;
@@ -6,7 +38,6 @@ create table if not exists absurd.queues (
   queue_name text primary key,
   created_at timestamptz not null default now()
 );
-
 
 create function absurd.ensure_queue_tables (p_queue_name text)
   returns void
