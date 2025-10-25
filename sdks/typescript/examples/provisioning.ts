@@ -47,13 +47,6 @@ type ActivationAuditParams = {
   activatedAt: string;
 };
 
-type ActivationStartMetadata = {
-  shouldTimeout: boolean;
-  timeoutMs: number;
-  minDelayMs: number;
-  maxDelayMs: number;
-};
-
 type ActivationEventPayload = {
   customerId: string;
   activatedAt: string;
@@ -98,47 +91,38 @@ function registerTasks(absurd: Absurd) {
         return true;
       });
 
-      const activationConfig = await ctx.step<ActivationStartMetadata>(
-        "start-activation-simulator",
-        async () => {
-          const shouldTimeout = Math.random() < 0.5;
-          const delayRange = shouldTimeout
-            ? LATE_DELAY_RANGE
-            : ON_TIME_DELAY_RANGE;
+      const shouldTimeout = Math.random() < 0.5;
+      const delayRange = shouldTimeout ? LATE_DELAY_RANGE : ON_TIME_DELAY_RANGE;
+      const activationTimeoutMs = ACTIVATION_TIMEOUT_MS;
 
-          log("provision", "starting activation simulator", {
+      await ctx.step("start-activation-simulator", async () => {
+        log("provision", "starting activation simulator", {
+          customerId: customer.id,
+          shouldTimeout,
+          delayRange,
+          timeoutMs: activationTimeoutMs,
+        });
+
+        await absurd.spawn<ActivationSimulatorParams>(
+          "activation-simulator",
+          {
             customerId: customer.id,
-            shouldTimeout,
-            delayRange,
-            timeoutMs: ACTIVATION_TIMEOUT_MS,
-          });
-
-          await absurd.spawn<ActivationSimulatorParams>(
-            "activation-simulator",
-            {
-              customerId: customer.id,
-              minDelayMs: delayRange.min,
-              maxDelayMs: delayRange.max,
-              timeoutMs: ACTIVATION_TIMEOUT_MS,
-              shouldTimeout,
-            },
-            { maxAttempts: 1 },
-          );
-
-          return {
-            shouldTimeout,
-            timeoutMs: ACTIVATION_TIMEOUT_MS,
             minDelayMs: delayRange.min,
             maxDelayMs: delayRange.max,
-          } satisfies ActivationStartMetadata;
-        },
-      );
+            timeoutMs: activationTimeoutMs,
+            shouldTimeout,
+          },
+          { maxAttempts: 1 },
+        );
+
+        return true;
+      });
 
       const eventName = `customer:${customer.id}:activated`;
       log("provision", "waiting for activation event", {
         customerId: customer.id,
         eventName,
-        timeoutMs: activationConfig.timeoutMs,
+        timeoutMs: activationTimeoutMs,
       });
 
       let activationPayload: ActivationEventPayload;
@@ -146,32 +130,30 @@ function registerTasks(absurd: Absurd) {
         const payload = await ctx.awaitEvent(
           "await-activation",
           eventName,
-          activationConfig.timeoutMs,
+          activationTimeoutMs,
         );
         activationPayload = payload as ActivationEventPayload;
       } catch (err) {
         if (err instanceof TimeoutError) {
-          const timeoutInfo = await ctx.step("activation-timeout", async () => {
-            const timedOutAt = new Date().toISOString();
-            log("provision", "activation wait timed out", {
-              customerId: customer.id,
-              timedOutAt,
-              timeoutMs: activationConfig.timeoutMs,
-              expectedTimeout: activationConfig.shouldTimeout,
-            });
-            return { timedOutAt };
+          const timedOutAt = new Date().toISOString();
+          log("provision", "activation wait timed out", {
+            customerId: customer.id,
+            timedOutAt,
+            timeoutMs: activationTimeoutMs,
+            expectedTimeout: shouldTimeout,
           });
 
           log("provision", "customer provisioning stalled", {
             customerId: customer.id,
             status: "activation-timeout",
-            timeoutMs: activationConfig.timeoutMs,
+            timedOutAt,
+            timeoutMs: activationTimeoutMs,
           });
 
           return {
             customerId: customer.id,
             status: "activation-timeout",
-            timeout: timeoutInfo,
+            timedOutAt,
           };
         }
         throw err;
@@ -185,13 +167,13 @@ function registerTasks(absurd: Absurd) {
         throw new Error("Activation payload missing activatedAt");
       }
 
-      const activation = await ctx.step("finalize-activation", async () => {
-        const activatedAt = activationPayload.activatedAt;
+      const activatedAt = await ctx.step("finalize-activation", async () => {
+        const activationTime = activationPayload.activatedAt;
         log("provision", "activation confirmed", {
           customerId: customer.id,
-          activatedAt,
+          activatedAt: activationTime,
         });
-        return { activatedAt };
+        return activationTime;
       });
 
       await ctx.step("audit-log-task", async () => {
@@ -202,7 +184,7 @@ function registerTasks(absurd: Absurd) {
           "post-activation-audit",
           {
             customerId: customer.id,
-            activatedAt: activation.activatedAt,
+            activatedAt,
           },
           { maxAttempts: 1 },
         );
@@ -217,7 +199,7 @@ function registerTasks(absurd: Absurd) {
       return {
         customerId: customer.id,
         status: "activated",
-        activatedAt: activation.activatedAt,
+        activatedAt,
       };
     },
   );
