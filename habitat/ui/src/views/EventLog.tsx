@@ -299,7 +299,7 @@ export default function EventLog() {
                       <div class="flex flex-wrap items-center justify-between gap-2">
                         <span class="font-medium">{event.eventName}</span>
                         <span class="text-xs text-muted-foreground">
-                          {formatEventTiming(event.emittedAt, event.updatedAt)}{" "}
+                          {formatEventTiming(event.emittedAt, event.createdAt)}{" "}
                           • Queue {event.queueName}
                         </span>
                       </div>
@@ -346,10 +346,10 @@ function formatTimestamp(value?: string | null): string {
 
 function formatEventTiming(
   emittedAt?: string | null,
-  updatedAt?: string,
+  createdAt?: string,
 ): string {
   if (emittedAt) {
     return `Emitted ${formatTimestamp(emittedAt)}`;
   }
-  return `Updated ${formatTimestamp(updatedAt)}`;
+  return `Created ${formatTimestamp(createdAt)}`;
 }

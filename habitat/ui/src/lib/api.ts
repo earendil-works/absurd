@@ -106,12 +106,6 @@ export interface TaskDetail extends TaskSummary {
   params?: any; // JSON object
   retryStrategy?: any | null;
   headers?: any | null;
-  claimedBy?: string | null;
-  leaseExpiresAt?: string | null;
-  nextWakeAt?: string | null;
-  wakeEvent?: string | null;
-  lastClaimedAt?: string | null;
-  finalStatus?: string | null;
   state?: any | null;
   checkpoints: CheckpointState[];
   waits: WaitState[];
@@ -125,16 +119,7 @@ export interface QueueSummary {
   sleepingCount: number;
   completedCount: number;
   failedCount: number;
-}
-
-export interface QueueMessage {
-  queueName: string;
-  messageId: string;
-  readCount: number;
-  enqueuedAt: string;
-  visibleAt: string;
-  message?: any;
-  headers?: any;
+  cancelledCount: number;
 }
 
 export interface QueueEvent {
@@ -143,7 +128,6 @@ export interface QueueEvent {
   payload?: any;
   emittedAt?: string | null;
   createdAt: string;
-  updatedAt: string;
 }
 
 export interface TaskListResponse {
@@ -224,26 +208,6 @@ export async function fetchQueueTasks(
 ): Promise<TaskSummary[]> {
   return handleResponse<TaskSummary[]>(
     await fetch(`/api/queues/${queueName}/tasks`, {
-      headers: defaultHeaders,
-    }),
-  );
-}
-
-export async function fetchQueueMessages(
-  queueName: string,
-  limit?: number,
-): Promise<QueueMessage[]> {
-  const params = new URLSearchParams();
-  if (typeof limit === "number" && Number.isFinite(limit)) {
-    params.set("limit", String(limit));
-  }
-  const query = params.toString();
-  const url = query
-    ? `/api/queues/${queueName}/messages?${query}`
-    : `/api/queues/${queueName}/messages`;
-
-  return handleResponse<QueueMessage[]>(
-    await fetch(url, {
       headers: defaultHeaders,
     }),
   );

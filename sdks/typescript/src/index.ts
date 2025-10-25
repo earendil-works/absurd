@@ -16,11 +16,17 @@ export interface RetryStrategy {
   maxSeconds?: number;
 }
 
+export interface CancellationPolicy {
+  maxDurationMs?: number;
+  maxDelayMs?: number;
+}
+
 export interface SpawnOptions {
   maxAttempts?: number;
   retryStrategy?: RetryStrategy;
   headers?: JsonObject;
   queue?: string;
+  cancellation?: CancellationPolicy;
 }
 
 export interface ClaimedMessage {
@@ -32,7 +38,6 @@ export interface ClaimedMessage {
   retry_strategy: JsonValue;
   max_attempts: number | null;
   headers: JsonObject | null;
-  lease_expires_at: Date;
   wake_event: string | null;
   event_payload: JsonValue | null;
 }
@@ -75,12 +80,14 @@ export interface TaskRegistrationOptions {
   name: string;
   queue?: string;
   defaultMaxAttempts?: number;
+  defaultCancellation?: CancellationPolicy;
 }
 
 interface RegisteredTask {
   name: string;
   queue: string;
   defaultMaxAttempts?: number;
+  defaultCancellation?: CancellationPolicy;
   handler: TaskHandler<any, any>;
 }
 
@@ -188,25 +195,25 @@ export class TaskContext {
   }
 
   private async scheduleRun(wakeAt: Date): Promise<void> {
-    await this.pool.query(`SELECT absurd.schedule_run($1, $2, $3, $4)`, [
+    await this.pool.query(`SELECT absurd.schedule_run($1, $2, $3)`, [
       this.queueName,
       this.message.run_id,
       wakeAt,
-      true,
     ]);
   }
 
-  async awaitEvent(
-    stepName: string,
-    eventName: string,
-  ): Promise<JsonValue | null> {
+  async awaitEvent(stepName: string, eventName: string): Promise<JsonValue> {
     if (!eventName) {
       throw new Error("eventName must be a non-empty string");
     }
     const checkpointName = this.getCheckpointName(stepName);
+    const cached = await this.lookupCheckpoint(checkpointName);
+    if (cached !== undefined) {
+      return cached as JsonValue;
+    }
     const result = await this.pool.query<{
       should_suspend: boolean;
-      payload: JsonValue | null;
+      payload: JsonValue;
     }>(
       `SELECT should_suspend, payload
        FROM absurd.await_event($1, $2, $3, $4, $5)`,
@@ -226,7 +233,7 @@ export class TaskContext {
     const { should_suspend, payload } = result.rows[0];
 
     if (!should_suspend) {
-      this.persistCheckpoint(checkpointName, payload);
+      this.checkpointCache.set(checkpointName, payload);
       return payload;
     }
 
@@ -301,6 +308,9 @@ export class Absurd {
     ) {
       throw new Error("defaultMaxAttempts must be at least 1");
     }
+    if (options.defaultCancellation) {
+      normalizeCancellation(options.defaultCancellation);
+    }
     const queue = options.queue ?? this.queueName;
     if (!queue) {
       throw new Error(
@@ -311,6 +321,7 @@ export class Absurd {
       name: options.name,
       queue,
       defaultMaxAttempts: options.defaultMaxAttempts,
+      defaultCancellation: options.defaultCancellation,
       handler: handler as TaskHandler<any, any>,
     });
   }
@@ -358,9 +369,14 @@ export class Absurd {
       options.maxAttempts !== undefined
         ? options.maxAttempts
         : registration?.defaultMaxAttempts;
+    const effectiveCancellation =
+      options.cancellation !== undefined
+        ? options.cancellation
+        : registration?.defaultCancellation;
     const normalizedOptions = normalizeSpawnOptions({
       ...options,
       maxAttempts: effectiveMaxAttempts,
+      cancellation: effectiveCancellation,
     });
 
     const result = await this.pool.query<{
@@ -397,7 +413,7 @@ export class Absurd {
   ): Promise<void> {
     const result = await this.pool.query<ClaimedMessage>(
       `SELECT run_id, task_id, attempt, task_name, params, retry_strategy, max_attempts,
-              headers, lease_expires_at, wake_event, event_payload
+              headers, wake_event, event_payload
        FROM absurd.claim_task($1, $2, $3, $4)`,
       [this.queueName, workerId, claimTimeout, batchSize],
     );
@@ -497,6 +513,10 @@ function normalizeSpawnOptions(options: SpawnOptions): JsonObject {
   if (options.retryStrategy) {
     normalized.retry_strategy = serializeRetryStrategy(options.retryStrategy);
   }
+  const cancellation = normalizeCancellation(options.cancellation);
+  if (cancellation) {
+    normalized.cancellation = cancellation;
+  }
   return normalized;
 }
 
@@ -514,6 +534,22 @@ function serializeRetryStrategy(strategy: RetryStrategy): JsonObject {
     serialized.max_seconds = strategy.maxSeconds;
   }
   return serialized;
+}
+
+function normalizeCancellation(
+  policy?: CancellationPolicy,
+): JsonObject | undefined {
+  if (!policy) {
+    return undefined;
+  }
+  const normalized: JsonObject = {};
+  if (policy.maxDurationMs !== undefined) {
+    normalized.max_duration_ms = policy.maxDurationMs;
+  }
+  if (policy.maxDelayMs !== undefined) {
+    normalized.max_delay_ms = policy.maxDelayMs;
+  }
+  return Object.keys(normalized).length > 0 ? normalized : undefined;
 }
 
 async function sleep(ms: number) {

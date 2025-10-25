@@ -17,6 +17,10 @@ import { Absurd, TaskContext } from "../src/index.ts";
 
 const DEFAULT_DB_URL = "postgresql://localhost/absurd";
 const DEFAULT_QUEUE = "provisioning_demo";
+const DEFAULT_CANCELLATION = {
+  maxDelayMs: 60000,
+  maxDurationMs: 120000,
+};
 
 type ProvisionCustomerParams = {
   customerId: string;
@@ -46,7 +50,7 @@ function log(scope: string, message: string, detail?: Record<string, unknown>) {
 
 function registerTasks(absurd: Absurd) {
   absurd.registerTask<ProvisionCustomerParams, unknown>(
-    { name: "provision-customer" },
+    { name: "provision-customer", defaultCancellation: DEFAULT_CANCELLATION },
     async (params, ctx: TaskContext) => {
       const customer = await ctx.step("create-customer-record", async () => {
         const createdAt = new Date().toISOString();
@@ -136,7 +140,10 @@ function registerTasks(absurd: Absurd) {
   const simulatedFailureTracker = new Map<string, number>();
 
   absurd.registerTask(
-    { name: "send-activation-email" },
+    {
+      name: "send-activation-email",
+      defaultCancellation: DEFAULT_CANCELLATION,
+    },
     async (
       params: { customerId: string; email: string },
       ctx: TaskContext,
@@ -182,7 +189,7 @@ function registerTasks(absurd: Absurd) {
   );
 
   absurd.registerTask<ActivationSimulatorParams>(
-    { name: "activation-simulator" },
+    { name: "activation-simulator", defaultCancellation: DEFAULT_CANCELLATION },
     async (params, ctx: TaskContext) => {
       const delayMs = await ctx.step("activation-delay", async () => {
         const range = params.maxDelayMs - params.minDelayMs;
@@ -228,7 +235,10 @@ function registerTasks(absurd: Absurd) {
   );
 
   absurd.registerTask<ActivationAuditParams>(
-    { name: "post-activation-audit" },
+    {
+      name: "post-activation-audit",
+      defaultCancellation: DEFAULT_CANCELLATION,
+    },
     async (params, ctx: TaskContext) => {
       const auditEntry = await ctx.step("record-audit", async () => {
         const recordedAt = new Date().toISOString();
@@ -252,7 +262,7 @@ function registerTasks(absurd: Absurd) {
 
 async function main() {
   const connectionString = process.env.ABSURD_DB_URL ?? DEFAULT_DB_URL;
-  const workerCount = Number(process.env.ABSURD_WORKERS ?? "3");
+  const workerCount = Number(process.env.ABSURD_WORKERS ?? "4");
   const runtimeMs = Number(process.env.ABSURD_RUNTIME_MS ?? "20000");
 
   log("main", "connecting to absurd queue", {
@@ -286,7 +296,7 @@ async function main() {
   );
 
   const pendingTasks = [];
-  for (let i = 0; i < 10; i++) {
+  for (let i = 0; i < 20; i++) {
     const params: ProvisionCustomerParams = {
       customerId: crypto.randomUUID(),
       email: `${crypto.randomUUID()}@example.com`,

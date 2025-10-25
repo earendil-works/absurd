@@ -57,16 +57,6 @@ function DetailContent(props: { detail: TaskDetail; taskLink?: string }) {
               </dd>
             </div>
             <div class="flex gap-2">
-              <dt class="text-muted-foreground w-32">Final status:</dt>
-              <dd>
-                {props.detail.finalStatus ? (
-                  <TaskStatusBadge status={props.detail.finalStatus} />
-                ) : (
-                  "—"
-                )}
-              </dd>
-            </div>
-            <div class="flex gap-2">
               <dt class="text-muted-foreground w-32">Task Name:</dt>
               <dd class="font-medium">
                 <Show when={props.taskLink} fallback={props.detail.taskName}>
@@ -129,58 +119,6 @@ function DetailContent(props: { detail: TaskDetail; taskLink?: string }) {
           </dl>
         </div>
       </div>
-
-      <Show
-        when={
-          props.detail.claimedBy ||
-          props.detail.leaseExpiresAt ||
-          props.detail.lastClaimedAt
-        }
-      >
-        <div>
-          <h3 class="text-sm font-semibold mb-2">Worker Information</h3>
-          <dl class="space-y-1 text-sm">
-            <Show when={props.detail.claimedBy}>
-              <div class="flex gap-2">
-                <dt class="text-muted-foreground w-32">Claimed By:</dt>
-                <dd>{props.detail.claimedBy}</dd>
-              </div>
-            </Show>
-            <Show when={props.detail.lastClaimedAt}>
-              <div class="flex gap-2">
-                <dt class="text-muted-foreground w-32">Last Claimed:</dt>
-                <dd>{formatTimestamp(props.detail.lastClaimedAt!)}</dd>
-              </div>
-            </Show>
-            <Show when={props.detail.leaseExpiresAt}>
-              <div class="flex gap-2">
-                <dt class="text-muted-foreground w-32">Lease Expires:</dt>
-                <dd>{formatTimestamp(props.detail.leaseExpiresAt!)}</dd>
-              </div>
-            </Show>
-          </dl>
-        </div>
-      </Show>
-
-      <Show when={props.detail.nextWakeAt || props.detail.wakeEvent}>
-        <div>
-          <h3 class="text-sm font-semibold mb-2">Wake Information</h3>
-          <dl class="space-y-1 text-sm">
-            <Show when={props.detail.nextWakeAt}>
-              <div class="flex gap-2">
-                <dt class="text-muted-foreground w-32">Next Wake:</dt>
-                <dd>{formatTimestamp(props.detail.nextWakeAt!)}</dd>
-              </div>
-            </Show>
-            <Show when={props.detail.wakeEvent}>
-              <div class="flex gap-2">
-                <dt class="text-muted-foreground w-32">Wake Event:</dt>
-                <dd>{props.detail.wakeEvent}</dd>
-              </div>
-            </Show>
-          </dl>
-        </div>
-      </Show>
 
       <Show when={props.detail.waits.length > 0}>
         <div>

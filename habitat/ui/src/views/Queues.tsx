@@ -115,6 +115,10 @@ export default function Queues() {
                           value={queue.completedCount}
                         />
                         <StatBlock label="Failed" value={queue.failedCount} />
+                        <StatBlock
+                          label="Cancelled"
+                          value={queue.cancelledCount}
+                        />
                       </div>
                     </CardContent>
                     <CardFooter class="gap-3 pb-4 pt-0">
