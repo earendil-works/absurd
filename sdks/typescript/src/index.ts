@@ -16,11 +16,17 @@ export interface RetryStrategy {
   maxSeconds?: number;
 }
 
+export interface CancellationPolicy {
+  maxDurationMs?: number;
+  maxDelayMs?: number;
+}
+
 export interface SpawnOptions {
   maxAttempts?: number;
   retryStrategy?: RetryStrategy;
   headers?: JsonObject;
   queue?: string;
+  cancellation?: CancellationPolicy;
 }
 
 export interface ClaimedMessage {
@@ -74,12 +80,14 @@ export interface TaskRegistrationOptions {
   name: string;
   queue?: string;
   defaultMaxAttempts?: number;
+  defaultCancellation?: CancellationPolicy;
 }
 
 interface RegisteredTask {
   name: string;
   queue: string;
   defaultMaxAttempts?: number;
+  defaultCancellation?: CancellationPolicy;
   handler: TaskHandler<any, any>;
 }
 
@@ -300,6 +308,9 @@ export class Absurd {
     ) {
       throw new Error("defaultMaxAttempts must be at least 1");
     }
+    if (options.defaultCancellation) {
+      normalizeCancellation(options.defaultCancellation);
+    }
     const queue = options.queue ?? this.queueName;
     if (!queue) {
       throw new Error(
@@ -310,6 +321,7 @@ export class Absurd {
       name: options.name,
       queue,
       defaultMaxAttempts: options.defaultMaxAttempts,
+      defaultCancellation: options.defaultCancellation,
       handler: handler as TaskHandler<any, any>,
     });
   }
@@ -357,9 +369,14 @@ export class Absurd {
       options.maxAttempts !== undefined
         ? options.maxAttempts
         : registration?.defaultMaxAttempts;
+    const effectiveCancellation =
+      options.cancellation !== undefined
+        ? options.cancellation
+        : registration?.defaultCancellation;
     const normalizedOptions = normalizeSpawnOptions({
       ...options,
       maxAttempts: effectiveMaxAttempts,
+      cancellation: effectiveCancellation,
     });
 
     const result = await this.pool.query<{
@@ -496,6 +513,10 @@ function normalizeSpawnOptions(options: SpawnOptions): JsonObject {
   if (options.retryStrategy) {
     normalized.retry_strategy = serializeRetryStrategy(options.retryStrategy);
   }
+  const cancellation = normalizeCancellation(options.cancellation);
+  if (cancellation) {
+    normalized.cancellation = cancellation;
+  }
   return normalized;
 }
 
@@ -513,6 +534,22 @@ function serializeRetryStrategy(strategy: RetryStrategy): JsonObject {
     serialized.max_seconds = strategy.maxSeconds;
   }
   return serialized;
+}
+
+function normalizeCancellation(
+  policy?: CancellationPolicy,
+): JsonObject | undefined {
+  if (!policy) {
+    return undefined;
+  }
+  const normalized: JsonObject = {};
+  if (policy.maxDurationMs !== undefined) {
+    normalized.max_duration_ms = policy.maxDurationMs;
+  }
+  if (policy.maxDelayMs !== undefined) {
+    normalized.max_delay_ms = policy.maxDelayMs;
+  }
+  return Object.keys(normalized).length > 0 ? normalized : undefined;
 }
 
 async function sleep(ms: number) {

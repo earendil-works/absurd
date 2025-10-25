@@ -10,26 +10,60 @@ declare
   v_rtable text := absurd.format_table_name (p_queue_name, 'r');
   v_wtable text := absurd.format_table_name (p_queue_name, 'w');
   v_etable text := absurd.format_table_name (p_queue_name, 'e');
-  v_exists boolean;
   v_rowcount integer;
+  v_run_created_at timestamptz;
+  v_run_started_at timestamptz;
+  v_run_options jsonb;
+  v_raw_cancellation jsonb;
+  v_max_duration_ms bigint;
+  v_max_delay_ms bigint;
+  v_cancel_at timestamptz;
+  v_candidate timestamptz;
+  v_target_vt timestamptz;
 begin
   if p_event_name is null then
     raise exception 'await_event requires a non-null event name';
   end if;
   execute format($fmt$
     select
-      true
+      created_at,
+      started_at,
+      options
     from
       absurd.%I
     where
       run_id = $1
       and task_id = $2
-    limit 1
   $fmt$, v_rtable)
   using p_run_id, p_task_id
-  into v_exists;
-  if not v_exists then
+  into v_run_created_at,
+  v_run_started_at,
+  v_run_options;
+  get diagnostics v_rowcount = row_count;
+  if v_rowcount = 0 then
     raise exception 'run % for task % not found in queue %', p_run_id, p_task_id, p_queue_name;
+  end if;
+  v_raw_cancellation := v_run_options -> 'cancellation';
+  v_cancel_at := null;
+  if v_raw_cancellation is not null and jsonb_typeof(v_raw_cancellation) = 'object' then
+    if v_raw_cancellation ? 'max_delay_ms' then
+      v_max_delay_ms := (v_raw_cancellation ->> 'max_delay_ms')::bigint;
+      if v_max_delay_ms is not null and v_max_delay_ms > 0 and v_run_started_at is null then
+        v_candidate := v_run_created_at + (interval '1 millisecond' * v_max_delay_ms);
+        if v_cancel_at is null or v_candidate < v_cancel_at then
+          v_cancel_at := v_candidate;
+        end if;
+      end if;
+    end if;
+    if v_raw_cancellation ? 'max_duration_ms' then
+      v_max_duration_ms := (v_raw_cancellation ->> 'max_duration_ms')::bigint;
+      if v_max_duration_ms is not null and v_max_duration_ms > 0 and v_run_started_at is not null then
+        v_candidate := v_run_started_at + (interval '1 millisecond' * v_max_duration_ms);
+        if v_cancel_at is null or v_candidate < v_cancel_at then
+          v_cancel_at := v_candidate;
+        end if;
+      end if;
+    end if;
   end if;
   execute format($fmt$
     select
@@ -74,8 +108,17 @@ begin
       run_id = $1
   $fmt$, v_rtable)
   using p_run_id, v_now;
+  if v_cancel_at is not null then
+    if v_cancel_at <= v_now then
+      v_target_vt := v_now;
+    else
+      v_target_vt := v_cancel_at;
+    end if;
+  else
+    v_target_vt := 'infinity'::timestamptz;
+  end if;
   perform
-    absurd.set_vt_at (p_queue_name, p_run_id, 'infinity'::timestamptz);
+    absurd.set_vt_at (p_queue_name, p_run_id, v_target_vt);
   should_suspend := true;
   payload := null;
   return next;

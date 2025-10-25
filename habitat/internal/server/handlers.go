@@ -471,7 +471,8 @@ func (s *Server) handleQueues(w http.ResponseWriter, r *http.Request) {
 				COUNT(*) FILTER (WHERE status = 'running') as running_count,
 				COUNT(*) FILTER (WHERE status = 'sleeping') as sleeping_count,
 				COUNT(*) FILTER (WHERE status = 'completed') as completed_count,
-				COUNT(*) FILTER (WHERE status = 'failed') as failed_count
+				COUNT(*) FILTER (WHERE status = 'failed') as failed_count,
+				COUNT(*) FILTER (WHERE status = 'cancelled') as cancelled_count
 			FROM absurd.%s
 		`, rtable)
 
@@ -483,6 +484,7 @@ func (s *Server) handleQueues(w http.ResponseWriter, r *http.Request) {
 			&summary.SleepingCount,
 			&summary.CompletedCount,
 			&summary.FailedCount,
+			&summary.CancelledCount,
 		)
 		if err != nil {
 			continue // Skip queues with errors
@@ -961,6 +963,7 @@ type QueueSummary struct {
 	SleepingCount  int64      `json:"sleepingCount"`
 	CompletedCount int64      `json:"completedCount"`
 	FailedCount    int64      `json:"failedCount"`
+	CancelledCount int64      `json:"cancelledCount"`
 }
 
 type TaskListResponse struct {

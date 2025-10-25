@@ -197,9 +197,10 @@ begin
       attempt integer not null,
       task_name text not null,
       params jsonb not null,
-      status text not null default 'pending' check (status in ('pending', 'running', 'sleeping', 'completed', 'failed', 'abandoned')),
+      status text not null default 'pending' check (status in ('pending', 'running', 'sleeping', 'completed', 'failed', 'abandoned', 'cancelled')),
       created_at timestamptz not null default now(),
       updated_at timestamptz not null default now(),
+      started_at timestamptz,
       completed_at timestamptz,
       state jsonb,
       options jsonb not null default '{}'::jsonb,
@@ -380,6 +381,10 @@ declare
   v_headers jsonb;
   v_retry_strategy jsonb;
   v_max_attempts integer;
+  v_raw_cancellation jsonb;
+  v_cancellation jsonb;
+  v_max_duration_ms bigint;
+  v_max_delay_ms bigint;
   v_message jsonb;
   v_raw_options jsonb := coalesce(p_options, '{}'::jsonb);
   v_sanitized_options jsonb;
@@ -389,6 +394,7 @@ declare
 begin
   v_headers := v_raw_options -> 'headers';
   v_retry_strategy := v_raw_options -> 'retry_strategy';
+  v_raw_cancellation := v_raw_options -> 'cancellation';
   if v_raw_options ? 'max_attempts' then
     v_max_attempts := (v_raw_options ->> 'max_attempts')::integer;
     if v_max_attempts < 1 then
@@ -396,6 +402,28 @@ begin
     end if;
   else
     v_max_attempts := null;
+  end if;
+  if v_raw_cancellation is not null and jsonb_typeof(v_raw_cancellation) = 'object' then
+    v_cancellation := '{}'::jsonb;
+    if v_raw_cancellation ? 'max_duration_ms' then
+      v_max_duration_ms := (v_raw_cancellation ->> 'max_duration_ms')::bigint;
+      if v_max_duration_ms <= 0 then
+        raise exception 'max_duration_ms must be greater than 0';
+      end if;
+      v_cancellation := v_cancellation || jsonb_build_object('max_duration_ms', v_max_duration_ms);
+    end if;
+    if v_raw_cancellation ? 'max_delay_ms' then
+      v_max_delay_ms := (v_raw_cancellation ->> 'max_delay_ms')::bigint;
+      if v_max_delay_ms <= 0 then
+        raise exception 'max_delay_ms must be greater than 0';
+      end if;
+      v_cancellation := v_cancellation || jsonb_build_object('max_delay_ms', v_max_delay_ms);
+    end if;
+    if v_cancellation = '{}'::jsonb then
+      v_cancellation := null;
+    end if;
+  else
+    v_cancellation := null;
   end if;
   v_sanitized_options := v_raw_options;
   if v_max_attempts is not null then
@@ -412,6 +440,11 @@ begin
     v_sanitized_options := v_sanitized_options || jsonb_build_object('headers', v_headers);
   else
     v_sanitized_options := v_sanitized_options - 'headers';
+  end if;
+  if v_cancellation is not null then
+    v_sanitized_options := v_sanitized_options || jsonb_build_object('cancellation', v_cancellation);
+  else
+    v_sanitized_options := v_sanitized_options - 'cancellation';
   end if;
   v_sanitized_options := jsonb_strip_nulls(v_sanitized_options);
   if v_sanitized_options is null then
@@ -504,6 +537,9 @@ begin
         r.attempt,
         r.task_name,
         r.params,
+        r.options,
+        r.created_at,
+        r.started_at,
         w.wake_event,
         w.payload
       from
@@ -523,6 +559,95 @@ begin
           limit 1
         ) as w on true
     ),
+    to_cancel as (
+      select
+        cl.msg_id,
+        cl.task_id,
+        cl.attempt,
+        cancel.reason,
+        case cancel.reason
+          when 'max_delay_exceeded' then cancel.max_delay_ms
+          when 'max_duration_exceeded' then cancel.max_duration_ms
+          else null
+        end as limit_ms,
+        case cancel.reason
+          when 'max_delay_exceeded' then floor(extract(epoch from ($4 - cl.created_at)) * 1000)::bigint
+          when 'max_duration_exceeded' then floor(extract(epoch from ($4 - cl.started_at)) * 1000)::bigint
+          else null
+        end as elapsed_ms,
+        case cancel.reason
+          when 'max_delay_exceeded' then 'startup'
+          when 'max_duration_exceeded' then 'runtime'
+          else null
+        end as phase
+      from
+        claimable cl
+        cross join lateral (
+          select
+            case
+              when opt.cancellation is null then null
+              when opt.cancellation ? 'max_delay_ms'
+                and cl.started_at is null
+                and cl.created_at + (interval '1 millisecond' * (opt.cancellation ->> 'max_delay_ms')::bigint) <= $4 then 'max_delay_exceeded'
+              when opt.cancellation ? 'max_duration_ms'
+                and cl.started_at is not null
+                and cl.started_at + (interval '1 millisecond' * (opt.cancellation ->> 'max_duration_ms')::bigint) <= $4 then 'max_duration_exceeded'
+              else null
+            end as reason,
+            (opt.cancellation ->> 'max_delay_ms')::bigint as max_delay_ms,
+            (opt.cancellation ->> 'max_duration_ms')::bigint as max_duration_ms
+          from
+            (select cl.options -> 'cancellation' as cancellation) as opt
+        ) as cancel
+      where
+        cancel.reason is not null
+    ),
+    cancel_runs as (
+      update
+        absurd.%I as r
+      set
+        status = 'cancelled',
+        updated_at = $4,
+        state = jsonb_build_object(
+          'status', 'cancelled',
+          'reason', t.reason,
+          'phase', t.phase,
+          'limit_ms', t.limit_ms,
+          'elapsed_ms', t.elapsed_ms,
+          'cancelled_at', $4,
+          'attempt', r.attempt
+        )
+      from
+        to_cancel t
+      where
+        r.run_id = t.msg_id
+      returning
+        r.run_id
+    ),
+    cancel_queue as (
+      delete from absurd.%I as q
+      using to_cancel t
+      where
+        q.msg_id = t.msg_id
+      returning
+        q.msg_id
+    ),
+    cancel_waits as (
+      delete from absurd.%I as w
+      using to_cancel t
+      where
+        w.run_id = t.msg_id
+    ),
+    active_claimable as (
+      select
+        c.*
+      from
+        claimable c
+        left join to_cancel t
+          on t.msg_id = c.msg_id
+      where
+        t.msg_id is null
+    ),
     update_queue as (
       update
         absurd.%I as q
@@ -530,7 +655,7 @@ begin
         vt = $3,
         read_ct = q.read_ct + 1
       from
-        claimable c
+        active_claimable c
       where
         q.msg_id = c.msg_id
       returning
@@ -541,9 +666,10 @@ begin
         absurd.%I as r
       set
         status = 'running',
+        started_at = coalesce(r.started_at, $4),
         updated_at = $4
       from
-        claimable c
+        active_claimable c
       where
         r.run_id = c.msg_id
       returning
@@ -556,7 +682,7 @@ begin
     ),
     delete_waits as (
       delete from absurd.%I as w
-      using claimable c
+      using active_claimable c
       where
         w.run_id = c.msg_id
     )
@@ -572,14 +698,14 @@ begin
       c.wake_event,
       c.payload as event_payload
     from
-      claimable c
+      active_claimable c
       join update_runs u
         on u.run_id = c.msg_id
       left join update_queue
         on update_queue.msg_id = c.msg_id
       order by
         c.msg_id asc
-  $fmt$, v_qtable, v_qtable, v_rtable, v_rtable, v_wtable, v_qtable, v_rtable, v_wtable);
+  $fmt$, v_qtable, v_qtable, v_rtable, v_rtable, v_wtable, v_rtable, v_qtable, v_wtable, v_qtable, v_rtable, v_wtable);
   return query execute v_sql
   using p_qty, v_claimed_at, v_lease_expires, v_claimed_at;
 end;
@@ -591,6 +717,7 @@ create function absurd.complete_run (p_queue_name text, p_run_id uuid, p_state j
   as $$
 declare
   v_task_id uuid;
+  v_status text;
   v_now timestamptz := clock_timestamp();
   v_rtable text := absurd.format_table_name (p_queue_name, 'r');
   v_wtable text := absurd.format_table_name (p_queue_name, 'w');
@@ -598,17 +725,25 @@ declare
 begin
   execute format($fmt$
     select
-      task_id
+      task_id,
+      status
     from
       absurd.%I
     where
       run_id = $1
   $fmt$, v_rtable)
   using p_run_id
-  into v_task_id;
+  into v_task_id,
+  v_status;
   get diagnostics v_rowcount = row_count;
   if v_rowcount = 0 then
     raise exception 'run % not found for queue %', p_run_id, p_queue_name;
+  end if;
+  if v_status = 'cancelled' then
+    raise exception 'run % has been cancelled and cannot be completed', p_run_id;
+  end if;
+  if v_status <> 'running' then
+    raise exception 'run % cannot be completed from status %', p_run_id, v_status;
   end if;
   perform
     absurd.delete (p_queue_name, p_run_id);
@@ -660,6 +795,7 @@ declare
   v_task_name text;
   v_params jsonb;
   v_rowcount integer;
+  v_status text;
 begin
   execute format($fmt$
     select
@@ -667,7 +803,8 @@ begin
       attempt,
       options,
       task_name,
-      params
+      params,
+      status
     from
       absurd.%I
     where
@@ -678,10 +815,17 @@ begin
   v_attempt,
   v_options,
   v_task_name,
-  v_params;
+  v_params,
+  v_status;
   get diagnostics v_rowcount = row_count;
   if v_rowcount = 0 then
     raise exception 'run % not found for queue %', p_run_id, p_queue_name;
+  end if;
+  if v_status = 'cancelled' then
+    raise exception 'run % has been cancelled and cannot fail', p_run_id;
+  end if;
+  if v_status <> 'running' then
+    raise exception 'run % cannot be failed from status %', p_run_id, v_status;
   end if;
   v_headers := v_options -> 'headers';
   if v_options ? 'max_attempts' then
@@ -796,6 +940,15 @@ declare
   v_now timestamptz := clock_timestamp();
   v_rtable text := absurd.format_table_name (p_queue_name, 'r');
   v_wtable text := absurd.format_table_name (p_queue_name, 'w');
+  v_created_at timestamptz;
+  v_started_at timestamptz;
+  v_options jsonb;
+  v_raw_cancellation jsonb;
+  v_max_duration_ms bigint;
+  v_max_delay_ms bigint;
+  v_cancel_at timestamptz;
+  v_candidate timestamptz;
+  v_effective_wake_at timestamptz;
 begin
   execute format($fmt$
     update absurd.%I
@@ -809,13 +962,41 @@ begin
     where
       run_id = $1
     returning
-      task_id
+      task_id,
+      created_at,
+      started_at,
+      options
   $fmt$, v_rtable)
   using p_run_id, p_wake_at, p_suspend, v_now
-  into v_task_id;
+  into v_task_id,
+  v_created_at,
+  v_started_at,
+  v_options;
   get diagnostics v_rowcount = row_count;
   if v_rowcount = 0 then
     raise exception 'run % not found for queue %', p_run_id, p_queue_name;
+  end if;
+  v_raw_cancellation := v_options -> 'cancellation';
+  v_cancel_at := null;
+  if v_raw_cancellation is not null and jsonb_typeof(v_raw_cancellation) = 'object' then
+    if v_raw_cancellation ? 'max_delay_ms' then
+      v_max_delay_ms := (v_raw_cancellation ->> 'max_delay_ms')::bigint;
+      if v_max_delay_ms is not null and v_max_delay_ms > 0 and v_started_at is null then
+        v_candidate := v_created_at + (interval '1 millisecond' * v_max_delay_ms);
+        if v_cancel_at is null or v_candidate < v_cancel_at then
+          v_cancel_at := v_candidate;
+        end if;
+      end if;
+    end if;
+    if v_raw_cancellation ? 'max_duration_ms' then
+      v_max_duration_ms := (v_raw_cancellation ->> 'max_duration_ms')::bigint;
+      if v_max_duration_ms is not null and v_max_duration_ms > 0 and v_started_at is not null then
+        v_candidate := v_started_at + (interval '1 millisecond' * v_max_duration_ms);
+        if v_cancel_at is null or v_candidate < v_cancel_at then
+          v_cancel_at := v_candidate;
+        end if;
+      end if;
+    end if;
   end if;
   if p_suspend then
     execute format($fmt$
@@ -843,8 +1024,20 @@ begin
       and wait_type = 'event'
   $fmt$, v_wtable)
   using p_run_id;
+  v_effective_wake_at := p_wake_at;
+  if v_cancel_at is not null then
+    if v_effective_wake_at is null or v_effective_wake_at > v_cancel_at then
+      v_effective_wake_at := v_cancel_at;
+    end if;
+  end if;
+  if v_effective_wake_at is null then
+    v_effective_wake_at := v_now;
+  end if;
+  if v_effective_wake_at < v_now then
+    v_effective_wake_at := v_now;
+  end if;
   perform
-    absurd.set_vt_at (p_queue_name, p_run_id, p_wake_at);
+    absurd.set_vt_at (p_queue_name, p_run_id, v_effective_wake_at);
 end;
 $$
 language plpgsql;
@@ -860,26 +1053,60 @@ declare
   v_rtable text := absurd.format_table_name (p_queue_name, 'r');
   v_wtable text := absurd.format_table_name (p_queue_name, 'w');
   v_etable text := absurd.format_table_name (p_queue_name, 'e');
-  v_exists boolean;
   v_rowcount integer;
+  v_run_created_at timestamptz;
+  v_run_started_at timestamptz;
+  v_run_options jsonb;
+  v_raw_cancellation jsonb;
+  v_max_duration_ms bigint;
+  v_max_delay_ms bigint;
+  v_cancel_at timestamptz;
+  v_candidate timestamptz;
+  v_target_vt timestamptz;
 begin
   if p_event_name is null then
     raise exception 'await_event requires a non-null event name';
   end if;
   execute format($fmt$
     select
-      true
+      created_at,
+      started_at,
+      options
     from
       absurd.%I
     where
       run_id = $1
       and task_id = $2
-    limit 1
   $fmt$, v_rtable)
   using p_run_id, p_task_id
-  into v_exists;
-  if not v_exists then
+  into v_run_created_at,
+  v_run_started_at,
+  v_run_options;
+  get diagnostics v_rowcount = row_count;
+  if v_rowcount = 0 then
     raise exception 'run % for task % not found in queue %', p_run_id, p_task_id, p_queue_name;
+  end if;
+  v_raw_cancellation := v_run_options -> 'cancellation';
+  v_cancel_at := null;
+  if v_raw_cancellation is not null and jsonb_typeof(v_raw_cancellation) = 'object' then
+    if v_raw_cancellation ? 'max_delay_ms' then
+      v_max_delay_ms := (v_raw_cancellation ->> 'max_delay_ms')::bigint;
+      if v_max_delay_ms is not null and v_max_delay_ms > 0 and v_run_started_at is null then
+        v_candidate := v_run_created_at + (interval '1 millisecond' * v_max_delay_ms);
+        if v_cancel_at is null or v_candidate < v_cancel_at then
+          v_cancel_at := v_candidate;
+        end if;
+      end if;
+    end if;
+    if v_raw_cancellation ? 'max_duration_ms' then
+      v_max_duration_ms := (v_raw_cancellation ->> 'max_duration_ms')::bigint;
+      if v_max_duration_ms is not null and v_max_duration_ms > 0 and v_run_started_at is not null then
+        v_candidate := v_run_started_at + (interval '1 millisecond' * v_max_duration_ms);
+        if v_cancel_at is null or v_candidate < v_cancel_at then
+          v_cancel_at := v_candidate;
+        end if;
+      end if;
+    end if;
   end if;
   execute format($fmt$
     select
@@ -924,8 +1151,17 @@ begin
       run_id = $1
   $fmt$, v_rtable)
   using p_run_id, v_now;
+  if v_cancel_at is not null then
+    if v_cancel_at <= v_now then
+      v_target_vt := v_now;
+    else
+      v_target_vt := v_cancel_at;
+    end if;
+  else
+    v_target_vt := 'infinity'::timestamptz;
+  end if;
   perform
-    absurd.set_vt_at (p_queue_name, p_run_id, 'infinity'::timestamptz);
+    absurd.set_vt_at (p_queue_name, p_run_id, v_target_vt);
   should_suspend := true;
   payload := null;
   return next;

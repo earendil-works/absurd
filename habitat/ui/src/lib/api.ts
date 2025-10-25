@@ -119,6 +119,7 @@ export interface QueueSummary {
   sleepingCount: number;
   completedCount: number;
   failedCount: number;
+  cancelledCount: number;
 }
 
 export interface QueueMessage {
