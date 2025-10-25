@@ -76,6 +76,13 @@ export class SuspendTask extends Error {
   }
 }
 
+export class TimeoutError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "TimeoutError";
+  }
+}
+
 export interface TaskRegistrationOptions {
   name: string;
   queue?: string;
@@ -202,27 +209,45 @@ export class TaskContext {
     ]);
   }
 
-  async awaitEvent(stepName: string, eventName: string): Promise<JsonValue> {
+  async awaitEvent(
+    stepName: string,
+    eventName: string,
+    timeout?: number,
+  ): Promise<JsonValue> {
     if (!eventName) {
       throw new Error("eventName must be a non-empty string");
+    }
+    let timeoutMs: number | null = null;
+    if (timeout !== undefined && Number.isFinite(timeout) && timeout >= 0) {
+      timeoutMs = Math.floor(timeout);
     }
     const checkpointName = this.getCheckpointName(stepName);
     const cached = await this.lookupCheckpoint(checkpointName);
     if (cached !== undefined) {
       return cached as JsonValue;
     }
+    if (
+      this.message.wake_event === eventName &&
+      (this.message.event_payload === null ||
+        this.message.event_payload === undefined)
+    ) {
+      this.message.wake_event = null;
+      this.message.event_payload = null;
+      throw new TimeoutError(`Timed out waiting for event "${eventName}"`);
+    }
     const result = await this.pool.query<{
       should_suspend: boolean;
       payload: JsonValue;
     }>(
       `SELECT should_suspend, payload
-       FROM absurd.await_event($1, $2, $3, $4, $5)`,
+       FROM absurd.await_event($1, $2, $3, $4, $5, $6)`,
       [
         this.queueName,
         this.message.task_id,
         this.message.run_id,
         checkpointName,
         eventName,
+        timeoutMs,
       ],
     );
 
@@ -234,6 +259,7 @@ export class TaskContext {
 
     if (!should_suspend) {
       this.checkpointCache.set(checkpointName, payload);
+      this.message.event_payload = null;
       return payload;
     }
 

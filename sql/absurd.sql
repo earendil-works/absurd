@@ -115,12 +115,19 @@ begin
         run_id uuid not null references absurd.%s(run_id) on delete cascade,
         step_name text not null,
         event_name text not null,
+        timeout_at timestamptz,
         created_at timestamptz not null default now(),
         primary key (run_id, step_name)
      )',
     quote_ident('w_' || p_queue_name),
     quote_ident('t_' || p_queue_name),
     quote_ident('r_' || p_queue_name)
+  );
+
+  execute format(
+    'alter table absurd.%s
+        add column if not exists timeout_at timestamptz',
+    quote_ident('w_' || p_queue_name)
   );
 
   execute format(
@@ -392,6 +399,14 @@ begin
           from updated u
          where t.task_id = u.task_id
          returning t.task_id
+     ),
+     wait_cleanup as (
+        delete from absurd.%s w
+         using updated u
+        where w.run_id = u.run_id
+          and w.timeout_at is not null
+          and w.timeout_at <= $1
+        returning w.run_id
      )
      select
        u.run_id,
@@ -412,6 +427,7 @@ begin
     quote_ident('t_' || p_queue_name),
     quote_ident('r_' || p_queue_name),
     quote_ident('t_' || p_queue_name),
+    quote_ident('w_' || p_queue_name),
     quote_ident('r_' || p_queue_name),
     quote_ident('t_' || p_queue_name)
   );
@@ -785,7 +801,8 @@ create function absurd.await_event (
   p_task_id uuid,
   p_run_id uuid,
   p_step_name text,
-  p_event_name text
+  p_event_name text,
+  p_timeout_ms integer default null
 )
   returns table (
     should_suspend boolean,
@@ -799,11 +816,22 @@ declare
   v_event_payload jsonb;
   v_checkpoint_payload jsonb;
   v_resolved_payload jsonb;
+  v_timeout_at timestamptz;
+  v_available_at timestamptz;
   v_now timestamptz := clock_timestamp();
 begin
   if p_event_name is null or length(trim(p_event_name)) = 0 then
     raise exception 'event_name must be provided';
   end if;
+
+  if p_timeout_ms is not null then
+    if p_timeout_ms < 0 then
+      raise exception 'timeout_ms must be non-negative';
+    end if;
+    v_timeout_at := v_now + (p_timeout_ms::double precision * interval '1 millisecond');
+  end if;
+
+  v_available_at := coalesce(v_timeout_at, 'infinity'::timestamptz);
 
   execute format(
     'select state
@@ -880,25 +908,26 @@ begin
   end if;
 
   execute format(
-    'insert into absurd.%s (task_id, run_id, step_name, event_name, created_at)
-     values ($1, $2, $3, $4, $5)
+    'insert into absurd.%s (task_id, run_id, step_name, event_name, timeout_at, created_at)
+     values ($1, $2, $3, $4, $5, $6)
      on conflict (run_id, step_name)
      do update set event_name = excluded.event_name,
+                   timeout_at = excluded.timeout_at,
                    created_at = excluded.created_at',
     quote_ident('w_' || p_queue_name)
-  ) using p_task_id, p_run_id, p_step_name, p_event_name, v_now;
+  ) using p_task_id, p_run_id, p_step_name, p_event_name, v_timeout_at, v_now;
 
   execute format(
     'update absurd.%s
         set state = ''sleeping'',
             claimed_by = null,
             claim_expires_at = null,
-            available_at = ''infinity''::timestamptz,
+            available_at = $3,
             wake_event = $2,
             event_payload = null
       where run_id = $1',
     quote_ident('r_' || p_queue_name)
-  ) using p_run_id, p_event_name;
+  ) using p_run_id, p_event_name, v_available_at;
 
   execute format(
     'update absurd.%s
