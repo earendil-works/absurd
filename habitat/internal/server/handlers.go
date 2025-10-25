@@ -51,7 +51,7 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	// Query all queues and compute metrics based on task states
-	rows, err := s.db.QueryContext(ctx, `SELECT queue_name, identifier, created_at FROM absurd.queues ORDER BY queue_name`)
+	rows, err := s.db.QueryContext(ctx, `SELECT queue_name, created_at FROM absurd.queues ORDER BY queue_name`)
 	if err != nil {
 		http.Error(w, "failed to query queues", http.StatusInternalServerError)
 		return
@@ -62,15 +62,15 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	now := time.Now()
 
 	for rows.Next() {
-		var queueName, identifier string
+		var queueName string
 		var createdAt time.Time
-		if err := rows.Scan(&queueName, &identifier, &createdAt); err != nil {
+		if err := rows.Scan(&queueName, &createdAt); err != nil {
 			log.Printf("handleMetrics: failed to scan queue: %v", err)
 			continue
 		}
 
-		ttable := queueTableIdentifier("t", identifier)
-		rtable := queueTableIdentifier("r", identifier)
+		ttable := queueTableIdentifier("t", queueName)
+		rtable := queueTableIdentifier("r", queueName)
 
 		// Query task counts and timing info
 		query := fmt.Sprintf(`
@@ -187,14 +187,8 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		identifier, err := s.getQueueIdentifier(ctx, queueName)
-		if err != nil {
-			log.Printf("handleTasks: failed to get identifier for queue %s: %v", queueName, err)
-			continue
-		}
-
-		ttable := queueTableIdentifier("t", identifier)
-		rtable := queueTableIdentifier("r", identifier)
+		ttable := queueTableIdentifier("t", queueName)
+		rtable := queueTableIdentifier("r", queueName)
 		queueLiteral := pq.QuoteLiteral(queueName)
 		query := fmt.Sprintf(`
 			SELECT
@@ -310,16 +304,15 @@ func (s *Server) handleTaskDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get queue identifier and query full task details from t_* and r_* tables
-	identifier, err := s.getQueueIdentifier(ctx, queueName)
-	if err != nil {
-		log.Printf("handleTaskDetail: failed to get identifier for queue %s: %v", queueName, err)
+	// Ensure the queue still exists and query full task details from t_* and r_* tables
+	if err := s.ensureQueueExists(ctx, queueName); err != nil {
+		log.Printf("handleTaskDetail: failed to confirm queue %s exists: %v", queueName, err)
 		http.Error(w, "failed to query task", http.StatusInternalServerError)
 		return
 	}
 
-	ttable := queueTableIdentifier("t", identifier)
-	rtable := queueTableIdentifier("r", identifier)
+	ttable := queueTableIdentifier("t", queueName)
+	rtable := queueTableIdentifier("r", queueName)
 	queueLiteral := pq.QuoteLiteral(queueName)
 	query := fmt.Sprintf(`
 		SELECT
@@ -370,9 +363,9 @@ func (s *Server) handleTaskDetail(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Query checkpoints from c_* table. For run detail view, only show checkpoints owned by this run.
-	ctable := queueTableIdentifier("c", identifier)
-	wtable := queueTableIdentifier("w", identifier)
-	etable := queueTableIdentifier("e", identifier)
+	ctable := queueTableIdentifier("c", queueName)
+	wtable := queueTableIdentifier("w", queueName)
+	etable := queueTableIdentifier("e", queueName)
 	checkpointQuery := fmt.Sprintf(`
 		SELECT checkpoint_name, state, status, owner_run_id, NULL::timestamptz AS expires_at, updated_at
 		FROM absurd.%s
@@ -450,7 +443,7 @@ func (s *Server) handleQueues(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	// Query all queues from absurd.queues table
-	rows, err := s.db.QueryContext(ctx, `SELECT queue_name, identifier, created_at FROM absurd.queues ORDER BY queue_name`)
+	rows, err := s.db.QueryContext(ctx, `SELECT queue_name, created_at FROM absurd.queues ORDER BY queue_name`)
 	if err != nil {
 		log.Printf("handleQueues: failed to query queues: %v", err)
 		http.Error(w, "failed to query queues", http.StatusInternalServerError)
@@ -460,15 +453,15 @@ func (s *Server) handleQueues(w http.ResponseWriter, r *http.Request) {
 
 	var queues []QueueSummary
 	for rows.Next() {
-		var queueName, identifier string
+		var queueName string
 		var createdAt time.Time
-		if err := rows.Scan(&queueName, &identifier, &createdAt); err != nil {
+		if err := rows.Scan(&queueName, &createdAt); err != nil {
 			http.Error(w, "failed to scan queue", http.StatusInternalServerError)
 			return
 		}
 
 		// Count tasks by state for this queue
-		ttable := queueTableIdentifier("t", identifier)
+		ttable := queueTableIdentifier("t", queueName)
 		countQuery := fmt.Sprintf(`
 			SELECT
 				COUNT(*) FILTER (WHERE state = 'pending') as pending_count,
@@ -541,15 +534,14 @@ func (s *Server) handleQueueTasks(w http.ResponseWriter, r *http.Request, queueN
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	identifier, err := s.getQueueIdentifier(ctx, queueName)
-	if err != nil {
-		log.Printf("handleQueueTasks: failed to get identifier for queue %s: %v", queueName, err)
+	if err := s.ensureQueueExists(ctx, queueName); err != nil {
+		log.Printf("handleQueueTasks: queue %s not found: %v", queueName, err)
 		http.Error(w, "queue not found", http.StatusNotFound)
 		return
 	}
 
-	ttable := queueTableIdentifier("t", identifier)
-	rtable := queueTableIdentifier("r", identifier)
+	ttable := queueTableIdentifier("t", queueName)
+	rtable := queueTableIdentifier("r", queueName)
 	queueLiteral := pq.QuoteLiteral(queueName)
 	query := fmt.Sprintf(`
 		SELECT
@@ -596,7 +588,6 @@ func (s *Server) handleQueueTasks(w http.ResponseWriter, r *http.Request, queueN
 	writeJSON(w, http.StatusOK, tasks)
 }
 
-
 func (s *Server) handleQueueEvents(w http.ResponseWriter, r *http.Request, queueName string) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
@@ -625,12 +616,11 @@ func (s *Server) fetchQueueEvents(ctx context.Context, queueName string, limit i
 		limit = 1000
 	}
 
-	identifier, err := s.getQueueIdentifier(ctx, queueName)
-	if err != nil {
+	if err := s.ensureQueueExists(ctx, queueName); err != nil {
 		return nil, err
 	}
 
-	etable := queueTableIdentifier("e", identifier)
+	etable := queueTableIdentifier("e", queueName)
 
 	var (
 		params  []any
@@ -777,13 +767,7 @@ func (s *Server) findQueueForRun(ctx context.Context, runID string) (string, err
 	}
 
 	for _, queueName := range queueNames {
-		identifier, err := s.getQueueIdentifier(ctx, queueName)
-		if err != nil {
-			log.Printf("findQueueForRun: failed to get identifier for queue %s: %v", queueName, err)
-			continue
-		}
-
-		rtable := queueTableIdentifier("r", identifier)
+		rtable := queueTableIdentifier("r", queueName)
 		query := fmt.Sprintf(`SELECT 1 FROM absurd.%s WHERE run_id = $1 LIMIT 1`, rtable)
 		var dummy int
 		err = s.db.QueryRowContext(ctx, query, runID).Scan(&dummy)
@@ -801,17 +785,13 @@ func (s *Server) findQueueForRun(ctx context.Context, runID string) (string, err
 	return "", sql.ErrNoRows
 }
 
-func (s *Server) getQueueIdentifier(ctx context.Context, queueName string) (string, error) {
-	var identifier string
-	err := s.db.QueryRowContext(ctx, `SELECT identifier FROM absurd.queues WHERE queue_name = $1`, queueName).Scan(&identifier)
-	if err != nil {
-		return "", err
-	}
-	return identifier, nil
+func (s *Server) ensureQueueExists(ctx context.Context, queueName string) error {
+	var name string
+	return s.db.QueryRowContext(ctx, `SELECT queue_name FROM absurd.queues WHERE queue_name = $1`, queueName).Scan(&name)
 }
 
-func queueTableIdentifier(prefix, identifier string) string {
-	return pq.QuoteIdentifier(prefix + "_" + identifier)
+func queueTableIdentifier(prefix, queueName string) string {
+	return pq.QuoteIdentifier(prefix + "_" + queueName)
 }
 
 type taskSummaryRecord struct {

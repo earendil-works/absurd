@@ -4,97 +4,23 @@ create schema if not exists absurd;
 
 create table if not exists absurd.queues (
   queue_name text primary key,
-  identifier text not null unique,
   created_at timestamptz not null default now()
 );
 
-create function absurd.portable_uuidv7 ()
-  returns uuid
-  language plpgsql
-  volatile
-as $$
-declare
-  v_server_num integer := current_setting('server_version_num')::int;
-  ts_ms bigint;
-  b bytea;
-  rnd bytea;
-  i int;
-begin
-  if v_server_num >= 180000 then
-    return uuidv7 ();
-  end if;
-  ts_ms := floor(extract(epoch from clock_timestamp()) * 1000)::bigint;
-  rnd := uuid_send(uuid_generate_v4 ());
-  b := repeat(E'\\000', 16)::bytea;
-  for i in 0..5 loop
-    b := set_byte(b, i, ((ts_ms >> ((5 - i) * 8)) & 255)::int);
-  end loop;
-  for i in 6..15 loop
-    b := set_byte(b, i, get_byte(rnd, i));
-  end loop;
-  b := set_byte(b, 6, ((get_byte(b, 6) & 15) | (7 << 4)));
-  b := set_byte(b, 8, ((get_byte(b, 8) & 63) | 128));
-  return encode(b, 'hex')::uuid;
-end;
-$$;
 
-create function absurd.compute_queue_identifier (p_queue_name text)
-  returns text
-  language plpgsql
-as $$
-declare
-  v_base text;
-begin
-  if p_queue_name is null or length(trim(p_queue_name)) = 0 then
-    raise exception 'Queue name must be provided';
-  end if;
-  v_base := lower(regexp_replace(p_queue_name, '[^a-z0-9]+', '_', 'g'));
-  v_base := trim(both '_' from v_base);
-  if v_base is null or v_base = '' then
-    v_base := 'queue';
-  end if;
-  return v_base;
-end;
-$$;
-
-create function absurd.queue_table_name (p_identifier text, p_prefix text)
-  returns text
-  language sql
-as $$
-  select p_prefix || '_' || p_identifier;
-$$;
-
-create function absurd.get_queue_identifier (p_queue_name text)
-  returns text
-  language plpgsql
-as $$
-declare
-  v_identifier text;
-begin
-  select identifier into v_identifier
-  from absurd.queues
-  where queue_name = p_queue_name;
-
-  if v_identifier is null then
-    raise exception 'Queue "%" does not exist', p_queue_name;
-  end if;
-  return v_identifier;
-end;
-$$;
-
-create function absurd.ensure_queue_tables (p_identifier text)
+create function absurd.ensure_queue_tables (p_queue_name text)
   returns void
   language plpgsql
 as $$
 declare
-  v_task_table text := absurd.queue_table_name(p_identifier, 't');
-  v_run_table text := absurd.queue_table_name(p_identifier, 'r');
-  v_checkpoint_table text := absurd.queue_table_name(p_identifier, 'c');
-  v_event_table text := absurd.queue_table_name(p_identifier, 'e');
-  v_waiter_table text := absurd.queue_table_name(p_identifier, 'w');
+  v_task_table_name text := 't_' || p_queue_name;
+  v_run_table_name text := 'r_' || p_queue_name;
+  v_checkpoint_table_name text := 'c_' || p_queue_name;
+  v_event_table_name text := 'e_' || p_queue_name;
+  v_waiter_table_name text := 'w_' || p_queue_name;
 begin
   execute format(
-    'create table if not exists absurd.%I (
+    'create table if not exists absurd.%s (
         task_id uuid primary key,
         task_name text not null,
         params jsonb not null,
@@ -104,22 +30,21 @@ begin
         cancellation jsonb,
         enqueue_at timestamptz not null default now(),
         first_started_at timestamptz,
-        state text not null check (state in (%L, %L, %L, %L, %L, %L)),
+        state text not null check (state in (''pending'', ''running'', ''sleeping'', ''completed'', ''failed'', ''cancelled'')),
         attempts integer not null default 0,
         last_attempt_run uuid,
         completed_payload jsonb,
         cancelled_at timestamptz
      )',
-    v_task_table,
-    'pending', 'running', 'sleeping', 'completed', 'failed', 'cancelled'
+    quote_ident(v_task_table_name)
   );
 
   execute format(
-    'create table if not exists absurd.%I (
+    'create table if not exists absurd.%s (
         run_id uuid primary key,
-        task_id uuid not null references absurd.%I(task_id) on delete cascade,
+        task_id uuid not null references absurd.%s(task_id) on delete cascade,
         attempt integer not null,
-        state text not null check (state in (%L, %L, %L, %L, %L, %L)),
+        state text not null check (state in (''pending'', ''running'', ''sleeping'', ''completed'', ''failed'', ''cancelled'')),
         claimed_by text,
         claim_expires_at timestamptz,
         available_at timestamptz not null,
@@ -132,65 +57,63 @@ begin
         failure_reason jsonb,
         created_at timestamptz not null default now()
      )',
-    v_run_table,
-    v_task_table,
-    'pending', 'running', 'sleeping', 'completed', 'failed', 'cancelled'
+    quote_ident(v_run_table_name),
+    quote_ident(v_task_table_name)
   );
 
   execute format(
-    'create table if not exists absurd.%I (
-        task_id uuid not null references absurd.%I(task_id) on delete cascade,
+    'create table if not exists absurd.%s (
+        task_id uuid not null references absurd.%s(task_id) on delete cascade,
         checkpoint_name text not null,
         state jsonb,
-        status text not null default %L,
+        status text not null default ''committed'',
         owner_run_id uuid,
         updated_at timestamptz not null default now(),
         primary key (task_id, checkpoint_name)
      )',
-    v_checkpoint_table,
-    v_task_table,
-    'committed'
+    quote_ident(v_checkpoint_table_name),
+    quote_ident(v_task_table_name)
   );
 
   execute format(
-    'create table if not exists absurd.%I (
+    'create table if not exists absurd.%s (
         event_name text primary key,
         payload jsonb,
         emitted_at timestamptz not null default now()
      )',
-    v_event_table
+    quote_ident(v_event_table_name)
   );
 
   execute format(
-    'create table if not exists absurd.%I (
-        task_id uuid not null references absurd.%I(task_id) on delete cascade,
-        run_id uuid not null references absurd.%I(run_id) on delete cascade,
+    'create table if not exists absurd.%s (
+        task_id uuid not null references absurd.%s(task_id) on delete cascade,
+        run_id uuid not null references absurd.%s(run_id) on delete cascade,
         step_name text not null,
         event_name text not null,
         created_at timestamptz not null default now(),
         primary key (run_id, step_name)
      )',
-    v_waiter_table,
-    v_task_table,
-    v_run_table
+    quote_ident(v_waiter_table_name),
+    quote_ident(v_task_table_name),
+    quote_ident(v_run_table_name)
   );
 
   execute format(
     'create index if not exists %I on absurd.%I (state, available_at)',
-    v_run_table || '_state_available_at_idx',
-    v_run_table
+    v_run_table_name || '_state_available_at_idx',
+    v_run_table_name
   );
 
   execute format(
     'create index if not exists %I on absurd.%I (task_id)',
-    v_run_table || '_task_id_idx',
-    v_run_table
+    v_run_table_name || '_task_id_idx',
+    v_run_table_name
   );
 
   execute format(
     'create index if not exists %I on absurd.%I (event_name)',
-    v_waiter_table || '_event_name_idx',
-    v_waiter_table
+    v_waiter_table_name || '_event_name_idx',
+    v_waiter_table_name
   );
 end;
 $$;
@@ -200,24 +123,42 @@ create function absurd.create_queue (p_queue_name text)
   language plpgsql
 as $$
 declare
-  v_identifier text;
+  v_task_table_name text;
+  v_run_table_name text;
+  v_checkpoint_table_name text;
+  v_event_table_name text;
+  v_waiter_table_name text;
 begin
   if p_queue_name is null or length(trim(p_queue_name)) = 0 then
     raise exception 'Queue name must be provided';
   end if;
 
-  v_identifier := absurd.compute_queue_identifier(p_queue_name);
+  v_task_table_name := 't_' || p_queue_name;
+  v_run_table_name := 'r_' || p_queue_name;
+  v_checkpoint_table_name := 'c_' || p_queue_name;
+  v_event_table_name := 'e_' || p_queue_name;
+  v_waiter_table_name := 'w_' || p_queue_name;
+
+  if greatest(
+       length(v_task_table_name),
+       length(v_run_table_name),
+       length(v_checkpoint_table_name),
+       length(v_event_table_name),
+       length(v_waiter_table_name)
+     ) > 63 then
+    raise exception 'Queue name "%" is too long', p_queue_name;
+  end if;
 
   begin
-    insert into absurd.queues (queue_name, identifier)
-    values (p_queue_name, v_identifier);
+    insert into absurd.queues (queue_name)
+    values (p_queue_name);
   exception when unique_violation then
     if not exists (select 1 from absurd.queues where queue_name = p_queue_name) then
-      raise exception 'Queue identifier "%" already in use', v_identifier;
+      raise exception 'Queue "%" already exists', p_queue_name;
     end if;
   end;
 
-  perform absurd.ensure_queue_tables(v_identifier);
+  perform absurd.ensure_queue_tables(p_queue_name);
 end;
 $$;
 
@@ -226,26 +167,26 @@ create function absurd.drop_queue (p_queue_name text)
   language plpgsql
 as $$
 declare
-  v_identifier text;
+  v_existing_queue text;
   v_task_table text;
   v_run_table text;
   v_checkpoint_table text;
   v_event_table text;
   v_waiter_table text;
 begin
-  select identifier into v_identifier
+  select queue_name into v_existing_queue
   from absurd.queues
   where queue_name = p_queue_name;
 
-  if v_identifier is null then
+  if v_existing_queue is null then
     return;
   end if;
 
-  v_task_table := absurd.queue_table_name(v_identifier, 't');
-  v_run_table := absurd.queue_table_name(v_identifier, 'r');
-  v_checkpoint_table := absurd.queue_table_name(v_identifier, 'c');
-  v_event_table := absurd.queue_table_name(v_identifier, 'e');
-  v_waiter_table := absurd.queue_table_name(v_identifier, 'w');
+  v_task_table := 't_' || p_queue_name;
+  v_run_table := 'r_' || p_queue_name;
+  v_checkpoint_table := 'c_' || p_queue_name;
+  v_event_table := 'e_' || p_queue_name;
+  v_waiter_table := 'w_' || p_queue_name;
 
   execute format('drop table if exists absurd.%I cascade', v_waiter_table);
   execute format('drop table if exists absurd.%I cascade', v_event_table);
@@ -280,9 +221,8 @@ create function absurd.spawn_task (
   language plpgsql
 as $$
 declare
-  v_identifier text;
-  v_task_table text;
-  v_run_table text;
+  v_task_table_name text := 't_' || p_queue_name;
+  v_run_table_name text := 'r_' || p_queue_name;
   v_task_id uuid := absurd.portable_uuidv7();
   v_run_id uuid := absurd.portable_uuidv7();
   v_attempt integer := 1;
@@ -297,10 +237,6 @@ begin
     raise exception 'task_name must be provided';
   end if;
 
-  v_identifier := absurd.get_queue_identifier(p_queue_name);
-  v_task_table := absurd.queue_table_name(v_identifier, 't');
-  v_run_table := absurd.queue_table_name(v_identifier, 'r');
-
   if p_options is not null then
     v_headers := p_options->'headers';
     v_retry_strategy := p_options->'retry_strategy';
@@ -314,18 +250,16 @@ begin
   end if;
 
   execute format(
-    'insert into absurd.%I (task_id, task_name, params, headers, retry_strategy, max_attempts, cancellation, enqueue_at, first_started_at, state, attempts, last_attempt_run, completed_payload, cancelled_at)
-     values ($1, $2, $3, $4, $5, $6, $7, $8, null, %L, $9, $10, null, null)',
-    v_task_table,
-    'pending'
+    'insert into absurd.%s (task_id, task_name, params, headers, retry_strategy, max_attempts, cancellation, enqueue_at, first_started_at, state, attempts, last_attempt_run, completed_payload, cancelled_at)
+     values ($1, $2, $3, $4, $5, $6, $7, $8, null, ''pending'', $9, $10, null, null)',
+    quote_ident(v_task_table_name)
   )
   using v_task_id, p_task_name, v_params, v_headers, v_retry_strategy, v_max_attempts, v_cancellation, v_now, v_attempt, v_run_id;
 
   execute format(
-    'insert into absurd.%I (run_id, task_id, attempt, state, available_at, wake_event, event_payload, result, failure_reason)
-     values ($1, $2, $3, %L, $4, null, null, null, null)',
-    v_run_table,
-    'pending'
+    'insert into absurd.%s (run_id, task_id, attempt, state, available_at, wake_event, event_payload, result, failure_reason)
+     values ($1, $2, $3, ''pending'', $4, null, null, null, null)',
+    quote_ident(v_run_table_name)
   )
   using v_run_id, v_task_id, v_attempt, v_now;
 
@@ -354,9 +288,8 @@ create function absurd.claim_task (
   language plpgsql
 as $$
 declare
-  v_identifier text;
-  v_task_table text;
-  v_run_table text;
+  v_task_table_name text := 't_' || p_queue_name;
+  v_run_table_name text := 'r_' || p_queue_name;
   v_now timestamptz := clock_timestamp();
   v_claim_timeout integer := greatest(coalesce(p_claim_timeout, 30), 0);
   v_worker_id text := coalesce(nullif(p_worker_id, ''), 'worker');
@@ -364,10 +297,6 @@ declare
   v_claim_until timestamptz := null;
   v_sql text;
 begin
-  v_identifier := absurd.get_queue_identifier(p_queue_name);
-  v_task_table := absurd.queue_table_name(v_identifier, 't');
-  v_run_table := absurd.queue_table_name(v_identifier, 'r');
-
   if v_claim_timeout > 0 then
     v_claim_until := v_now + make_interval(secs => v_claim_timeout);
   end if;
@@ -381,8 +310,8 @@ begin
                enqueue_at,
                first_started_at,
                state
-          from absurd.%I
-         where state in (%L, %L, %L)
+          from absurd.%s
+        where state in (''pending'', ''sleeping'', ''running'')
      ),
      to_cancel as (
         select task_id
@@ -400,62 +329,55 @@ begin
              and extract(epoch from ($1 - first_started_at)) * 1000 >= max_duration_ms
            )
      )
-     update absurd.%I t
-        set state = %L,
+     update absurd.%s t
+        set state = ''cancelled'',
             cancelled_at = coalesce(t.cancelled_at, $1)
       where t.task_id in (select task_id from to_cancel)',
-    v_task_table,
-    'pending', 'sleeping', 'running',
-    v_task_table,
-    'cancelled'
+    quote_ident(v_task_table_name),
+    quote_ident(v_task_table_name)
   ) using v_now;
 
   execute format(
-    'update absurd.%I r
-        set state = %L,
+    'update absurd.%s r
+        set state = ''pending'',
             claimed_by = null,
             claim_expires_at = null,
             available_at = greatest(available_at, $1),
             started_at = null
-      where state = %L
+      where state = ''running''
         and claim_expires_at is not null
         and claim_expires_at <= $1',
-    v_run_table,
-    'pending',
-    'running'
+    quote_ident(v_run_table_name)
   ) using v_now;
 
   execute format(
-    'update absurd.%I r
-        set state = %L,
+    'update absurd.%s r
+        set state = ''cancelled'',
             claimed_by = null,
             claim_expires_at = null,
             available_at = $1,
             wake_event = null
-      where task_id in (select task_id from absurd.%I where state = %L)
-        and r.state <> %L',
-    v_run_table,
-    'cancelled',
-    v_task_table,
-    'cancelled',
-    'cancelled'
+      where task_id in (select task_id from absurd.%s where state = ''cancelled'')
+        and r.state <> ''cancelled''',
+    quote_ident(v_run_table_name),
+    quote_ident(v_task_table_name)
   ) using v_now;
 
   v_sql := format(
     'with candidate as (
         select r.run_id
-          from absurd.%I r
-          join absurd.%I t on t.task_id = r.task_id
-         where r.state in (%L, %L)
-           and t.state in (%L, %L, %L)
+          from absurd.%s r
+          join absurd.%s t on t.task_id = r.task_id
+         where r.state in (''pending'', ''sleeping'')
+           and t.state in (''pending'', ''sleeping'', ''running'')
            and r.available_at <= $1
          order by r.available_at, r.run_id
          limit $2
          for update skip locked
      ),
      updated as (
-        update absurd.%I r
-           set state = %L,
+        update absurd.%s r
+           set state = ''running'',
                claimed_by = $3,
                claim_expires_at = $4,
                started_at = $1,
@@ -464,8 +386,8 @@ begin
          returning r.run_id, r.task_id, r.attempt
      ),
      task_upd as (
-        update absurd.%I t
-           set state = %L,
+        update absurd.%s t
+           set state = ''running'',
                attempts = greatest(t.attempts, u.attempt),
                first_started_at = coalesce(t.first_started_at, $1),
                last_attempt_run = u.run_id
@@ -481,21 +403,19 @@ begin
        t.params,
        t.retry_strategy,
        t.max_attempts,
-       t.headers,
-       r.wake_event,
-       r.event_payload
+      t.headers,
+      r.wake_event,
+      r.event_payload
      from updated u
-     join absurd.%I r on r.run_id = u.run_id
-     join absurd.%I t on t.task_id = u.task_id
+     join absurd.%s r on r.run_id = u.run_id
+     join absurd.%s t on t.task_id = u.task_id
      order by r.available_at, u.run_id',
-    v_run_table,
-    v_task_table,
-    'pending', 'sleeping',
-    'pending', 'sleeping', 'running',
-    v_run_table, 'running',
-    v_task_table, 'running',
-    v_run_table,
-    v_task_table
+    quote_ident(v_run_table_name),
+    quote_ident(v_task_table_name),
+    quote_ident(v_run_table_name),
+    quote_ident(v_task_table_name),
+    quote_ident(v_run_table_name),
+    quote_ident(v_task_table_name)
   );
 
   return query execute v_sql using v_now, v_qty, v_worker_id, v_claim_until;
@@ -511,24 +431,18 @@ create function absurd.complete_run (
   language plpgsql
 as $$
 declare
-  v_identifier text;
-  v_task_table text;
-  v_run_table text;
-  v_waiter_table text;
+  v_task_table_name text := 't_' || p_queue_name;
+  v_run_table_name text := 'r_' || p_queue_name;
+  v_waiter_table_name text := 'w_' || p_queue_name;
   v_task_id uuid;
   v_now timestamptz := clock_timestamp();
 begin
-  v_identifier := absurd.get_queue_identifier(p_queue_name);
-  v_task_table := absurd.queue_table_name(v_identifier, 't');
-  v_run_table := absurd.queue_table_name(v_identifier, 'r');
-  v_waiter_table := absurd.queue_table_name(v_identifier, 'w');
-
   execute format(
     'select task_id
-       from absurd.%I
+       from absurd.%s
       where run_id = $1
       for update',
-    v_run_table
+    quote_ident(v_run_table_name)
   )
   into v_task_id
   using p_run_id;
@@ -538,30 +452,28 @@ begin
   end if;
 
   execute format(
-    'update absurd.%I
-        set state = %L,
+    'update absurd.%s
+        set state = ''completed'',
             claimed_by = null,
             claim_expires_at = null,
             completed_at = $2,
             result = $3
       where run_id = $1',
-    v_run_table,
-    'completed'
+    quote_ident(v_run_table_name)
   ) using p_run_id, v_now, p_state;
 
   execute format(
-    'update absurd.%I
-        set state = %L,
+    'update absurd.%s
+        set state = ''completed'',
             completed_payload = $2,
             last_attempt_run = $3
       where task_id = $1',
-    v_task_table,
-    'completed'
+    quote_ident(v_task_table_name)
   ) using v_task_id, p_state, p_run_id;
 
   execute format(
-    'delete from absurd.%I where run_id = $1',
-    v_waiter_table
+    'delete from absurd.%s where run_id = $1',
+    quote_ident(v_waiter_table_name)
   ) using p_run_id;
 end;
 $$;
@@ -575,23 +487,17 @@ create function absurd.schedule_run (
   language plpgsql
 as $$
 declare
-  v_identifier text;
-  v_task_table text;
-  v_run_table text;
+  v_task_table_name text := 't_' || p_queue_name;
+  v_run_table_name text := 'r_' || p_queue_name;
   v_task_id uuid;
 begin
-  v_identifier := absurd.get_queue_identifier(p_queue_name);
-  v_task_table := absurd.queue_table_name(v_identifier, 't');
-  v_run_table := absurd.queue_table_name(v_identifier, 'r');
-
   execute format(
     'select task_id
-       from absurd.%I
+       from absurd.%s
       where run_id = $1
-        and state = %L
+        and state = ''running''
       for update',
-    v_run_table,
-    'running'
+    quote_ident(v_run_table_name)
   )
   into v_task_id
   using p_run_id;
@@ -601,23 +507,21 @@ begin
   end if;
 
   execute format(
-    'update absurd.%I
-        set state = %L,
+    'update absurd.%s
+        set state = ''sleeping'',
             claimed_by = null,
             claim_expires_at = null,
             available_at = $2,
             wake_event = null
       where run_id = $1',
-    v_run_table,
-    'sleeping'
+    quote_ident(v_run_table_name)
   ) using p_run_id, p_wake_at;
 
   execute format(
-    'update absurd.%I
-        set state = %L
+    'update absurd.%s
+        set state = ''sleeping''
       where task_id = $1',
-    v_task_table,
-    'sleeping'
+    quote_ident(v_task_table_name)
   ) using v_task_id;
 end;
 $$;
@@ -632,10 +536,9 @@ create function absurd.fail_run (
   language plpgsql
 as $$
 declare
-  v_identifier text;
-  v_task_table text;
-  v_run_table text;
-  v_waiter_table text;
+  v_task_table_name text := 't_' || p_queue_name;
+  v_run_table_name text := 'r_' || p_queue_name;
+  v_waiter_table_name text := 'w_' || p_queue_name;
   v_task_id uuid;
   v_attempt integer;
   v_retry_strategy jsonb;
@@ -659,20 +562,13 @@ declare
   v_last_attempt_run uuid := p_run_id;
   v_cancelled_at timestamptz := null;
 begin
-  v_identifier := absurd.get_queue_identifier(p_queue_name);
-  v_task_table := absurd.queue_table_name(v_identifier, 't');
-  v_run_table := absurd.queue_table_name(v_identifier, 'r');
-  v_waiter_table := absurd.queue_table_name(v_identifier, 'w');
-
   execute format(
     'select r.task_id, r.attempt
-       from absurd.%I r
+       from absurd.%s r
       where r.run_id = $1
-        and r.state in (%L, %L)
+        and r.state in (''running'', ''sleeping'')
       for update',
-    v_run_table,
-    'running',
-    'sleeping'
+    quote_ident(v_run_table_name)
   )
   into v_task_id, v_attempt
   using p_run_id;
@@ -683,25 +579,24 @@ begin
 
   execute format(
     'select retry_strategy, max_attempts, first_started_at, cancellation, state
-       from absurd.%I
+       from absurd.%s
       where task_id = $1
       for update',
-    v_task_table
+    quote_ident(v_task_table_name)
   )
   into v_retry_strategy, v_max_attempts, v_first_started, v_cancellation, v_task_state
   using v_task_id;
 
   execute format(
-    'update absurd.%I
-        set state = %L,
+    'update absurd.%s
+        set state = ''failed'',
             claimed_by = null,
             claim_expires_at = null,
             wake_event = null,
             failed_at = $2,
             failure_reason = $3
       where run_id = $1',
-    v_run_table,
-    'failed'
+    quote_ident(v_run_table_name)
   ) using p_run_id, v_now, p_reason;
 
   v_next_attempt := v_attempt + 1;
@@ -749,9 +644,9 @@ begin
       v_recorded_attempt := v_next_attempt;
       v_last_attempt_run := v_new_run_id;
       execute format(
-        'insert into absurd.%I (run_id, task_id, attempt, state, available_at, wake_event, event_payload, result, failure_reason)
+        'insert into absurd.%s (run_id, task_id, attempt, state, available_at, wake_event, event_payload, result, failure_reason)
          values ($1, $2, $3, %L, $4, null, null, null, null)',
-        v_run_table,
+        quote_ident(v_run_table_name),
         v_task_state_after
       )
       using v_new_run_id, v_task_id, v_next_attempt, v_next_available;
@@ -766,19 +661,19 @@ begin
   end if;
 
   execute format(
-    'update absurd.%I
+    'update absurd.%s
         set state = %L,
             attempts = greatest(attempts, $3),
             last_attempt_run = $4,
             cancelled_at = coalesce(cancelled_at, $5)
       where task_id = $1',
-    v_task_table,
+    quote_ident(v_task_table_name),
     v_task_state_after
   ) using v_task_id, v_task_state_after, v_recorded_attempt, v_last_attempt_run, v_cancelled_at;
 
   execute format(
-    'delete from absurd.%I where run_id = $1',
-    v_waiter_table
+    'delete from absurd.%s where run_id = $1',
+    quote_ident(v_waiter_table_name)
   ) using p_run_id;
 end;
 $$;
@@ -794,9 +689,8 @@ create function absurd.set_task_checkpoint_state (
   language plpgsql
 as $$
 declare
-  v_identifier text;
-  v_checkpoint_table text;
-  v_run_table text;
+  v_checkpoint_table_name text := 'c_' || p_queue_name;
+  v_run_table_name text := 'r_' || p_queue_name;
   v_now timestamptz := clock_timestamp();
   v_new_attempt integer;
   v_existing_attempt integer;
@@ -806,15 +700,11 @@ begin
     raise exception 'step_name must be provided';
   end if;
 
-  v_identifier := absurd.get_queue_identifier(p_queue_name);
-  v_checkpoint_table := absurd.queue_table_name(v_identifier, 'c');
-  v_run_table := absurd.queue_table_name(v_identifier, 'r');
-
   execute format(
     'select attempt
-       from absurd.%I
+       from absurd.%s
       where run_id = $1',
-    v_run_table
+    quote_ident(v_run_table_name)
   )
   into v_new_attempt
   using p_owner_run;
@@ -826,27 +716,26 @@ begin
   execute format(
     'select c.owner_run_id,
             r.attempt
-       from absurd.%I c
-       left join absurd.%I r on r.run_id = c.owner_run_id
+       from absurd.%s c
+       left join absurd.%s r on r.run_id = c.owner_run_id
       where c.task_id = $1
         and c.checkpoint_name = $2',
-    v_checkpoint_table,
-    v_run_table
+    quote_ident(v_checkpoint_table_name),
+    quote_ident(v_run_table_name)
   )
   into v_existing_owner, v_existing_attempt
   using p_task_id, p_step_name;
 
   if v_existing_owner is null or v_existing_attempt is null or v_new_attempt >= v_existing_attempt then
     execute format(
-      'insert into absurd.%I (task_id, checkpoint_name, state, status, owner_run_id, updated_at)
-       values ($1, $2, $3, %L, $4, $5)
+      'insert into absurd.%s (task_id, checkpoint_name, state, status, owner_run_id, updated_at)
+       values ($1, $2, $3, ''committed'', $4, $5)
        on conflict (task_id, checkpoint_name)
        do update set state = excluded.state,
                      status = excluded.status,
                      owner_run_id = excluded.owner_run_id,
                      updated_at = excluded.updated_at',
-      v_checkpoint_table,
-      'committed'
+      quote_ident(v_checkpoint_table_name)
     ) using p_task_id, p_step_name, p_state, p_owner_run, v_now;
   end if;
 end;
@@ -868,18 +757,14 @@ create function absurd.get_task_checkpoint_state (
   language plpgsql
 as $$
 declare
-  v_identifier text;
-  v_checkpoint_table text;
+  v_checkpoint_table_name text := 'c_' || p_queue_name;
 begin
-  v_identifier := absurd.get_queue_identifier(p_queue_name);
-  v_checkpoint_table := absurd.queue_table_name(v_identifier, 'c');
-
   return query execute format(
     'select checkpoint_name, state, status, owner_run_id, updated_at
-       from absurd.%I
+       from absurd.%s
       where task_id = $1
         and checkpoint_name = $2',
-    v_checkpoint_table
+    quote_ident(v_checkpoint_table_name)
   ) using p_task_id, p_step_name;
 end;
 $$;
@@ -899,18 +784,14 @@ create function absurd.get_task_checkpoint_states (
   language plpgsql
 as $$
 declare
-  v_identifier text;
-  v_checkpoint_table text;
+  v_checkpoint_table_name text := 'c_' || p_queue_name;
 begin
-  v_identifier := absurd.get_queue_identifier(p_queue_name);
-  v_checkpoint_table := absurd.queue_table_name(v_identifier, 'c');
-
   return query execute format(
     'select checkpoint_name, state, status, owner_run_id, updated_at
-       from absurd.%I
+       from absurd.%s
       where task_id = $1
       order by updated_at asc',
-    v_checkpoint_table
+    quote_ident(v_checkpoint_table_name)
   ) using p_task_id;
 end;
 $$;
@@ -929,35 +810,28 @@ create function absurd.await_event (
   language plpgsql
 as $$
 declare
-  v_identifier text;
-  v_task_table text;
-  v_run_table text;
-  v_waiter_table text;
-  v_event_table text;
-  v_checkpoint_table text;
+  v_task_table_name text := 't_' || p_queue_name;
+  v_run_table_name text := 'r_' || p_queue_name;
+  v_waiter_table_name text := 'w_' || p_queue_name;
+  v_event_table_name text := 'e_' || p_queue_name;
+  v_checkpoint_table_name text := 'c_' || p_queue_name;
   v_run_state text;
   v_existing_payload jsonb;
   v_event_payload jsonb;
   v_checkpoint_payload jsonb;
+  v_resolved_payload jsonb;
   v_now timestamptz := clock_timestamp();
 begin
   if p_event_name is null or length(trim(p_event_name)) = 0 then
     raise exception 'event_name must be provided';
   end if;
 
-  v_identifier := absurd.get_queue_identifier(p_queue_name);
-  v_task_table := absurd.queue_table_name(v_identifier, 't');
-  v_run_table := absurd.queue_table_name(v_identifier, 'r');
-  v_waiter_table := absurd.queue_table_name(v_identifier, 'w');
-  v_event_table := absurd.queue_table_name(v_identifier, 'e');
-  v_checkpoint_table := absurd.queue_table_name(v_identifier, 'c');
-
   execute format(
     'select state
-       from absurd.%I
+       from absurd.%s
       where task_id = $1
         and checkpoint_name = $2',
-    v_checkpoint_table
+    quote_ident(v_checkpoint_table_name)
   )
   into v_checkpoint_payload
   using p_task_id, p_step_name;
@@ -969,10 +843,10 @@ begin
 
   execute format(
     'select state, event_payload
-       from absurd.%I
+       from absurd.%s
       where run_id = $1
       for update',
-    v_run_table
+    quote_ident(v_run_table_name)
   )
   into v_run_state, v_existing_payload
   using p_run_id;
@@ -981,79 +855,77 @@ begin
     raise exception 'Run "%" not found while awaiting event', p_run_id;
   end if;
 
+  execute format(
+    'select payload
+       from absurd.%s
+      where event_name = $1',
+    quote_ident(v_event_table_name)
+  )
+  into v_event_payload
+  using p_event_name;
+
   if v_existing_payload is not null then
     execute format(
-      'insert into absurd.%I (task_id, checkpoint_name, state, status, owner_run_id, updated_at)
-       values ($1, $2, $3, %L, $4, $5)
-       on conflict (task_id, checkpoint_name)
-       do update set state = excluded.state,
-                     status = excluded.status,
-                     owner_run_id = excluded.owner_run_id,
-                     updated_at = excluded.updated_at',
-      v_checkpoint_table,
-      'committed'
-    ) using p_task_id, p_step_name, v_existing_payload, p_run_id, v_now;
-    return query select false, v_existing_payload;
-    return;
+      'update absurd.%s
+          set event_payload = null
+        where run_id = $1',
+      quote_ident(v_run_table_name)
+    ) using p_run_id;
+
+    if v_event_payload is not null and v_event_payload = v_existing_payload then
+      v_resolved_payload := v_existing_payload;
+    end if;
   end if;
 
   if v_run_state <> 'running' then
     raise exception 'Run "%" must be running to await events', p_run_id;
   end if;
 
-  execute format(
-    'select payload
-       from absurd.%I
-      where event_name = $1',
-    v_event_table
-  )
-  into v_event_payload
-  using p_event_name;
+  if v_resolved_payload is null and v_event_payload is not null then
+    v_resolved_payload := v_event_payload;
+  end if;
 
-  if v_event_payload is not null then
+  if v_resolved_payload is not null then
     execute format(
-      'insert into absurd.%I (task_id, checkpoint_name, state, status, owner_run_id, updated_at)
-       values ($1, $2, $3, %L, $4, $5)
+      'insert into absurd.%s (task_id, checkpoint_name, state, status, owner_run_id, updated_at)
+       values ($1, $2, $3, ''committed'', $4, $5)
        on conflict (task_id, checkpoint_name)
        do update set state = excluded.state,
                      status = excluded.status,
                      owner_run_id = excluded.owner_run_id,
                      updated_at = excluded.updated_at',
-      v_checkpoint_table,
-      'committed'
-    ) using p_task_id, p_step_name, v_event_payload, p_run_id, v_now;
-    return query select false, v_event_payload;
+      quote_ident(v_checkpoint_table_name)
+    ) using p_task_id, p_step_name, v_resolved_payload, p_run_id, v_now;
+    return query select false, v_resolved_payload;
     return;
   end if;
 
   execute format(
-    'insert into absurd.%I (task_id, run_id, step_name, event_name, created_at)
+    'insert into absurd.%s (task_id, run_id, step_name, event_name, created_at)
      values ($1, $2, $3, $4, $5)
      on conflict (run_id, step_name)
      do update set event_name = excluded.event_name,
                    created_at = excluded.created_at',
-    v_waiter_table
+    quote_ident(v_waiter_table_name)
   ) using p_task_id, p_run_id, p_step_name, p_event_name, v_now;
 
   execute format(
-    'update absurd.%I
-        set state = %L,
+    'update absurd.%s
+        set state = ''sleeping'',
             claimed_by = null,
             claim_expires_at = null,
             available_at = ''infinity''::timestamptz,
             wake_event = $2,
             event_payload = null
       where run_id = $1',
-    v_run_table,
-    'sleeping'
+    quote_ident(v_run_table_name)
   ) using p_run_id, p_event_name;
 
   execute format(
-    'update absurd.%I
-        set state = %L
+    'update absurd.%s
+        set state = ''sleeping''
       where task_id = $1',
-    v_task_table,
-    'sleeping'
+    quote_ident(v_task_table_name)
   ) using p_task_id;
 
   return query select true, null::jsonb;
@@ -1070,12 +942,11 @@ create function absurd.emit_event (
   language plpgsql
 as $$
 declare
-  v_identifier text;
-  v_task_table text;
-  v_run_table text;
-  v_waiter_table text;
-  v_event_table text;
-  v_checkpoint_table text;
+  v_task_table_name text := 't_' || p_queue_name;
+  v_run_table_name text := 'r_' || p_queue_name;
+  v_waiter_table_name text := 'w_' || p_queue_name;
+  v_event_table_name text := 'e_' || p_queue_name;
+  v_checkpoint_table_name text := 'c_' || p_queue_name;
   v_now timestamptz := clock_timestamp();
   v_payload jsonb := coalesce(p_payload, 'null'::jsonb);
 begin
@@ -1083,43 +954,36 @@ begin
     raise exception 'event_name must be provided';
   end if;
 
-  v_identifier := absurd.get_queue_identifier(p_queue_name);
-  v_task_table := absurd.queue_table_name(v_identifier, 't');
-  v_run_table := absurd.queue_table_name(v_identifier, 'r');
-  v_waiter_table := absurd.queue_table_name(v_identifier, 'w');
-  v_event_table := absurd.queue_table_name(v_identifier, 'e');
-  v_checkpoint_table := absurd.queue_table_name(v_identifier, 'c');
-
   execute format(
-    'insert into absurd.%I (event_name, payload, emitted_at)
+    'insert into absurd.%s (event_name, payload, emitted_at)
      values ($1, $2, $3)
      on conflict (event_name)
      do update set payload = excluded.payload,
                    emitted_at = excluded.emitted_at',
-    v_event_table
+    quote_ident(v_event_table_name)
   ) using p_event_name, v_payload, v_now;
 
   execute format(
     'with affected as (
         select run_id, task_id, step_name
-          from absurd.%I
+          from absurd.%s
          where event_name = $1
      ),
      updated_runs as (
-        update absurd.%I r
-           set state = %L,
+        update absurd.%s r
+           set state = ''pending'',
                available_at = $2,
                wake_event = null,
                event_payload = $3,
                claimed_by = null,
                claim_expires_at = null
          where r.run_id in (select run_id from affected)
-           and r.state = %L
+           and r.state = ''sleeping''
          returning r.run_id, r.task_id
      ),
      checkpoint_upd as (
-        insert into absurd.%I (task_id, checkpoint_name, state, status, owner_run_id, updated_at)
-        select a.task_id, a.step_name, $3, %L, a.run_id, $2
+        insert into absurd.%s (task_id, checkpoint_name, state, status, owner_run_id, updated_at)
+        select a.task_id, a.step_name, $3, ''committed'', a.run_id, $2
           from affected a
           join updated_runs ur on ur.run_id = a.run_id
         on conflict (task_id, checkpoint_name)
@@ -1129,20 +993,50 @@ begin
                       updated_at = excluded.updated_at
      ),
      updated_tasks as (
-        update absurd.%I t
-           set state = %L
+        update absurd.%s t
+           set state = ''pending''
          where t.task_id in (select task_id from updated_runs)
          returning task_id
      )
      delete from absurd.%I w
       where w.event_name = $1
         and w.run_id in (select run_id from updated_runs)',
-    v_waiter_table,
-    v_run_table, 'pending',
-    'sleeping',
-    v_checkpoint_table, 'committed',
-    v_task_table, 'pending',
-    v_waiter_table
+    quote_ident(v_waiter_table_name),
+    quote_ident(v_run_table_name),
+    quote_ident(v_checkpoint_table_name),
+    quote_ident(v_task_table_name),
+    quote_ident(v_waiter_table_name)
   ) using p_event_name, v_now, v_payload;
+end;
+$$;
+
+-- utility function to generate a uuidv7 even for older postgres versions.
+create function absurd.portable_uuidv7 ()
+  returns uuid
+  language plpgsql
+  volatile
+as $$
+declare
+  v_server_num integer := current_setting('server_version_num')::int;
+  ts_ms bigint;
+  b bytea;
+  rnd bytea;
+  i int;
+begin
+  if v_server_num >= 180000 then
+    return uuidv7 ();
+  end if;
+  ts_ms := floor(extract(epoch from clock_timestamp()) * 1000)::bigint;
+  rnd := uuid_send(uuid_generate_v4 ());
+  b := repeat(E'\\000', 16)::bytea;
+  for i in 0..5 loop
+    b := set_byte(b, i, ((ts_ms >> ((5 - i) * 8)) & 255)::int);
+  end loop;
+  for i in 6..15 loop
+    b := set_byte(b, i, get_byte(rnd, i));
+  end loop;
+  b := set_byte(b, 6, ((get_byte(b, 6) & 15) | (7 << 4)));
+  b := set_byte(b, 8, ((get_byte(b, 8) & 63) | 128));
+  return encode(b, 'hex')::uuid;
 end;
 $$;
