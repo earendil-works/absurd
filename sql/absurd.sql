@@ -967,10 +967,18 @@ begin
   ) using p_event_name, v_payload, v_now;
 
   execute format(
-    'with affected as (
+    'with expired_waits as (
+        delete from absurd.%s w
+         where w.event_name = $1
+           and w.timeout_at is not null
+           and w.timeout_at <= $2
+         returning w.run_id
+     ),
+     affected as (
         select run_id, task_id, step_name
           from absurd.%s
          where event_name = $1
+           and (timeout_at is null or timeout_at > $2)
      ),
      updated_runs as (
         update absurd.%s r
@@ -1004,6 +1012,7 @@ begin
      delete from absurd.%I w
       where w.event_name = $1
         and w.run_id in (select run_id from updated_runs)',
+    quote_ident('w_' || p_queue_name),
     quote_ident('w_' || p_queue_name),
     quote_ident('r_' || p_queue_name),
     quote_ident('c_' || p_queue_name),
