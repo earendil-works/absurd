@@ -36,7 +36,8 @@ create schema if not exists absurd;
 
 create table if not exists absurd.queues (
   queue_name text primary key,
-  created_at timestamptz not null default now()
+  created_at timestamptz not null default now(),
+  retention_back interval not null default interval '30 days'
 );
 
 create function absurd.ensure_queue_tables (p_queue_name text)
@@ -44,6 +45,10 @@ create function absurd.ensure_queue_tables (p_queue_name text)
   language plpgsql
 as $$
 begin
+  if not exists (select 1 from absurd.queues where queue_name = p_queue_name) then
+    raise exception 'Queue "%" is not registered', p_queue_name;
+  end if;
+
   execute format(
     'create table if not exists absurd.%s (
         task_id uuid primary key,
@@ -125,12 +130,6 @@ begin
   );
 
   execute format(
-    'alter table absurd.%s
-        add column if not exists timeout_at timestamptz',
-    quote_ident('w_' || p_queue_name)
-  );
-
-  execute format(
     'create index if not exists %I on absurd.%I (state, available_at)',
     ('r_' || p_queue_name) || '_state_available_at_idx',
     'r_' || p_queue_name
@@ -150,10 +149,15 @@ begin
 end;
 $$;
 
-create function absurd.create_queue (p_queue_name text)
+create function absurd.create_queue (
+  p_queue_name text,
+  p_retention_back interval default null
+)
   returns void
   language plpgsql
 as $$
+declare
+  v_retention interval := coalesce(p_retention_back, interval '30 days');
 begin
   if p_queue_name is null or length(trim(p_queue_name)) = 0 then
     raise exception 'Queue name must be provided';
@@ -169,12 +173,18 @@ begin
     raise exception 'Queue name "%" is too long', p_queue_name;
   end if;
 
+  if v_retention <= interval '0' then
+    raise exception 'retention_back must be positive';
+  end if;
+
   begin
-    insert into absurd.queues (queue_name)
-    values (p_queue_name);
+    insert into absurd.queues (queue_name, retention_back)
+    values (p_queue_name, v_retention);
   exception when unique_violation then
-    if not exists (select 1 from absurd.queues where queue_name = p_queue_name) then
-      raise exception 'Queue "%" already exists', p_queue_name;
+    if p_retention_back is not null then
+      update absurd.queues
+         set retention_back = v_retention
+       where queue_name = p_queue_name;
     end if;
   end;
 
@@ -256,6 +266,10 @@ begin
     v_cancellation := p_options->'cancellation';
   end if;
 
+  if not exists (select 1 from absurd.queues where queue_name = p_queue_name) then
+    raise exception 'Queue "%" is not registered', p_queue_name;
+  end if;
+
   execute format(
     'insert into absurd.%s (task_id, task_name, params, headers, retry_strategy, max_attempts, cancellation, enqueue_at, first_started_at, state, attempts, last_attempt_run, completed_payload, cancelled_at)
      values ($1, $2, $3, $4, $5, $6, $7, $8, null, ''pending'', $9, $10, null, null)',
@@ -304,6 +318,10 @@ declare
 begin
   if v_claim_timeout > 0 then
     v_claim_until := v_now + make_interval(secs => v_claim_timeout);
+  end if;
+
+  if not exists (select 1 from absurd.queues where queue_name = p_queue_name) then
+    raise exception 'Queue "%" is not registered', p_queue_name;
   end if;
 
   -- Apply cancellation rules before claiming.
@@ -501,12 +519,14 @@ declare
   v_task_id uuid;
 begin
   execute format(
-    'select task_id
-       from absurd.%s
-      where run_id = $1
-        and state = ''running''
+    'select r.task_id
+       from absurd.%s r
+       join absurd.%s t on t.task_id = r.task_id
+      where r.run_id = $1
+        and r.state = ''running''
       for update',
-    quote_ident('r_' || p_queue_name)
+    quote_ident('r_' || p_queue_name),
+    quote_ident('t_' || p_queue_name)
   )
   into v_task_id
   using p_run_id;
@@ -675,7 +695,12 @@ begin
       where task_id = $1',
     quote_ident('t_' || p_queue_name),
     v_task_state_after
-  ) using v_task_id, v_task_state_after, v_recorded_attempt, v_last_attempt_run, v_cancelled_at;
+  )
+  using v_task_id,
+        v_task_state_after,
+        v_recorded_attempt,
+        v_last_attempt_run,
+        v_cancelled_at;
 
   execute format(
     'delete from absurd.%s where run_id = $1',
@@ -699,6 +724,7 @@ declare
   v_new_attempt integer;
   v_existing_attempt integer;
   v_existing_owner uuid;
+  v_task_exists boolean;
 begin
   if p_step_name is null or length(trim(p_step_name)) = 0 then
     raise exception 'step_name must be provided';
@@ -715,6 +741,19 @@ begin
 
   if v_new_attempt is null then
     raise exception 'Run "%" not found for checkpoint', p_owner_run;
+  end if;
+
+  execute format(
+    'select true
+       from absurd.%s
+      where task_id = $1',
+    quote_ident('t_' || p_queue_name)
+  )
+  into v_task_exists
+  using p_task_id;
+
+  if not coalesce(v_task_exists, false) then
+    raise exception 'Task "%" not found for checkpoint', p_task_id;
   end if;
 
   execute format(
@@ -819,9 +858,23 @@ declare
   v_timeout_at timestamptz;
   v_available_at timestamptz;
   v_now timestamptz := clock_timestamp();
+  v_task_exists boolean;
 begin
   if p_event_name is null or length(trim(p_event_name)) = 0 then
     raise exception 'event_name must be provided';
+  end if;
+
+  execute format(
+    'select true
+       from absurd.%s
+      where task_id = $1',
+    quote_ident('t_' || p_queue_name)
+  )
+  into v_task_exists
+  using p_task_id;
+
+  if not coalesce(v_task_exists, false) then
+    raise exception 'Task "%" not found while awaiting event', p_task_id;
   end if;
 
   if p_timeout_ms is not null then
@@ -988,11 +1041,11 @@ begin
                event_payload = $3,
                claimed_by = null,
                claim_expires_at = null
-         where r.run_id in (select run_id from affected)
-           and r.state = ''sleeping''
-         returning r.run_id, r.task_id
-     ),
-     checkpoint_upd as (
+        where r.run_id in (select run_id from affected)
+          and r.state = ''sleeping''
+        returning r.run_id, r.task_id
+    ),
+    checkpoint_upd as (
         insert into absurd.%s (task_id, checkpoint_name, state, status, owner_run_id, updated_at)
         select a.task_id, a.step_name, $3, ''committed'', a.run_id, $2
           from affected a
@@ -1002,15 +1055,15 @@ begin
                       status = excluded.status,
                       owner_run_id = excluded.owner_run_id,
                       updated_at = excluded.updated_at
-     ),
-     updated_tasks as (
+    ),
+    updated_tasks as (
         update absurd.%s t
            set state = ''pending''
          where t.task_id in (select task_id from updated_runs)
          returning task_id
-     )
+    )
      delete from absurd.%I w
-      where w.event_name = $1
+     where w.event_name = $1
         and w.run_id in (select run_id from updated_runs)',
     quote_ident('w_' || p_queue_name),
     quote_ident('w_' || p_queue_name),
@@ -1019,6 +1072,165 @@ begin
     quote_ident('t_' || p_queue_name),
     'w_' || p_queue_name
   ) using p_event_name, v_now, v_payload;
+end;
+$$;
+
+create function absurd.purge_expired (
+  p_queue_name text,
+  p_limit_rows int default 1000
+)
+  returns table (
+    runs_deleted int,
+    tasks_deleted int,
+    checkpoints_deleted int,
+    events_deleted int,
+    waits_deleted int
+  )
+  language plpgsql
+as $$
+declare
+  v_limit int := greatest(coalesce(p_limit_rows, 1000), 1);
+  v_now timestamptz := clock_timestamp();
+  v_retention interval;
+  v_cutoff timestamptz;
+  v_deleted int;
+  v_task_ids uuid[];
+  v_task_run_count int := 0;
+  v_task_checkpoint_count int := 0;
+  v_task_wait_count int := 0;
+  v_run_terminal_expr text;
+  v_task_terminal_expr text;
+begin
+  runs_deleted := 0;
+  tasks_deleted := 0;
+  checkpoints_deleted := 0;
+  events_deleted := 0;
+  waits_deleted := 0;
+
+  select retention_back
+    into v_retention
+    from absurd.queues
+   where queue_name = p_queue_name;
+
+  if not found then
+    raise exception 'Unknown queue "%"', p_queue_name;
+  end if;
+
+  v_cutoff := v_now - v_retention;
+
+  execute format(
+    'with doomed as (
+         select ctid
+           from absurd.%1$I
+          where timeout_at is not null
+            and timeout_at <= $2
+          order by timeout_at
+          limit $1
+     )
+     delete from absurd.%1$I w
+      using doomed d
+     where w.ctid = d.ctid',
+    'w_' || p_queue_name
+  ) using v_limit, v_cutoff;
+  get diagnostics v_deleted = row_count;
+  waits_deleted := waits_deleted + v_deleted;
+
+  execute format(
+    'with doomed as (
+         select ctid
+           from absurd.%1$I
+          where emitted_at <= $2
+          order by emitted_at
+          limit $1
+     )
+     delete from absurd.%1$I e
+      using doomed d
+     where e.ctid = d.ctid',
+    'e_' || p_queue_name
+  ) using v_limit, v_cutoff;
+  get diagnostics v_deleted = row_count;
+  events_deleted := events_deleted + v_deleted;
+
+  v_run_terminal_expr := 'coalesce(r.completed_at, r.failed_at, r.claim_expires_at, r.started_at, r.available_at, r.created_at)';
+
+  execute format(
+    'with old_runs as (
+         select r.run_id
+           from absurd.%1$s r
+           join absurd.%2$s t on t.task_id = r.task_id
+          where r.state in (''completed'', ''failed'', ''cancelled'')
+            and (t.last_attempt_run is distinct from r.run_id or t.state in (''completed'', ''failed'', ''cancelled''))
+            and %3$s <= $2
+          order by %3$s
+          limit $1
+     )
+     delete from absurd.%1$s r
+      using old_runs o
+     where r.run_id = o.run_id',
+    quote_ident('r_' || p_queue_name),
+    quote_ident('t_' || p_queue_name),
+    v_run_terminal_expr
+  ) using v_limit, v_cutoff;
+  get diagnostics v_deleted = row_count;
+  runs_deleted := runs_deleted + v_deleted;
+
+  v_task_terminal_expr := 'coalesce(
+         case
+           when t.state = ''cancelled'' then coalesce(t.cancelled_at, t.first_started_at, t.enqueue_at)
+           when t.state = ''completed'' then coalesce(r.completed_at, r.failed_at, r.started_at, r.available_at, r.created_at, t.first_started_at, t.enqueue_at)
+           when t.state = ''failed'' then coalesce(r.failed_at, r.completed_at, r.started_at, r.available_at, r.created_at, t.first_started_at, t.enqueue_at)
+           else t.enqueue_at
+         end,
+         t.enqueue_at
+       )';
+
+  execute format(
+    'select array(
+         select t.task_id
+           from absurd.%1$s t
+           left join absurd.%2$s r on r.run_id = t.last_attempt_run
+          where t.state in (''completed'', ''failed'', ''cancelled'')
+            and %3$s <= $2
+          order by %3$s
+          limit $1
+       )',
+    quote_ident('t_' || p_queue_name),
+    quote_ident('r_' || p_queue_name),
+    v_task_terminal_expr
+  )
+  into v_task_ids
+  using v_limit, v_cutoff;
+
+  if v_task_ids is not null and array_length(v_task_ids, 1) > 0 then
+    execute format(
+      'select count(*) from absurd.%s where task_id = any($1)',
+      quote_ident('r_' || p_queue_name)
+    ) into v_task_run_count using v_task_ids;
+
+    execute format(
+      'select count(*) from absurd.%s where task_id = any($1)',
+      quote_ident('c_' || p_queue_name)
+    ) into v_task_checkpoint_count using v_task_ids;
+
+    execute format(
+      'select count(*) from absurd.%s where task_id = any($1)',
+      quote_ident('w_' || p_queue_name)
+    ) into v_task_wait_count using v_task_ids;
+
+    execute format(
+      'delete from absurd.%s
+        where task_id = any($1)',
+      quote_ident('t_' || p_queue_name)
+    ) using v_task_ids;
+    get diagnostics v_deleted = row_count;
+
+    tasks_deleted := tasks_deleted + v_deleted;
+    runs_deleted := runs_deleted + v_task_run_count;
+    checkpoints_deleted := checkpoints_deleted + v_task_checkpoint_count;
+    waits_deleted := waits_deleted + v_task_wait_count;
+  end if;
+
+  return next;
 end;
 $$;
 

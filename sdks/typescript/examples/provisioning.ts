@@ -4,7 +4,6 @@
  * node --experimental-transform-types examples/provisioning.ts
  *
  * Environment:
- *   ABSURD_DB_URL      - PostgreSQL connection string (default: postgresql://localhost/absurd)
  *   ABSURD_WORKERS     - Number of worker loops to start (default: 3)
  *   ABSURD_RUNTIME_MS  - Worker lifetime before shutdown (default: 20000)
  */
@@ -15,7 +14,6 @@ import pg from "pg";
 
 import { Absurd, TaskContext, TimeoutError } from "../src/index.ts";
 
-const DEFAULT_DB_URL = "postgresql://localhost/absurd";
 const DEFAULT_QUEUE = "provisioning_demo";
 const DEFAULT_CANCELLATION = {
   maxDelayMs: 60000,
@@ -337,18 +335,14 @@ function registerTasks(absurd: Absurd) {
 }
 
 async function main() {
-  const connectionString = process.env.ABSURD_DB_URL ?? DEFAULT_DB_URL;
   const workerCount = Number(process.env.ABSURD_WORKERS ?? "6");
   const runtimeMs = Number(process.env.ABSURD_RUNTIME_MS ?? "15000");
 
   log("main", "connecting to absurd queue", {
-    connectionString,
-    queue: DEFAULT_QUEUE,
     workers: workerCount,
   });
 
-  const pool = new pg.Pool({ connectionString });
-  const absurd = new Absurd(pool, DEFAULT_QUEUE);
+  const absurd = new Absurd({ queueName: DEFAULT_QUEUE });
 
   log("main", "creating queue if not exists", { queue: DEFAULT_QUEUE });
   await absurd.createQueue();
@@ -408,7 +402,6 @@ async function main() {
   }
 
   await absurd.close();
-  await pool.end();
   log("main", "example finished");
 }
 

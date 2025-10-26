@@ -48,6 +48,8 @@ export interface WorkerOptions {
   batchSize?: number;
   pollInterval?: number;
   onError?: (error: Error) => void;
+  purgeIntervalMs?: number;
+  purgeBatchSize?: number;
 }
 
 interface CheckpointRow {
@@ -62,6 +64,14 @@ interface SpawnResult {
   taskID: string;
   runID: string;
   attempt: number;
+}
+
+export interface PurgeStats {
+  runsDeleted: number;
+  tasksDeleted: number;
+  checkpointsDeleted: number;
+  eventsDeleted: number;
+  waitsDeleted: number;
 }
 
 export type TaskHandler<P = any, R = any> = (
@@ -301,12 +311,18 @@ export class Absurd {
   private readonly ownedPool: boolean;
   private readonly queueName: string;
   private readonly registry = new Map<string, RegisteredTask>();
+  private readonly defaultRetentionMs: number;
   private workerShutdown: (() => void) | null = null;
 
-  constructor(
-    poolOrUrl?: pg.Pool | string | null,
-    queueName: string = "default",
-  ) {
+  constructor({
+    poolOrUrl,
+    queueName = "default",
+    defaultRetentionMs = 24 * 60 * 60 * 1000,
+  }: {
+    poolOrUrl?: pg.Pool | string | null;
+    queueName?: string;
+    defaultRetentionMs?: number;
+  } = {}) {
     if (!poolOrUrl) {
       poolOrUrl =
         process.env.ABSURD_DATABASE_URL || "postgresql://localhost/absurd";
@@ -319,6 +335,7 @@ export class Absurd {
       this.ownedPool = false;
     }
     this.queueName = queueName;
+    this.defaultRetentionMs = defaultRetentionMs;
   }
 
   registerTask<P = any, R = any>(
@@ -352,9 +369,20 @@ export class Absurd {
     });
   }
 
-  async createQueue(queueName?: string): Promise<void> {
+  async createQueue(queueName?: string, retentionMs?: number): Promise<void> {
     const queue = queueName ?? this.queueName;
-    await this.pool.query(`SELECT absurd.create_queue($1)`, [queue]);
+    let retention: string | null = null;
+    if (retentionMs === null || retentionMs === undefined) {
+      retentionMs = this.defaultRetentionMs;
+    }
+    if (!Number.isFinite(retentionMs) || retentionMs <= 0) {
+      throw new Error("retentionMs must be a positive number");
+    }
+    retention = `${retentionMs} milliseconds`;
+    await this.pool.query(`SELECT absurd.create_queue($1, $2)`, [
+      queue,
+      retention,
+    ]);
   }
 
   async dropQueue(queueName?: string): Promise<void> {
@@ -432,6 +460,41 @@ export class Absurd {
     };
   }
 
+  async purgeExpired(
+    limitRows: number = 1000,
+    queueName?: string,
+  ): Promise<PurgeStats> {
+    if (!Number.isFinite(limitRows) || limitRows <= 0) {
+      throw new Error("limitRows must be a positive integer");
+    }
+    const queue = queueName ?? this.queueName;
+    const result = await this.pool.query<{
+      runs_deleted: number;
+      tasks_deleted: number;
+      checkpoints_deleted: number;
+      events_deleted: number;
+      waits_deleted: number;
+    }>(
+      `SELECT runs_deleted, tasks_deleted, checkpoints_deleted, events_deleted, waits_deleted
+         FROM absurd.purge_expired($1, $2)`,
+      [queue, Math.floor(limitRows)],
+    );
+    const row = result.rows[0] ?? {
+      runs_deleted: 0,
+      tasks_deleted: 0,
+      checkpoints_deleted: 0,
+      events_deleted: 0,
+      waits_deleted: 0,
+    };
+    return {
+      runsDeleted: Number(row.runs_deleted ?? 0),
+      tasksDeleted: Number(row.tasks_deleted ?? 0),
+      checkpointsDeleted: Number(row.checkpoints_deleted ?? 0),
+      eventsDeleted: Number(row.events_deleted ?? 0),
+      waitsDeleted: Number(row.waits_deleted ?? 0),
+    };
+  }
+
   async workOnce(
     workerId: string = "worker",
     claimTimeout: number = 30,
@@ -456,9 +519,20 @@ export class Absurd {
       batchSize = 1,
       pollInterval = 1000,
       onError = (err) => console.error("Worker error:", err),
+      purgeIntervalMs,
+      purgeBatchSize = 1000,
     } = options;
 
     let running = true;
+    const normalizedPurgeInterval =
+      purgeIntervalMs !== undefined && purgeIntervalMs > 0
+        ? purgeIntervalMs
+        : null;
+    const normalizedPurgeBatch = Math.max(1, Math.floor(purgeBatchSize));
+    let nextPurgeAt =
+      normalizedPurgeInterval !== null
+        ? Date.now() + normalizedPurgeInterval
+        : null;
 
     const shutdown = async () => {
       running = false;
@@ -471,6 +545,18 @@ export class Absurd {
       while (running) {
         try {
           await this.workOnce(workerId, claimTimeout, batchSize);
+          if (
+            nextPurgeAt !== null &&
+            normalizedPurgeInterval !== null &&
+            Date.now() >= nextPurgeAt
+          ) {
+            try {
+              await this.purgeExpired(normalizedPurgeBatch);
+            } catch (purgeError) {
+              onError(purgeError as Error);
+            }
+            nextPurgeAt = Date.now() + normalizedPurgeInterval;
+          }
         } catch (err) {
           onError(err as Error);
         }
