@@ -12,7 +12,6 @@
 -- * `e_` for emitted events
 -- * `w_` for wait registrations
 --
--- The `ensure_queue_tables` helper builds those tables on demand, while
 -- `create_queue`, `drop_queue`, and `list_queues` provide the management
 -- surface for provisioning queues safely.
 --
@@ -45,7 +44,7 @@ create function absurd.ensure_queue_tables (p_queue_name text)
 as $$
 begin
   execute format(
-    'create table if not exists absurd.%s (
+    'create table if not exists absurd.%I (
         task_id uuid primary key,
         task_name text not null,
         params jsonb not null,
@@ -61,13 +60,13 @@ begin
         completed_payload jsonb,
         cancelled_at timestamptz
      )',
-    quote_ident('t_' || p_queue_name)
+    't_' || p_queue_name
   );
 
   execute format(
-    'create table if not exists absurd.%s (
+    'create table if not exists absurd.%I (
         run_id uuid primary key,
-        task_id uuid not null references absurd.%s(task_id) on delete cascade,
+        task_id uuid not null references absurd.%I(task_id) on delete cascade,
         attempt integer not null,
         state text not null check (state in (''pending'', ''running'', ''sleeping'', ''completed'', ''failed'', ''cancelled'')),
         claimed_by text,
@@ -82,13 +81,13 @@ begin
         failure_reason jsonb,
         created_at timestamptz not null default now()
      )',
-    quote_ident('r_' || p_queue_name),
-    quote_ident('t_' || p_queue_name)
+    'r_' || p_queue_name,
+    't_' || p_queue_name
   );
 
   execute format(
-    'create table if not exists absurd.%s (
-        task_id uuid not null references absurd.%s(task_id) on delete cascade,
+    'create table if not exists absurd.%I (
+        task_id uuid not null references absurd.%I(task_id) on delete cascade,
         checkpoint_name text not null,
         state jsonb,
         status text not null default ''committed'',
@@ -96,60 +95,63 @@ begin
         updated_at timestamptz not null default now(),
         primary key (task_id, checkpoint_name)
      )',
-    quote_ident('c_' || p_queue_name),
-    quote_ident('t_' || p_queue_name)
+    'c_' || p_queue_name,
+    't_' || p_queue_name
   );
 
   execute format(
-    'create table if not exists absurd.%s (
+    'create table if not exists absurd.%I (
         event_name text primary key,
         payload jsonb,
         emitted_at timestamptz not null default now()
      )',
-    quote_ident('e_' || p_queue_name)
+    'e_' || p_queue_name
   );
 
   execute format(
-    'create table if not exists absurd.%s (
-        task_id uuid not null references absurd.%s(task_id) on delete cascade,
-        run_id uuid not null references absurd.%s(run_id) on delete cascade,
+    'create table if not exists absurd.%I (
+        task_id uuid not null references absurd.%I(task_id) on delete cascade,
+        run_id uuid not null references absurd.%I(run_id) on delete cascade,
         step_name text not null,
         event_name text not null,
         timeout_at timestamptz,
         created_at timestamptz not null default now(),
         primary key (run_id, step_name)
      )',
-    quote_ident('w_' || p_queue_name),
-    quote_ident('t_' || p_queue_name),
-    quote_ident('r_' || p_queue_name)
+    'w_' || p_queue_name,
+    't_' || p_queue_name,
+    'r_' || p_queue_name
   );
 
   execute format(
-    'alter table absurd.%s
+    'alter table absurd.%I
         add column if not exists timeout_at timestamptz',
-    quote_ident('w_' || p_queue_name)
+    'w_' || p_queue_name
   );
 
   execute format(
     'create index if not exists %I on absurd.%I (state, available_at)',
-    ('r_' || p_queue_name) || '_state_available_at_idx',
+    ('r_' || p_queue_name) || '_sai',
     'r_' || p_queue_name
   );
 
   execute format(
     'create index if not exists %I on absurd.%I (task_id)',
-    ('r_' || p_queue_name) || '_task_id_idx',
+    ('r_' || p_queue_name) || '_ti',
     'r_' || p_queue_name
   );
 
   execute format(
     'create index if not exists %I on absurd.%I (event_name)',
-    ('w_' || p_queue_name) || '_event_name_idx',
+    ('w_' || p_queue_name) || '_eni',
     'w_' || p_queue_name
   );
 end;
 $$;
 
+-- Creates the queue with the given name.
+--
+-- If the table already exists, the function returns silently.
 create function absurd.create_queue (p_queue_name text)
   returns void
   language plpgsql
@@ -159,13 +161,7 @@ begin
     raise exception 'Queue name must be provided';
   end if;
 
-  if greatest(
-       length('t_' || p_queue_name),
-       length('r_' || p_queue_name),
-       length('c_' || p_queue_name),
-       length('e_' || p_queue_name),
-       length('w_' || p_queue_name)
-     ) > 63 then
+  if length(p_queue_name) + 2 > 50 then
     raise exception 'Queue name "%" is too long', p_queue_name;
   end if;
 
@@ -173,15 +169,14 @@ begin
     insert into absurd.queues (queue_name)
     values (p_queue_name);
   exception when unique_violation then
-    if not exists (select 1 from absurd.queues where queue_name = p_queue_name) then
-      raise exception 'Queue "%" already exists', p_queue_name;
-    end if;
+    return;
   end;
 
   perform absurd.ensure_queue_tables(p_queue_name);
 end;
 $$;
 
+-- Drop a queue if it exists.
 create function absurd.drop_queue (p_queue_name text)
   returns void
   language plpgsql
@@ -207,6 +202,7 @@ begin
 end;
 $$;
 
+-- Lists all queues that currently exist.
 create function absurd.list_queues ()
   returns table (queue_name text)
   language sql
@@ -214,8 +210,7 @@ as $$
   select queue_name from absurd.queues order by queue_name;
 $$;
 
--- Remaining task lifecycle, checkpoint, and event functions are implemented below.
-
+-- Spawns a given task in a queue.
 create function absurd.spawn_task (
   p_queue_name text,
   p_task_name text,
@@ -257,16 +252,16 @@ begin
   end if;
 
   execute format(
-    'insert into absurd.%s (task_id, task_name, params, headers, retry_strategy, max_attempts, cancellation, enqueue_at, first_started_at, state, attempts, last_attempt_run, completed_payload, cancelled_at)
+    'insert into absurd.%I (task_id, task_name, params, headers, retry_strategy, max_attempts, cancellation, enqueue_at, first_started_at, state, attempts, last_attempt_run, completed_payload, cancelled_at)
      values ($1, $2, $3, $4, $5, $6, $7, $8, null, ''pending'', $9, $10, null, null)',
-    quote_ident('t_' || p_queue_name)
+    't_' || p_queue_name
   )
   using v_task_id, p_task_name, v_params, v_headers, v_retry_strategy, v_max_attempts, v_cancellation, v_now, v_attempt, v_run_id;
 
   execute format(
-    'insert into absurd.%s (run_id, task_id, attempt, state, available_at, wake_event, event_payload, result, failure_reason)
+    'insert into absurd.%I (run_id, task_id, attempt, state, available_at, wake_event, event_payload, result, failure_reason)
      values ($1, $2, $3, ''pending'', $4, null, null, null, null)',
-    quote_ident('r_' || p_queue_name)
+    'r_' || p_queue_name
   )
   using v_run_id, v_task_id, v_attempt, v_now;
 
@@ -274,6 +269,8 @@ begin
 end;
 $$;
 
+-- Workers call this to reserve a task from a given queue
+-- for a given reservation period in seconds.
 create function absurd.claim_task (
   p_queue_name text,
   p_worker_id text,
