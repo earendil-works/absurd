@@ -106,7 +106,7 @@ app.registerTask({ name: 'order-fulfillment' }, async (params, ctx) => {
   // Wait indefinitely for a warehouse event - the task suspends
   // until the event arrives.  Events are cached like step checkpoints
   // which means that this is race-free.
-  const shipment = await ctx.awaitEvent('await-shipment', `shipment.packed:${params.orderId}`);
+  const shipment = await ctx.awaitEvent(`shipment.packed:${params.orderId}`);
 
   // ready to send a notification!
   await ctx.step('send-notification', async () => {

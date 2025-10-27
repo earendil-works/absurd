@@ -127,11 +127,9 @@ function registerTasks(absurd: Absurd) {
 
       let activationPayload: ActivationEventPayload;
       try {
-        const payload = await ctx.awaitEvent(
-          "await-activation",
-          eventName,
-          activationTimeoutMs,
-        );
+        const payload = await ctx.awaitEvent(eventName, {
+          timeout: activationTimeoutMs,
+        });
         activationPayload = payload as ActivationEventPayload;
       } catch (err) {
         if (err instanceof TimeoutError) {

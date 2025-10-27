@@ -1,3 +1,6 @@
+/**
+ * Absurd SDK for TypeScript and JavaScript
+ */
 import * as pg from "pg";
 
 export type JsonValue =
@@ -69,6 +72,10 @@ export type TaskHandler<P = any, R = any> = (
   ctx: TaskContext,
 ) => Promise<R>;
 
+/**
+ * Internal exception that is thrown to suspend a run.  As a user
+ * you should never see this exception.
+ */
 export class SuspendTask extends Error {
   constructor() {
     super("Task suspended");
@@ -76,6 +83,9 @@ export class SuspendTask extends Error {
   }
 }
 
+/**
+ * This error is thrown when awaiting an event ran into a timeout.
+ */
 export class TimeoutError extends Error {
   constructor(message: string) {
     super(message);
@@ -210,16 +220,18 @@ export class TaskContext {
   }
 
   async awaitEvent(
-    stepName: string,
     eventName: string,
-    timeout?: number,
+    options?: { stepName?: string; timeout?: number },
   ): Promise<JsonValue> {
-    if (!eventName) {
-      throw new Error("eventName must be a non-empty string");
-    }
+    // the default step name is derived from the event name.
+    const stepName = options?.stepName || `$awaitEvent:${eventName}`;
     let timeoutMs: number | null = null;
-    if (timeout !== undefined && Number.isFinite(timeout) && timeout >= 0) {
-      timeoutMs = Math.floor(timeout);
+    if (
+      options?.timeout !== undefined &&
+      Number.isFinite(options?.timeout) &&
+      options?.timeout >= 0
+    ) {
+      timeoutMs = Math.floor(options?.timeout);
     }
     const checkpointName = this.getCheckpointName(stepName);
     const cached = await this.lookupCheckpoint(checkpointName);
