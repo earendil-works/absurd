@@ -112,6 +112,7 @@ export class TaskContext {
   private stepNameCounter: Map<string, number> = new Map();
 
   private constructor(
+    readonly taskID: string,
     private readonly pool: pg.Pool,
     private readonly queueName: string,
     private readonly message: ClaimedMessage,
@@ -119,11 +120,12 @@ export class TaskContext {
   ) {}
 
   static async create(args: {
+    taskID: string;
     pool: pg.Pool;
     queueName: string;
     message: ClaimedMessage;
   }): Promise<TaskContext> {
-    const { pool, queueName, message } = args;
+    const { taskID, pool, queueName, message } = args;
     const result = await pool.query<CheckpointRow>(
       `SELECT checkpoint_name, state, status, owner_run_id, updated_at
        FROM absurd.get_task_checkpoint_states($1, $2, $3)`,
@@ -133,9 +135,15 @@ export class TaskContext {
     for (const row of result.rows) {
       cache.set(row.checkpoint_name, row.state);
     }
-    return new TaskContext(pool, queueName, message, cache);
+    return new TaskContext(taskID, pool, queueName, message, cache);
   }
 
+  /**
+   * Defines a step in the task execution.  Steps are idempotent in
+   * that they are executed exactly once (unless they fail) and their
+   * results are cached.  As a result the return value of this function
+   * must support `JSON.stringify`.
+   */
   async step<T>(name: string, fn: () => Promise<T>): Promise<T> {
     const checkpointName = this.getCheckpointName(name);
     const state = await this.lookupCheckpoint(checkpointName);
@@ -148,10 +156,19 @@ export class TaskContext {
     return rv;
   }
 
+  /**
+   * Sleeps for a given number of milliseconds.  Note that this
+   * *always* suspends the task, even if you only wait for a very
+   * short period of time.
+   */
   async sleepFor(stepName: string, durationMs: number): Promise<void> {
     return await this.sleepUntil(stepName, new Date(Date.now() + durationMs));
   }
 
+  /**
+   * Like `sleepFor` but with an absolute time when the task should be
+   * awoken again.
+   */
   async sleepUntil(stepName: string, wakeAt: Date): Promise<void> {
     const checkpointName = this.getCheckpointName(stepName);
     const state = await this.lookupCheckpoint(checkpointName);
@@ -219,6 +236,10 @@ export class TaskContext {
     ]);
   }
 
+  /**
+   * Awaits the arrival of an event.  Events need to be uniquely
+   * named so fold in the necessary parameters into the name (eg: customer id).
+   */
   async awaitEvent(
     eventName: string,
     options?: { stepName?: string; timeout?: number },
@@ -278,6 +299,9 @@ export class TaskContext {
     throw new SuspendTask();
   }
 
+  /**
+   * Emits an event that can be awaited.
+   */
   async emitEvent(eventName: string, payload?: JsonValue): Promise<void> {
     if (!eventName) {
       throw new Error("eventName must be a non-empty string");
@@ -333,6 +357,9 @@ export class Absurd {
     this.queueName = queueName;
   }
 
+  /**
+   * This registers a given function as task.
+   */
   registerTask<P = any, R = any>(
     options: TaskRegistrationOptions,
     handler: TaskHandler<P, R>,
@@ -384,6 +411,9 @@ export class Absurd {
     return rv;
   }
 
+  /**
+   * Spawns a specific task.
+   */
   async spawn<P = any>(
     taskName: string,
     params: P,
@@ -442,6 +472,20 @@ export class Absurd {
       runID: row.run_id,
       attempt: row.attempt,
     };
+  }
+
+  /**
+   * Emits an event from outside of a task.
+   */
+  async emitEvent(eventName: string, payload?: JsonValue, queueName?: string): Promise<void> {
+    if (!eventName) {
+      throw new Error("eventName must be a non-empty string");
+    }
+    await this.pool.query(`SELECT absurd.emit_event($1, $2, $3)`, [
+      queueName || this.queueName,
+      eventName,
+      JSON.stringify(payload ?? null),
+    ]);
   }
 
   async workOnce(
@@ -506,6 +550,7 @@ export class Absurd {
   private async executeMessage(msg: ClaimedMessage): Promise<void> {
     const registration = this.registry.get(msg.task_name);
     const ctx = await TaskContext.create({
+      taskID: msg.task_id,
       pool: this.pool,
       queueName: registration?.queue ?? "unknown",
       message: msg,

@@ -72,10 +72,12 @@ of the language you are working with.
 A *task* is dispatches onto a given *queue* from where a *worker* picks it up
 to work on.  Tasks are subdivided into *steps* which are excuted in sequence
 by the worker.  Tasks can be suspended or fail, and when that happens they
-execute again.  To not repeat work, already finished states are loaded from the
-state storage in postgres again.
+execute again (a *run*).  The result of a step is stored in the database (a
+*checkpoint*).  To not repeat work, checkpoints are automatically loaded from
+the state storage in Postgres again.
 
-Additionally tasks can *sleep* or *suspend for events*.
+Additionally tasks can *sleep* or *suspend for events*.  Events are cached
+which means that they are race-free.
 
 ## Example
 
@@ -96,6 +98,7 @@ app.registerTask({ name: 'order-fulfillment' }, async (params, ctx) => {
   // Each step is checkpointed - if the process crashes, we resume
   // from the last completed step
   const payment = await ctx.step('process-payment', async () => {
+    // if you need an idempotency-key you can derive one from ctx.taskID.
     return await stripe.charges.create({ amount: params.amount, ... });
   });
 
@@ -113,7 +116,14 @@ app.registerTask({ name: 'order-fulfillment' }, async (params, ctx) => {
     return await sendEmail(params.email, shipment);
   });
 
-  return { orderId: payment.id, trackingNumber: shipment.tracking };
+  return { orderId: payment.id, trackingNumber: shipment.trackingNumber };
+});
+
+myWebApp.post("/api/shipment/pack/{orderId}", async (req) => {
+  const trackingNumber = ...;
+  app.emitEvent(`shipment.packed:${req.params.orderId}`, {
+    trackingNumber,
+  });
 });
 
 // Start a worker that pulls tasks from Postgres
@@ -130,5 +140,24 @@ app.spawn('order-fulfillment', {
   amount: 9999,
   items: ['widget-1', 'gadget-2'],
   email: 'customer@example.com'
+});
+```
+
+## Idempotency Keys
+
+Because steps have their return values cached, for all intends and purposes
+it simulate "exact-once" semantics.  However all the code outside of steps
+will run multiple times.  Sometimes you want to integrate into systems that
+themselves have some sort of idempotency mechanism (like the `idempotency-key`
+HTTP header).  In that case it's recommended to use use `taskID` from the
+context to derive one:
+
+```typescript
+const payment = await ctx.step('process-payment', async () => {
+  const idempotencyKey = `${ctx.taskID}:payment`;
+  return await somesdk.charges.create({
+    amount: params.amount,
+    idempotencyKey,
+  });
 });
 ```
