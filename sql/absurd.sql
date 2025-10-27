@@ -429,6 +429,7 @@ begin
 end;
 $$;
 
+-- Markes a run as completed
 create function absurd.complete_run (
   p_queue_name text,
   p_run_id uuid,
@@ -443,10 +444,10 @@ declare
 begin
   execute format(
     'select task_id
-       from absurd.%s
+       from absurd.%I
       where run_id = $1
       for update',
-    quote_ident('r_' || p_queue_name)
+    'r_' || p_queue_name
   )
   into v_task_id
   using p_run_id;
@@ -456,28 +457,28 @@ begin
   end if;
 
   execute format(
-    'update absurd.%s
+    'update absurd.%I
         set state = ''completed'',
             claimed_by = null,
             claim_expires_at = null,
             completed_at = $2,
             result = $3
       where run_id = $1',
-    quote_ident('r_' || p_queue_name)
+    'r_' || p_queue_name
   ) using p_run_id, v_now, p_state;
 
   execute format(
-    'update absurd.%s
+    'update absurd.%I
         set state = ''completed'',
             completed_payload = $2,
             last_attempt_run = $3
       where task_id = $1',
-    quote_ident('t_' || p_queue_name)
+    't_' || p_queue_name
   ) using v_task_id, p_state, p_run_id;
 
   execute format(
-    'delete from absurd.%s where run_id = $1',
-    quote_ident('w_' || p_queue_name)
+    'delete from absurd.%I where run_id = $1',
+    'w_' || p_queue_name
   ) using p_run_id;
 end;
 $$;
@@ -495,11 +496,11 @@ declare
 begin
   execute format(
     'select task_id
-       from absurd.%s
+       from absurd.%I
       where run_id = $1
         and state = ''running''
       for update',
-    quote_ident('r_' || p_queue_name)
+    'r_' || p_queue_name
   )
   into v_task_id
   using p_run_id;
@@ -509,21 +510,21 @@ begin
   end if;
 
   execute format(
-    'update absurd.%s
+    'update absurd.%I
         set state = ''sleeping'',
             claimed_by = null,
             claim_expires_at = null,
             available_at = $2,
             wake_event = null
       where run_id = $1',
-    quote_ident('r_' || p_queue_name)
+    'r_' || p_queue_name
   ) using p_run_id, p_wake_at;
 
   execute format(
-    'update absurd.%s
+    'update absurd.%I
         set state = ''sleeping''
       where task_id = $1',
-    quote_ident('t_' || p_queue_name)
+    't_' || p_queue_name
   ) using v_task_id;
 end;
 $$;
@@ -563,11 +564,11 @@ declare
 begin
   execute format(
     'select r.task_id, r.attempt
-       from absurd.%s r
+       from absurd.%I r
       where r.run_id = $1
         and r.state in (''running'', ''sleeping'')
       for update',
-    quote_ident('r_' || p_queue_name)
+    'r_' || p_queue_name
   )
   into v_task_id, v_attempt
   using p_run_id;
@@ -578,16 +579,16 @@ begin
 
   execute format(
     'select retry_strategy, max_attempts, first_started_at, cancellation, state
-       from absurd.%s
+       from absurd.%I
       where task_id = $1
       for update',
-    quote_ident('t_' || p_queue_name)
+    't_' || p_queue_name
   )
   into v_retry_strategy, v_max_attempts, v_first_started, v_cancellation, v_task_state
   using v_task_id;
 
   execute format(
-    'update absurd.%s
+    'update absurd.%I
         set state = ''failed'',
             claimed_by = null,
             claim_expires_at = null,
@@ -595,7 +596,7 @@ begin
             failed_at = $2,
             failure_reason = $3
       where run_id = $1',
-    quote_ident('r_' || p_queue_name)
+    'r_' || p_queue_name
   ) using p_run_id, v_now, p_reason;
 
   v_next_attempt := v_attempt + 1;
@@ -643,9 +644,9 @@ begin
       v_recorded_attempt := v_next_attempt;
       v_last_attempt_run := v_new_run_id;
       execute format(
-        'insert into absurd.%s (run_id, task_id, attempt, state, available_at, wake_event, event_payload, result, failure_reason)
+        'insert into absurd.%I (run_id, task_id, attempt, state, available_at, wake_event, event_payload, result, failure_reason)
          values ($1, $2, $3, %L, $4, null, null, null, null)',
-        quote_ident('r_' || p_queue_name),
+        'r_' || p_queue_name,
         v_task_state_after
       )
       using v_new_run_id, v_task_id, v_next_attempt, v_next_available;
@@ -660,19 +661,19 @@ begin
   end if;
 
   execute format(
-    'update absurd.%s
+    'update absurd.%I
         set state = %L,
             attempts = greatest(attempts, $3),
             last_attempt_run = $4,
             cancelled_at = coalesce(cancelled_at, $5)
       where task_id = $1',
-    quote_ident('t_' || p_queue_name),
+    't_' || p_queue_name,
     v_task_state_after
   ) using v_task_id, v_task_state_after, v_recorded_attempt, v_last_attempt_run, v_cancelled_at;
 
   execute format(
-    'delete from absurd.%s where run_id = $1',
-    quote_ident('w_' || p_queue_name)
+    'delete from absurd.%I where run_id = $1',
+    'w_' || p_queue_name
   ) using p_run_id;
 end;
 $$;
@@ -699,9 +700,9 @@ begin
 
   execute format(
     'select attempt
-       from absurd.%s
+       from absurd.%I
       where run_id = $1',
-    quote_ident('r_' || p_queue_name)
+    'r_' || p_queue_name
   )
   into v_new_attempt
   using p_owner_run;
@@ -713,26 +714,26 @@ begin
   execute format(
     'select c.owner_run_id,
             r.attempt
-       from absurd.%s c
-       left join absurd.%s r on r.run_id = c.owner_run_id
+       from absurd.%I c
+       left join absurd.%I r on r.run_id = c.owner_run_id
       where c.task_id = $1
         and c.checkpoint_name = $2',
-    quote_ident('c_' || p_queue_name),
-    quote_ident('r_' || p_queue_name)
+    'c_' || p_queue_name,
+    'r_' || p_queue_name
   )
   into v_existing_owner, v_existing_attempt
   using p_task_id, p_step_name;
 
   if v_existing_owner is null or v_existing_attempt is null or v_new_attempt >= v_existing_attempt then
     execute format(
-      'insert into absurd.%s (task_id, checkpoint_name, state, status, owner_run_id, updated_at)
+      'insert into absurd.%I (task_id, checkpoint_name, state, status, owner_run_id, updated_at)
        values ($1, $2, $3, ''committed'', $4, $5)
        on conflict (task_id, checkpoint_name)
        do update set state = excluded.state,
                      status = excluded.status,
                      owner_run_id = excluded.owner_run_id,
                      updated_at = excluded.updated_at',
-      quote_ident('c_' || p_queue_name)
+      'c_' || p_queue_name
     ) using p_task_id, p_step_name, p_state, p_owner_run, v_now;
   end if;
 end;
@@ -756,10 +757,10 @@ as $$
 begin
   return query execute format(
     'select checkpoint_name, state, status, owner_run_id, updated_at
-       from absurd.%s
+       from absurd.%I
       where task_id = $1
         and checkpoint_name = $2',
-    quote_ident('c_' || p_queue_name)
+    'c_' || p_queue_name
   ) using p_task_id, p_step_name;
 end;
 $$;
@@ -781,10 +782,10 @@ as $$
 begin
   return query execute format(
     'select checkpoint_name, state, status, owner_run_id, updated_at
-       from absurd.%s
+       from absurd.%I
       where task_id = $1
       order by updated_at asc',
-    quote_ident('c_' || p_queue_name)
+    'c_' || p_queue_name
   ) using p_task_id;
 end;
 $$;
@@ -828,10 +829,10 @@ begin
 
   execute format(
     'select state
-       from absurd.%s
+       from absurd.%I
       where task_id = $1
         and checkpoint_name = $2',
-    quote_ident('c_' || p_queue_name)
+    'c_' || p_queue_name
   )
   into v_checkpoint_payload
   using p_task_id, p_step_name;
@@ -843,10 +844,10 @@ begin
 
   execute format(
     'select state, event_payload
-       from absurd.%s
+       from absurd.%I
       where run_id = $1
       for update',
-    quote_ident('r_' || p_queue_name)
+    'r_' || p_queue_name
   )
   into v_run_state, v_existing_payload
   using p_run_id;
@@ -857,19 +858,19 @@ begin
 
   execute format(
     'select payload
-       from absurd.%s
+       from absurd.%I
       where event_name = $1',
-    quote_ident('e_' || p_queue_name)
+    'e_' || p_queue_name
   )
   into v_event_payload
   using p_event_name;
 
   if v_existing_payload is not null then
     execute format(
-      'update absurd.%s
+      'update absurd.%I
           set event_payload = null
         where run_id = $1',
-      quote_ident('r_' || p_queue_name)
+      'r_' || p_queue_name
     ) using p_run_id;
 
     if v_event_payload is not null and v_event_payload = v_existing_payload then
@@ -887,31 +888,31 @@ begin
 
   if v_resolved_payload is not null then
     execute format(
-      'insert into absurd.%s (task_id, checkpoint_name, state, status, owner_run_id, updated_at)
+      'insert into absurd.%I (task_id, checkpoint_name, state, status, owner_run_id, updated_at)
        values ($1, $2, $3, ''committed'', $4, $5)
        on conflict (task_id, checkpoint_name)
        do update set state = excluded.state,
                      status = excluded.status,
                      owner_run_id = excluded.owner_run_id,
                      updated_at = excluded.updated_at',
-      quote_ident('c_' || p_queue_name)
+      'c_' || p_queue_name
     ) using p_task_id, p_step_name, v_resolved_payload, p_run_id, v_now;
     return query select false, v_resolved_payload;
     return;
   end if;
 
   execute format(
-    'insert into absurd.%s (task_id, run_id, step_name, event_name, timeout_at, created_at)
+    'insert into absurd.%I (task_id, run_id, step_name, event_name, timeout_at, created_at)
      values ($1, $2, $3, $4, $5, $6)
      on conflict (run_id, step_name)
      do update set event_name = excluded.event_name,
                    timeout_at = excluded.timeout_at,
                    created_at = excluded.created_at',
-    quote_ident('w_' || p_queue_name)
+    'w_' || p_queue_name
   ) using p_task_id, p_run_id, p_step_name, p_event_name, v_timeout_at, v_now;
 
   execute format(
-    'update absurd.%s
+    'update absurd.%I
         set state = ''sleeping'',
             claimed_by = null,
             claim_expires_at = null,
@@ -919,14 +920,14 @@ begin
             wake_event = $2,
             event_payload = null
       where run_id = $1',
-    quote_ident('r_' || p_queue_name)
+    'r_' || p_queue_name
   ) using p_run_id, p_event_name, v_available_at;
 
   execute format(
-    'update absurd.%s
+    'update absurd.%I
         set state = ''sleeping''
       where task_id = $1',
-    quote_ident('t_' || p_queue_name)
+    't_' || p_queue_name
   ) using p_task_id;
 
   return query select true, null::jsonb;
@@ -951,17 +952,17 @@ begin
   end if;
 
   execute format(
-    'insert into absurd.%s (event_name, payload, emitted_at)
+    'insert into absurd.%I (event_name, payload, emitted_at)
      values ($1, $2, $3)
      on conflict (event_name)
      do update set payload = excluded.payload,
                    emitted_at = excluded.emitted_at',
-    quote_ident('e_' || p_queue_name)
+    'e_' || p_queue_name
   ) using p_event_name, v_payload, v_now;
 
   execute format(
     'with expired_waits as (
-        delete from absurd.%s w
+        delete from absurd.%1$I w
          where w.event_name = $1
            and w.timeout_at is not null
            and w.timeout_at <= $2
@@ -969,12 +970,12 @@ begin
      ),
      affected as (
         select run_id, task_id, step_name
-          from absurd.%s
+          from absurd.%1$I
          where event_name = $1
            and (timeout_at is null or timeout_at > $2)
      ),
      updated_runs as (
-        update absurd.%s r
+        update absurd.%2$I r
            set state = ''pending'',
                available_at = $2,
                wake_event = null,
@@ -986,7 +987,7 @@ begin
          returning r.run_id, r.task_id
      ),
      checkpoint_upd as (
-        insert into absurd.%s (task_id, checkpoint_name, state, status, owner_run_id, updated_at)
+        insert into absurd.%3$I (task_id, checkpoint_name, state, status, owner_run_id, updated_at)
         select a.task_id, a.step_name, $3, ''committed'', a.run_id, $2
           from affected a
           join updated_runs ur on ur.run_id = a.run_id
@@ -997,19 +998,18 @@ begin
                       updated_at = excluded.updated_at
      ),
      updated_tasks as (
-        update absurd.%s t
+        update absurd.%4$I t
            set state = ''pending''
          where t.task_id in (select task_id from updated_runs)
          returning task_id
      )
-     delete from absurd.%I w
+     delete from absurd.%5$I w
       where w.event_name = $1
         and w.run_id in (select run_id from updated_runs)',
-    quote_ident('w_' || p_queue_name),
-    quote_ident('w_' || p_queue_name),
-    quote_ident('r_' || p_queue_name),
-    quote_ident('c_' || p_queue_name),
-    quote_ident('t_' || p_queue_name),
+    'w_' || p_queue_name,
+    'r_' || p_queue_name,
+    'c_' || p_queue_name,
+    't_' || p_queue_name,
     'w_' || p_queue_name
   ) using p_event_name, v_now, v_payload;
 end;
