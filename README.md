@@ -121,7 +121,7 @@ app.registerTask({ name: 'order-fulfillment' }, async (params, ctx) => {
 
 myWebApp.post("/api/shipment/pack/{orderId}", async (req) => {
   const trackingNumber = ...;
-  app.emitEvent(`shipment.packed:${req.params.orderId}`, {
+  await app.emitEvent(`shipment.packed:${req.params.orderId}`, {
     trackingNumber,
   });
 });
