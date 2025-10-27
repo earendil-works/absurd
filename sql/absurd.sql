@@ -312,7 +312,7 @@ begin
                enqueue_at,
                first_started_at,
                state
-          from absurd.%s
+          from absurd.%I
         where state in (''pending'', ''sleeping'', ''running'')
      ),
      to_cancel as (
@@ -331,16 +331,16 @@ begin
              and extract(epoch from ($1 - first_started_at)) * 1000 >= max_duration_ms
            )
      )
-     update absurd.%s t
+     update absurd.%I t
         set state = ''cancelled'',
             cancelled_at = coalesce(t.cancelled_at, $1)
       where t.task_id in (select task_id from to_cancel)',
-    quote_ident('t_' || p_queue_name),
-    quote_ident('t_' || p_queue_name)
+    't_' || p_queue_name,
+    't_' || p_queue_name
   ) using v_now;
 
   execute format(
-    'update absurd.%s r
+    'update absurd.%I r
         set state = ''pending'',
             claimed_by = null,
             claim_expires_at = null,
@@ -349,27 +349,27 @@ begin
       where state = ''running''
         and claim_expires_at is not null
         and claim_expires_at <= $1',
-    quote_ident('r_' || p_queue_name)
+    'r_' || p_queue_name
   ) using v_now;
 
   execute format(
-    'update absurd.%s r
+    'update absurd.%I r
         set state = ''cancelled'',
             claimed_by = null,
             claim_expires_at = null,
             available_at = $1,
             wake_event = null
-      where task_id in (select task_id from absurd.%s where state = ''cancelled'')
+      where task_id in (select task_id from absurd.%I where state = ''cancelled'')
         and r.state <> ''cancelled''',
-    quote_ident('r_' || p_queue_name),
-    quote_ident('t_' || p_queue_name)
+    'r_' || p_queue_name,
+    't_' || p_queue_name
   ) using v_now;
 
   v_sql := format(
     'with candidate as (
         select r.run_id
-          from absurd.%s r
-          join absurd.%s t on t.task_id = r.task_id
+          from absurd.%1$I r
+          join absurd.%2$I t on t.task_id = r.task_id
          where r.state in (''pending'', ''sleeping'')
            and t.state in (''pending'', ''sleeping'', ''running'')
            and r.available_at <= $1
@@ -378,7 +378,7 @@ begin
          for update skip locked
      ),
      updated as (
-        update absurd.%s r
+        update absurd.%1$I r
            set state = ''running'',
                claimed_by = $3,
                claim_expires_at = $4,
@@ -388,7 +388,7 @@ begin
          returning r.run_id, r.task_id, r.attempt
      ),
      task_upd as (
-        update absurd.%s t
+        update absurd.%2$I t
            set state = ''running'',
                attempts = greatest(t.attempts, u.attempt),
                first_started_at = coalesce(t.first_started_at, $1),
@@ -398,7 +398,7 @@ begin
          returning t.task_id
      ),
      wait_cleanup as (
-        delete from absurd.%s w
+        delete from absurd.%3$I w
          using updated u
         where w.run_id = u.run_id
           and w.timeout_at is not null
@@ -417,16 +417,12 @@ begin
       r.wake_event,
       r.event_payload
      from updated u
-     join absurd.%s r on r.run_id = u.run_id
-     join absurd.%s t on t.task_id = u.task_id
+     join absurd.%1$I r on r.run_id = u.run_id
+     join absurd.%2$I t on t.task_id = u.task_id
      order by r.available_at, u.run_id',
-    quote_ident('r_' || p_queue_name),
-    quote_ident('t_' || p_queue_name),
-    quote_ident('r_' || p_queue_name),
-    quote_ident('t_' || p_queue_name),
-    quote_ident('w_' || p_queue_name),
-    quote_ident('r_' || p_queue_name),
-    quote_ident('t_' || p_queue_name)
+    'r_' || p_queue_name,
+    't_' || p_queue_name,
+    'w_' || p_queue_name
   );
 
   return query execute v_sql using v_now, v_qty, v_worker_id, v_claim_until;
