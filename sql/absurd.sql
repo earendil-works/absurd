@@ -59,7 +59,7 @@ begin
         last_attempt_run uuid,
         completed_payload jsonb,
         cancelled_at timestamptz
-     )',
+     ) with (fillfactor=70)',
     't_' || p_queue_name
   );
 
@@ -80,7 +80,7 @@ begin
         result jsonb,
         failure_reason jsonb,
         created_at timestamptz not null default now()
-     )',
+     ) with (fillfactor=70)',
     'r_' || p_queue_name,
     't_' || p_queue_name
   );
@@ -94,7 +94,7 @@ begin
         owner_run_id uuid,
         updated_at timestamptz not null default now(),
         primary key (task_id, checkpoint_name)
-     )',
+     ) with (fillfactor=70)',
     'c_' || p_queue_name,
     't_' || p_queue_name
   );
