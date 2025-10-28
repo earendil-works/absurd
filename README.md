@@ -24,13 +24,13 @@ state or duplicating work.  Durable execution can be thought of as the combinati
 of a queue system and a state store that remembers the most recently seen state.
 
 Instead of running your logic in memory, a durable execution system decomposes
-a task into smaller pieces (step functions) and record every step and decision.
+a task into smaller pieces (step functions) and records every step and decision.
 When the process stops (fails, intentionally suspends or a machine dies), the
 engine can replay those events to restore the exact state and continue where it
 left off, as if nothing happened.
 
 In practice, that makes it possible to build dependable systems for things like
-LLM basd agents, payments, email scheduling, order processing, really anything
+LLM based agents, payments, email scheduling, order processing, really anything
 that spans minutes, days, or even years.  Rather than bolting on ad-hoc retry
 logic and database checkpoints, durable workflows give you one consistent model
 for ensuring progress without double execution.  It's the promise of
@@ -65,11 +65,11 @@ consumes messages and makes HTTP requests.
 ## Highlevel Operations
 
 Absurd's goal is to move the complexity of SDKs into the underlying stored
-functions.  The goal os the SDKs is that they make the system convenient by
-abstracting over the lowlevel operations in a way that leverages the ergonomics
+functions.  The goal of the SDKs is that they make the system convenient by
+abstracting the low-level operations in a way that leverages the ergonomics
 of the language you are working with.
 
-A *task* is dispatches onto a given *queue* from where a *worker* picks it up
+A *task* dispatches onto a given *queue* from where a *worker* picks it up
 to work on.  Tasks are subdivided into *steps* which are excuted in sequence
 by the worker.  Tasks can be suspended or fail, and when that happens they
 execute again (a *run*).  The result of a step is stored in the database (a
@@ -145,8 +145,8 @@ app.spawn('order-fulfillment', {
 
 ## Idempotency Keys
 
-Because steps have their return values cached, for all intends and purposes
-it simulate "exact-once" semantics.  However all the code outside of steps
+Because steps have their return values cached, for all intents and purposes
+they simulate "exact-once" semantics.  However, all the code outside of steps
 will run multiple times.  Sometimes you want to integrate into systems that
 themselves have some sort of idempotency mechanism (like the `idempotency-key`
 HTTP header).  In that case it's recommended to use use `taskID` from the
