@@ -66,7 +66,7 @@ begin
   execute format(
     'create table if not exists absurd.%I (
         run_id uuid primary key,
-        task_id uuid not null references absurd.%I(task_id) on delete cascade,
+        task_id uuid not null,
         attempt integer not null,
         state text not null check (state in (''pending'', ''running'', ''sleeping'', ''completed'', ''failed'', ''cancelled'')),
         claimed_by text,
@@ -81,13 +81,12 @@ begin
         failure_reason jsonb,
         created_at timestamptz not null default now()
      ) with (fillfactor=70)',
-    'r_' || p_queue_name,
-    't_' || p_queue_name
+    'r_' || p_queue_name
   );
 
   execute format(
     'create table if not exists absurd.%I (
-        task_id uuid not null references absurd.%I(task_id) on delete cascade,
+        task_id uuid not null,
         checkpoint_name text not null,
         state jsonb,
         status text not null default ''committed'',
@@ -95,8 +94,7 @@ begin
         updated_at timestamptz not null default now(),
         primary key (task_id, checkpoint_name)
      ) with (fillfactor=70)',
-    'c_' || p_queue_name,
-    't_' || p_queue_name
+    'c_' || p_queue_name
   );
 
   execute format(
@@ -110,17 +108,15 @@ begin
 
   execute format(
     'create table if not exists absurd.%I (
-        task_id uuid not null references absurd.%I(task_id) on delete cascade,
-        run_id uuid not null references absurd.%I(run_id) on delete cascade,
+        task_id uuid not null,
+        run_id uuid not null,
         step_name text not null,
         event_name text not null,
         timeout_at timestamptz,
         created_at timestamptz not null default now(),
         primary key (run_id, step_name)
      )',
-    'w_' || p_queue_name,
-    't_' || p_queue_name,
-    'r_' || p_queue_name
+    'w_' || p_queue_name
   );
 
   execute format(
@@ -1026,6 +1022,130 @@ begin
     't_' || p_queue_name,
     'w_' || p_queue_name
   ) using p_event_name, v_now, v_payload;
+end;
+$$;
+
+-- Cleans up old completed, failed, or cancelled tasks and their related data.
+-- Deletes tasks whose terminal timestamp (completed_at, failed_at, or cancelled_at)
+-- is older than the specified TTL in seconds.
+--
+-- Returns the number of tasks deleted.
+create function absurd.cleanup_tasks (
+  p_queue_name text,
+  p_ttl_seconds integer,
+  p_limit integer default 1000
+)
+  returns integer
+  language plpgsql
+as $$
+declare
+  v_now timestamptz := clock_timestamp();
+  v_cutoff timestamptz;
+  v_deleted_count integer;
+begin
+  if p_ttl_seconds is null or p_ttl_seconds < 0 then
+    raise exception 'TTL must be a non-negative number of seconds';
+  end if;
+
+  v_cutoff := v_now - (p_ttl_seconds * interval '1 second');
+
+  -- Delete in order: wait registrations, checkpoints, runs, then tasks
+  -- Use a CTE to find eligible tasks and delete their related data
+  execute format(
+    'with eligible_tasks as (
+        select t.task_id,
+               case
+                 when t.state = ''completed'' then r.completed_at
+                 when t.state = ''failed'' then r.failed_at
+                 when t.state = ''cancelled'' then t.cancelled_at
+                 else null
+               end as terminal_at
+          from absurd.%1$I t
+          left join absurd.%2$I r on r.run_id = t.last_attempt_run
+         where t.state in (''completed'', ''failed'', ''cancelled'')
+     ),
+     to_delete as (
+        select task_id
+          from eligible_tasks
+         where terminal_at is not null
+           and terminal_at < $1
+         order by terminal_at
+         limit $2
+     ),
+     del_waits as (
+        delete from absurd.%3$I w
+         where w.task_id in (select task_id from to_delete)
+     ),
+     del_checkpoints as (
+        delete from absurd.%4$I c
+         where c.task_id in (select task_id from to_delete)
+     ),
+     del_runs as (
+        delete from absurd.%2$I r
+         where r.task_id in (select task_id from to_delete)
+     ),
+     del_tasks as (
+        delete from absurd.%1$I t
+         where t.task_id in (select task_id from to_delete)
+         returning 1
+     )
+     select count(*) from del_tasks',
+    't_' || p_queue_name,
+    'r_' || p_queue_name,
+    'w_' || p_queue_name,
+    'c_' || p_queue_name
+  )
+  into v_deleted_count
+  using v_cutoff, p_limit;
+
+  return v_deleted_count;
+end;
+$$;
+
+-- Cleans up old emitted events.
+-- Deletes events whose emitted_at timestamp is older than the specified TTL in seconds.
+--
+-- Returns the number of events deleted.
+create function absurd.cleanup_events (
+  p_queue_name text,
+  p_ttl_seconds integer,
+  p_limit integer default 1000
+)
+  returns integer
+  language plpgsql
+as $$
+declare
+  v_now timestamptz := clock_timestamp();
+  v_cutoff timestamptz;
+  v_deleted_count integer;
+begin
+  if p_ttl_seconds is null or p_ttl_seconds < 0 then
+    raise exception 'TTL must be a non-negative number of seconds';
+  end if;
+
+  v_cutoff := v_now - (p_ttl_seconds * interval '1 second');
+
+  execute format(
+    'with to_delete as (
+        select event_name
+          from absurd.%I
+         where emitted_at < $1
+         order by emitted_at
+         limit $2
+     ),
+     del_events as (
+        delete from absurd.%I e
+         where e.event_name in (select event_name from to_delete)
+         returning 1
+     )
+     select count(*) from del_events',
+    'e_' || p_queue_name,
+    'e_' || p_queue_name
+  )
+  into v_deleted_count
+  using v_cutoff, p_limit;
+
+  return v_deleted_count;
 end;
 $$;
 
