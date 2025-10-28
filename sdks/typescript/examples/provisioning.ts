@@ -4,9 +4,8 @@
  * node --experimental-transform-types examples/provisioning.ts
  *
  * Environment:
- *   ABSURD_DB_URL      - PostgreSQL connection string (default: postgresql://localhost/absurd)
- *   ABSURD_WORKERS     - Number of worker loops to start (default: 3)
- *   ABSURD_RUNTIME_MS  - Worker lifetime before shutdown (default: 20000)
+ *   ABSURD_WORKERS    - Number of worker loops to start (default: 3)
+ *   ABSURD_RUNTIME    - Worker lifetime before shutdown in seconds (default: 20)
  */
 import crypto from "node:crypto";
 import process from "node:process";
@@ -15,17 +14,15 @@ import pg from "pg";
 
 import { Absurd, TaskContext, TimeoutError } from "../src/index.ts";
 
-const DEFAULT_DB_URL = "postgresql://localhost/absurd";
-const DEFAULT_QUEUE = "provisioning_demo";
 const DEFAULT_CANCELLATION = {
-  maxDelayMs: 60000,
-  maxDurationMs: 120000,
+  maxDelay: 60,
+  maxDuration: 120,
 };
-const ACTIVATION_TIMEOUT_MS = 5000;
-const ON_TIME_DELAY_RANGE = { min: 400, max: 1800 } as const;
+const ACTIVATION_TIMEOUT = 5;
+const ON_TIME_DELAY_RANGE = { min: 1, max: 4 } as const;
 const LATE_DELAY_RANGE = {
-  min: ACTIVATION_TIMEOUT_MS + 1200,
-  max: ACTIVATION_TIMEOUT_MS + 1800,
+  min: ACTIVATION_TIMEOUT + 2,
+  max: ACTIVATION_TIMEOUT + 3,
 } as const;
 
 type ProvisionCustomerParams = {
@@ -36,9 +33,9 @@ type ProvisionCustomerParams = {
 
 type ActivationSimulatorParams = {
   customerId: string;
-  minDelayMs: number;
-  maxDelayMs: number;
-  timeoutMs: number;
+  minDelay: number;
+  maxDelay: number;
+  timeout: number;
   shouldTimeout: boolean;
 };
 
@@ -93,23 +90,23 @@ function registerTasks(absurd: Absurd) {
 
       const shouldTimeout = Math.random() < 0.5;
       const delayRange = shouldTimeout ? LATE_DELAY_RANGE : ON_TIME_DELAY_RANGE;
-      const activationTimeoutMs = ACTIVATION_TIMEOUT_MS;
+      const activationTimeout = ACTIVATION_TIMEOUT;
 
       await ctx.step("start-activation-simulator", async () => {
         log("provision", "starting activation simulator", {
           customerId: customer.id,
           shouldTimeout,
           delayRange,
-          timeoutMs: activationTimeoutMs,
+          timeout: activationTimeout,
         });
 
         await absurd.spawn<ActivationSimulatorParams>(
           "activation-simulator",
           {
             customerId: customer.id,
-            minDelayMs: delayRange.min,
-            maxDelayMs: delayRange.max,
-            timeoutMs: activationTimeoutMs,
+            minDelay: delayRange.min,
+            maxDelay: delayRange.max,
+            timeout: activationTimeout,
             shouldTimeout,
           },
           { maxAttempts: 1 },
@@ -122,13 +119,13 @@ function registerTasks(absurd: Absurd) {
       log("provision", "waiting for activation event", {
         customerId: customer.id,
         eventName,
-        timeoutMs: activationTimeoutMs,
+        timeout: activationTimeout,
       });
 
       let activationPayload: ActivationEventPayload;
       try {
         const payload = await ctx.awaitEvent(eventName, {
-          timeout: activationTimeoutMs,
+          timeout: activationTimeout,
         });
         activationPayload = payload as ActivationEventPayload;
       } catch (err) {
@@ -137,7 +134,7 @@ function registerTasks(absurd: Absurd) {
           log("provision", "activation wait timed out", {
             customerId: customer.id,
             timedOutAt,
-            timeoutMs: activationTimeoutMs,
+            timeout: activationTimeout,
             expectedTimeout: shouldTimeout,
           });
 
@@ -145,7 +142,7 @@ function registerTasks(absurd: Absurd) {
             customerId: customer.id,
             status: "activation-timeout",
             timedOutAt,
-            timeoutMs: activationTimeoutMs,
+            timeout: activationTimeout,
           });
 
           return {
@@ -256,22 +253,22 @@ function registerTasks(absurd: Absurd) {
   absurd.registerTask<ActivationSimulatorParams>(
     { name: "activation-simulator", defaultCancellation: DEFAULT_CANCELLATION },
     async (params, ctx: TaskContext) => {
-      const delayMs = await ctx.step("activation-delay", async () => {
-        const range = Math.max(params.maxDelayMs - params.minDelayMs, 0);
+      const delay = await ctx.step("activation-delay", async () => {
+        const range = Math.max(params.maxDelay - params.minDelay, 0);
         const delay =
-          params.minDelayMs +
+          params.minDelay +
           (range > 0 ? Math.floor(Math.random() * (range + 1)) : 0);
         log("activation", "user will eventually activate", {
           customerId: params.customerId,
-          delayMs: delay,
+          delay,
           shouldTimeout: params.shouldTimeout,
-          timeoutMs: params.timeoutMs,
+          timeout: params.timeout,
         });
         return delay;
       });
 
       const wakeAtIso = await ctx.step("wake-at", async () => {
-        const wake = new Date(Date.now() + delayMs).toISOString();
+        const wake = new Date(Date.now() + delay * 1000).toISOString();
         log("activation", "scheduled wake for activation", {
           customerId: params.customerId,
           wakeAt: wake,
@@ -280,14 +277,14 @@ function registerTasks(absurd: Absurd) {
       });
 
       const wakeAt = new Date(wakeAtIso);
-      const remainingMs = wakeAt.getTime() - Date.now();
+      const remaining = (wakeAt.getTime() - Date.now()) / 1000;
 
-      if (remainingMs > 25) {
+      if (remaining > 0) {
         log("activation", "waiting for simulated user activation", {
           customerId: params.customerId,
-          remainingMs,
+          remaining,
         });
-        await ctx.sleepFor("wait-for-activation", remainingMs);
+        await ctx.sleepFor("wait-for-activation", remaining);
       }
 
       await ctx.step("emit-activation-event", async () => {
@@ -335,20 +332,16 @@ function registerTasks(absurd: Absurd) {
 }
 
 async function main() {
-  const connectionString = process.env.ABSURD_DB_URL ?? DEFAULT_DB_URL;
   const workerCount = Number(process.env.ABSURD_WORKERS ?? "6");
-  const runtimeMs = Number(process.env.ABSURD_RUNTIME_MS ?? "15000");
+  const runtime = Number(process.env.ABSURD_RUNTIME ?? "15");
 
   log("main", "connecting to absurd queue", {
-    connectionString,
-    queue: DEFAULT_QUEUE,
     workers: workerCount,
   });
 
-  const pool = new pg.Pool({ connectionString });
-  const absurd = new Absurd(pool, DEFAULT_QUEUE);
+  const absurd = new Absurd();
 
-  log("main", "creating queue if not exists", { queue: DEFAULT_QUEUE });
+  log("main", "creating queue if not exists");
   await absurd.createQueue();
 
   registerTasks(absurd);
@@ -358,7 +351,7 @@ async function main() {
       absurd.startWorker({
         workerId: `demo-worker-${idx + 1}`,
         batchSize: 1,
-        pollInterval: 250,
+        pollInterval: 0.25,
         onError: (error) => {
           log("worker", "worker loop error", {
             workerId: `demo-worker-${idx + 1}`,
@@ -397,8 +390,8 @@ async function main() {
 
   await Promise.all(pendingTasks);
 
-  log("main", "workers running", { runtimeMs });
-  await sleep(runtimeMs);
+  log("main", "workers running", { runtime });
+  await sleep(runtime * 1000);
 
   log("main", "shutting down workers");
   for (const shutdown of workerShutdowns) {
@@ -406,7 +399,6 @@ async function main() {
   }
 
   await absurd.close();
-  await pool.end();
   log("main", "example finished");
 }
 

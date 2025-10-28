@@ -20,8 +20,8 @@ export interface RetryStrategy {
 }
 
 export interface CancellationPolicy {
-  maxDurationMs?: number;
-  maxDelayMs?: number;
+  maxDuration?: number;
+  maxDelay?: number;
 }
 
 export interface SpawnOptions {
@@ -137,7 +137,14 @@ export class TaskContext {
     for (const row of result.rows) {
       cache.set(row.checkpoint_name, row.state);
     }
-    return new TaskContext(taskID, pool, queueName, message, cache, claimTimeout);
+    return new TaskContext(
+      taskID,
+      pool,
+      queueName,
+      message,
+      cache,
+      claimTimeout,
+    );
   }
 
   /**
@@ -159,12 +166,15 @@ export class TaskContext {
   }
 
   /**
-   * Sleeps for a given number of milliseconds.  Note that this
+   * Sleeps for a given number of seconds.  Note that this
    * *always* suspends the task, even if you only wait for a very
    * short period of time.
    */
-  async sleepFor(stepName: string, durationMs: number): Promise<void> {
-    return await this.sleepUntil(stepName, new Date(Date.now() + durationMs));
+  async sleepFor(stepName: string, duration: number): Promise<void> {
+    return await this.sleepUntil(
+      stepName,
+      new Date(Date.now() + duration * 1000),
+    );
   }
 
   /**
@@ -249,13 +259,13 @@ export class TaskContext {
   ): Promise<JsonValue> {
     // the default step name is derived from the event name.
     const stepName = options?.stepName || `$awaitEvent:${eventName}`;
-    let timeoutMs: number | null = null;
+    let timeout: number | null = null;
     if (
       options?.timeout !== undefined &&
       Number.isFinite(options?.timeout) &&
       options?.timeout >= 0
     ) {
-      timeoutMs = Math.floor(options?.timeout);
+      timeout = Math.floor(options?.timeout);
     }
     const checkpointName = this.getCheckpointName(stepName);
     const cached = await this.lookupCheckpoint(checkpointName);
@@ -283,7 +293,7 @@ export class TaskContext {
         this.message.run_id,
         checkpointName,
         eventName,
-        timeoutMs,
+        timeout,
       ],
     );
 
@@ -480,7 +490,11 @@ export class Absurd {
   /**
    * Emits an event from outside of a task.
    */
-  async emitEvent(eventName: string, payload?: JsonValue, queueName?: string): Promise<void> {
+  async emitEvent(
+    eventName: string,
+    payload?: JsonValue,
+    queueName?: string,
+  ): Promise<void> {
     if (!eventName) {
       throw new Error("eventName must be a non-empty string");
     }
@@ -513,7 +527,7 @@ export class Absurd {
       workerId = "worker",
       claimTimeout = 120,
       batchSize = 1,
-      pollInterval = 1000,
+      pollInterval = 1,
       onError = (err) => console.error("Worker error:", err),
     } = options;
 
@@ -533,7 +547,7 @@ export class Absurd {
         } catch (err) {
           onError(err as Error);
         }
-        await sleep(pollInterval);
+        await sleep(pollInterval * 1000);
       }
     })();
 
@@ -550,7 +564,10 @@ export class Absurd {
     }
   }
 
-  private async executeMessage(msg: ClaimedMessage, claimTimeout: number): Promise<void> {
+  private async executeMessage(
+    msg: ClaimedMessage,
+    claimTimeout: number,
+  ): Promise<void> {
     const registration = this.registry.get(msg.task_name);
     const ctx = await TaskContext.create({
       taskID: msg.task_id,
@@ -630,11 +647,11 @@ function normalizeCancellation(
     return undefined;
   }
   const normalized: JsonObject = {};
-  if (policy.maxDurationMs !== undefined) {
-    normalized.max_duration_ms = policy.maxDurationMs;
+  if (policy.maxDuration !== undefined) {
+    normalized.max_duration = policy.maxDuration;
   }
-  if (policy.maxDelayMs !== undefined) {
-    normalized.max_delay_ms = policy.maxDelayMs;
+  if (policy.maxDelay !== undefined) {
+    normalized.max_delay = policy.maxDelay;
   }
   return Object.keys(normalized).length > 0 ? normalized : undefined;
 }
