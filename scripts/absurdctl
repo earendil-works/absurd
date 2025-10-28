@@ -1,0 +1,544 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+# Default values
+HOST="${PGHOST:-localhost}"
+PORT="${PGPORT:-5432}"
+USER="${PGUSER:-$USER}"
+DATABASE="${PGDATABASE:-$USER}"
+LIMIT=1000
+VERBOSE=0
+DRY_RUN=0
+
+# Common help text for database options
+DB_OPTIONS_HELP='  -h, --host HOST     Database host (default: localhost or $PGHOST)
+  -p, --port PORT     Database port (default: 5432 or $PGPORT)
+  -U, --user USER     Database user (default: current user or $PGUSER)
+  -d, --database DB   Database name (default: current user or $PGDATABASE)'
+
+# Parse common database options
+# Sets DB_OPTION_MATCHED to number of arguments consumed (0 or 2)
+parse_db_option() {
+    case "$1" in
+        -h|--host)
+            HOST="$2"
+            DB_OPTION_MATCHED=2
+            ;;
+        -p|--port)
+            PORT="$2"
+            DB_OPTION_MATCHED=2
+            ;;
+        -U|--user)
+            USER="$2"
+            DB_OPTION_MATCHED=2
+            ;;
+        -d|--database)
+            DATABASE="$2"
+            DB_OPTION_MATCHED=2
+            ;;
+        *)
+            DB_OPTION_MATCHED=0
+            ;;
+    esac
+}
+
+show_help() {
+    cat << 'EOF'
+Usage: absurdctl COMMAND [OPTIONS]
+
+A command-line utility for managing Absurd queues.
+
+Commands:
+  cleanup         Clean up old completed, failed, or cancelled tasks and events
+  create-queue    Create a new queue
+  drop-queue      Drop an existing queue
+  list-queues     List all existing queues
+  help            Show this help message
+
+Run 'absurdctl COMMAND --help' for more information on a command.
+
+Environment Variables:
+  PGHOST          Database host
+  PGPORT          Database port
+  PGUSER          Database user
+  PGDATABASE      Database name
+  PGPASSWORD      Database password (recommended over command line)
+
+Examples:
+  absurdctl cleanup myqueue 30
+  absurdctl create-queue myqueue
+  absurdctl drop-queue myqueue --yes
+  absurdctl list-queues
+EOF
+}
+
+show_cleanup_help() {
+    cat << EOF
+Usage: absurdctl cleanup [OPTIONS] QUEUE_NAME TTL_DAYS
+
+Clean up old completed, failed, or cancelled tasks and events from an Absurd queue.
+Runs cleanup functions repeatedly until no more records can be deleted.
+
+Arguments:
+  QUEUE_NAME          Name of the queue to clean up
+  TTL_DAYS           Delete tasks/events older than this many days
+
+Options:
+$DB_OPTIONS_HELP
+  -l, --limit N       Batch size for deletions (default: 1000)
+  -v, --verbose       Show detailed progress information
+  -n, --dry-run       Show what would be deleted without actually deleting
+  --help              Show this help message
+
+Examples:
+  # Clean up tasks/events older than 30 days from 'myqueue'
+  absurdctl cleanup myqueue 30
+
+  # With custom database connection
+  absurdctl cleanup -h db.example.com -U admin -d mydb myqueue 7
+
+  # Using environment variables
+  export PGHOST=db.example.com PGDATABASE=mydb PGUSER=admin
+  absurdctl cleanup myqueue 30
+
+  # Dry run to see what would be deleted
+  absurdctl cleanup --dry-run -v myqueue 30
+
+  # Smaller batches for less locking
+  absurdctl cleanup --limit 100 myqueue 90
+EOF
+}
+
+show_create_queue_help() {
+    cat << EOF
+Usage: absurdctl create-queue [OPTIONS] QUEUE_NAME
+
+Create a new Absurd queue with all required tables.
+
+Arguments:
+  QUEUE_NAME          Name of the queue to create
+
+Options:
+$DB_OPTIONS_HELP
+  -v, --verbose       Show detailed progress information
+  --help              Show this help message
+
+Examples:
+  # Create a new queue named 'myqueue'
+  absurdctl create-queue myqueue
+
+  # With custom database connection
+  absurdctl create-queue -h db.example.com -U admin -d mydb myqueue
+EOF
+}
+
+show_drop_queue_help() {
+    cat << EOF
+Usage: absurdctl drop-queue [OPTIONS] QUEUE_NAME
+
+Drop an existing Absurd queue and all its data.
+
+WARNING: This operation is destructive and cannot be undone!
+
+Arguments:
+  QUEUE_NAME          Name of the queue to drop
+
+Options:
+$DB_OPTIONS_HELP
+  -v, --verbose       Show detailed progress information
+  -y, --yes           Skip confirmation prompt
+  --help              Show this help message
+
+Examples:
+  # Drop a queue with confirmation
+  absurdctl drop-queue myqueue
+
+  # Drop a queue without confirmation (use with caution!)
+  absurdctl drop-queue --yes myqueue
+EOF
+}
+
+show_list_queues_help() {
+    cat << EOF
+Usage: absurdctl list-queues [OPTIONS]
+
+List all existing Absurd queues.
+
+Options:
+$DB_OPTIONS_HELP
+  --help              Show this help message
+
+Examples:
+  # List all queues
+  absurdctl list-queues
+
+  # With custom database connection
+  absurdctl list-queues -h db.example.com -U admin -d mydb
+EOF
+}
+
+cmd_cleanup() {
+    # Parse command line arguments
+    POSITIONAL_ARGS=()
+
+    while [[ $# -gt 0 ]]; do
+        parse_db_option "$1" "${2:-}"
+        if [ $DB_OPTION_MATCHED -gt 0 ]; then
+            shift $DB_OPTION_MATCHED
+            continue
+        fi
+
+        case $1 in
+            --help)
+                show_cleanup_help
+                exit 0
+                ;;
+            -l|--limit)
+                LIMIT="$2"
+                shift 2
+                ;;
+            -v|--verbose)
+                VERBOSE=1
+                shift
+                ;;
+            -n|--dry-run)
+                DRY_RUN=1
+                shift
+                ;;
+            -*)
+                echo "Unknown option: $1"
+                echo ""
+                show_cleanup_help
+                exit 1
+                ;;
+            *)
+                POSITIONAL_ARGS+=("$1")
+                shift
+                ;;
+        esac
+    done
+
+    # Restore positional parameters
+    set -- "${POSITIONAL_ARGS[@]}"
+
+    # Validate arguments
+    if [ $# -ne 2 ]; then
+        echo "Missing required arguments"
+        echo ""
+        show_cleanup_help
+        exit 1
+    fi
+
+    QUEUE_NAME="$1"
+    TTL_DAYS="$2"
+
+    # Validate TTL_DAYS is a number
+    if ! [[ "$TTL_DAYS" =~ ^[0-9]+$ ]]; then
+        echo "TTL_DAYS must be a positive integer, got: $TTL_DAYS"
+        exit 1
+    fi
+
+    # Convert days to seconds
+    TTL_SECONDS=$((TTL_DAYS * 24 * 60 * 60))
+
+    if [ "$VERBOSE" -eq 1 ]; then
+        echo "Configuration:"
+        echo "  Queue: $QUEUE_NAME"
+        echo "  TTL: $TTL_DAYS days ($TTL_SECONDS seconds)"
+        echo "  Host: $HOST"
+        echo "  Port: $PORT"
+        echo "  User: $USER"
+        echo "  Database: $DATABASE"
+        echo "  Limit: $LIMIT"
+        echo "  Dry run: $DRY_RUN"
+    fi
+
+    # Check if queue exists
+    if [ "$VERBOSE" -eq 1 ]; then
+        echo "Checking if queue exists..."
+    fi
+    QUEUE_EXISTS=$(psql -X -h $HOST -p $PORT -U $USER -d $DATABASE -t -A -c "SELECT COUNT(*) FROM absurd.queues WHERE queue_name = '$QUEUE_NAME';")
+
+    if [ "$QUEUE_EXISTS" -eq 0 ]; then
+        echo "Queue '$QUEUE_NAME' does not exist"
+        exit 1
+    fi
+
+    echo "Starting cleanup for queue '$QUEUE_NAME' (TTL: $TTL_DAYS days)"
+
+    if [ "$DRY_RUN" -eq 1 ]; then
+        echo "DRY RUN MODE - No data will be deleted"
+
+        # Get counts for dry run
+        TASK_COUNT=$(psql -X -h $HOST -p $PORT -U $USER -d $DATABASE -t -A -c "SELECT COUNT(*) FROM absurd.t_${QUEUE_NAME} t LEFT JOIN absurd.r_${QUEUE_NAME} r ON r.run_id = t.last_attempt_run WHERE t.state IN ('completed', 'failed', 'cancelled') AND ((t.state = 'completed' AND r.completed_at < NOW() - INTERVAL '${TTL_SECONDS} seconds') OR (t.state = 'failed' AND r.failed_at < NOW() - INTERVAL '${TTL_SECONDS} seconds') OR (t.state = 'cancelled' AND t.cancelled_at < NOW() - INTERVAL '${TTL_SECONDS} seconds'));")
+
+        EVENT_COUNT=$(psql -X -h $HOST -p $PORT -U $USER -d $DATABASE -t -A -c "SELECT COUNT(*) FROM absurd.e_${QUEUE_NAME} WHERE emitted_at < NOW() - INTERVAL '${TTL_SECONDS} seconds';")
+
+        echo "Would delete $TASK_COUNT tasks and $EVENT_COUNT events"
+        exit 0
+    fi
+
+    # Cleanup loop
+    TOTAL_TASKS_DELETED=0
+    TOTAL_EVENTS_DELETED=0
+    ITERATION=0
+
+    while true; do
+        ITERATION=$((ITERATION + 1))
+
+        if [ "$VERBOSE" -eq 1 ]; then
+            echo "Iteration $ITERATION..."
+        fi
+
+        # Clean up tasks
+        TASKS_DELETED=$(psql -X -h $HOST -p $PORT -U $USER -d $DATABASE -t -A -c "SELECT absurd.cleanup_tasks('$QUEUE_NAME', $TTL_SECONDS, $LIMIT);")
+        TOTAL_TASKS_DELETED=$((TOTAL_TASKS_DELETED + TASKS_DELETED))
+
+        if [ "$VERBOSE" -eq 1 ] && [ "$TASKS_DELETED" -gt 0 ]; then
+            echo "  Deleted $TASKS_DELETED tasks"
+        fi
+
+        # Clean up events
+        EVENTS_DELETED=$(psql -X -h $HOST -p $PORT -U $USER -d $DATABASE -t -A -c "SELECT absurd.cleanup_events('$QUEUE_NAME', $TTL_SECONDS, $LIMIT);")
+        TOTAL_EVENTS_DELETED=$((TOTAL_EVENTS_DELETED + EVENTS_DELETED))
+
+        if [ "$VERBOSE" -eq 1 ] && [ "$EVENTS_DELETED" -gt 0 ]; then
+            echo "  Deleted $EVENTS_DELETED events"
+        fi
+
+        # If nothing was deleted, we're done
+        if [ "$TASKS_DELETED" -eq 0 ] && [ "$EVENTS_DELETED" -eq 0 ]; then
+            break
+        fi
+
+        # Show progress
+        if [ "$TASKS_DELETED" -gt 0 ] || [ "$EVENTS_DELETED" -gt 0 ]; then
+            echo "Deleted $TASKS_DELETED tasks, $EVENTS_DELETED events"
+        fi
+    done
+
+    echo "Cleanup complete: $TOTAL_TASKS_DELETED tasks, $TOTAL_EVENTS_DELETED events deleted in $ITERATION iterations"
+}
+
+cmd_create_queue() {
+    # Parse command line arguments
+    POSITIONAL_ARGS=()
+
+    while [[ $# -gt 0 ]]; do
+        parse_db_option "$1" "${2:-}"
+        if [ $DB_OPTION_MATCHED -gt 0 ]; then
+            shift $DB_OPTION_MATCHED
+            continue
+        fi
+
+        case $1 in
+            --help)
+                show_create_queue_help
+                exit 0
+                ;;
+            -v|--verbose)
+                VERBOSE=1
+                shift
+                ;;
+            -*)
+                echo "Unknown option: $1"
+                echo ""
+                show_create_queue_help
+                exit 1
+                ;;
+            *)
+                POSITIONAL_ARGS+=("$1")
+                shift
+                ;;
+        esac
+    done
+
+    # Restore positional parameters
+    set -- "${POSITIONAL_ARGS[@]}"
+
+    # Validate arguments
+    if [ $# -ne 1 ]; then
+        echo "Missing required argument: QUEUE_NAME"
+        echo ""
+        show_create_queue_help
+        exit 1
+    fi
+
+    QUEUE_NAME="$1"
+
+    if [ "$VERBOSE" -eq 1 ]; then
+        echo "Configuration:"
+        echo "  Queue: $QUEUE_NAME"
+        echo "  Host: $HOST"
+        echo "  Port: $PORT"
+        echo "  User: $USER"
+        echo "  Database: $DATABASE"
+    fi
+
+    if [ "$VERBOSE" -eq 1 ]; then
+        echo "Creating queue '$QUEUE_NAME'..."
+    fi
+
+    psql -X -h $HOST -p $PORT -U $USER -d $DATABASE -c "SELECT absurd.create_queue('$QUEUE_NAME');" > /dev/null
+
+    echo "Queue '$QUEUE_NAME' created successfully"
+}
+
+cmd_drop_queue() {
+    # Parse command line arguments
+    POSITIONAL_ARGS=()
+    SKIP_CONFIRM=0
+
+    while [[ $# -gt 0 ]]; do
+        parse_db_option "$1" "${2:-}"
+        if [ $DB_OPTION_MATCHED -gt 0 ]; then
+            shift $DB_OPTION_MATCHED
+            continue
+        fi
+
+        case $1 in
+            --help)
+                show_drop_queue_help
+                exit 0
+                ;;
+            -v|--verbose)
+                VERBOSE=1
+                shift
+                ;;
+            -y|--yes)
+                SKIP_CONFIRM=1
+                shift
+                ;;
+            -*)
+                echo "Unknown option: $1"
+                echo ""
+                show_drop_queue_help
+                exit 1
+                ;;
+            *)
+                POSITIONAL_ARGS+=("$1")
+                shift
+                ;;
+        esac
+    done
+
+    # Restore positional parameters
+    set -- "${POSITIONAL_ARGS[@]}"
+
+    # Validate arguments
+    if [ $# -ne 1 ]; then
+        echo "Missing required argument: QUEUE_NAME"
+        echo ""
+        show_drop_queue_help
+        exit 1
+    fi
+
+    QUEUE_NAME="$1"
+
+    if [ "$VERBOSE" -eq 1 ]; then
+        echo "Configuration:"
+        echo "  Queue: $QUEUE_NAME"
+        echo "  Host: $HOST"
+        echo "  Port: $PORT"
+        echo "  User: $USER"
+        echo "  Database: $DATABASE"
+    fi
+
+    # Check if queue exists
+    if [ "$VERBOSE" -eq 1 ]; then
+        echo "Checking if queue exists..."
+    fi
+    QUEUE_EXISTS=$(psql -X -h $HOST -p $PORT -U $USER -d $DATABASE -t -A -c "SELECT COUNT(*) FROM absurd.queues WHERE queue_name = '$QUEUE_NAME';")
+
+    if [ "$QUEUE_EXISTS" -eq 0 ]; then
+        echo "Queue '$QUEUE_NAME' does not exist"
+        exit 1
+    fi
+
+    # Prompt for confirmation unless --yes is specified
+    if [ "$SKIP_CONFIRM" -eq 0 ]; then
+        echo "WARNING: This will permanently delete queue '$QUEUE_NAME' and all its data."
+        echo -n "Are you sure you want to continue? (yes/no): "
+        read -r CONFIRM
+
+        if [ "$CONFIRM" != "yes" ]; then
+            echo "Operation cancelled"
+            exit 0
+        fi
+    fi
+
+    if [ "$VERBOSE" -eq 1 ]; then
+        echo "Dropping queue '$QUEUE_NAME'..."
+    fi
+
+    psql -X -h $HOST -p $PORT -U $USER -d $DATABASE -c "SELECT absurd.drop_queue('$QUEUE_NAME');" > /dev/null
+
+    echo "Queue '$QUEUE_NAME' dropped successfully"
+}
+
+cmd_list_queues() {
+    # Parse command line arguments
+    while [[ $# -gt 0 ]]; do
+        parse_db_option "$1" "${2:-}"
+        if [ $DB_OPTION_MATCHED -gt 0 ]; then
+            shift $DB_OPTION_MATCHED
+            continue
+        fi
+
+        case $1 in
+            --help)
+                show_list_queues_help
+                exit 0
+                ;;
+            -*)
+                echo "Unknown option: $1"
+                echo ""
+                show_list_queues_help
+                exit 1
+                ;;
+            *)
+                echo "Unexpected argument: $1"
+                echo ""
+                show_list_queues_help
+                exit 1
+                ;;
+        esac
+    done
+
+    psql -X -h $HOST -p $PORT -U $USER -d $DATABASE -t -A -c "SELECT * FROM absurd.list_queues();"
+}
+
+# Main command dispatch
+if [ $# -eq 0 ]; then
+    show_help
+    exit 0
+fi
+
+COMMAND="$1"
+shift
+
+case "$COMMAND" in
+    cleanup)
+        cmd_cleanup "$@"
+        ;;
+    create-queue)
+        cmd_create_queue "$@"
+        ;;
+    drop-queue)
+        cmd_drop_queue "$@"
+        ;;
+    list-queues)
+        cmd_list_queues "$@"
+        ;;
+    help|--help|-h)
+        show_help
+        exit 0
+        ;;
+    *)
+        echo "Unknown command: $COMMAND"
+        echo ""
+        show_help
+        exit 1
+        ;;
+esac
