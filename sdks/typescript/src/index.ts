@@ -117,6 +117,7 @@ export class TaskContext {
     private readonly queueName: string,
     private readonly message: ClaimedMessage,
     private readonly checkpointCache: Map<string, JsonValue>,
+    private readonly claimTimeout: number,
   ) {}
 
   static async create(args: {
@@ -124,8 +125,9 @@ export class TaskContext {
     pool: pg.Pool;
     queueName: string;
     message: ClaimedMessage;
+    claimTimeout: number;
   }): Promise<TaskContext> {
-    const { taskID, pool, queueName, message } = args;
+    const { taskID, pool, queueName, message, claimTimeout } = args;
     const result = await pool.query<CheckpointRow>(
       `SELECT checkpoint_name, state, status, owner_run_id, updated_at
        FROM absurd.get_task_checkpoint_states($1, $2, $3)`,
@@ -135,7 +137,7 @@ export class TaskContext {
     for (const row of result.rows) {
       cache.set(row.checkpoint_name, row.state);
     }
-    return new TaskContext(taskID, pool, queueName, message, cache);
+    return new TaskContext(taskID, pool, queueName, message, cache, claimTimeout);
   }
 
   /**
@@ -216,13 +218,14 @@ export class TaskContext {
     value: JsonValue,
   ): Promise<void> {
     await this.pool.query(
-      `SELECT absurd.set_task_checkpoint_state($1, $2, $3, $4, $5)`,
+      `SELECT absurd.set_task_checkpoint_state($1, $2, $3, $4, $5, $6)`,
       [
         this.queueName,
         this.message.task_id,
         checkpointName,
         JSON.stringify(value),
         this.message.run_id,
+        this.claimTimeout,
       ],
     );
     this.checkpointCache.set(checkpointName, value);
@@ -490,7 +493,7 @@ export class Absurd {
 
   async workOnce(
     workerId: string = "worker",
-    claimTimeout: number = 30,
+    claimTimeout: number = 120,
     batchSize: number = 1,
   ): Promise<void> {
     const result = await this.pool.query<ClaimedMessage>(
@@ -501,14 +504,14 @@ export class Absurd {
     );
 
     for (const msg of result.rows) {
-      await this.executeMessage(msg);
+      await this.executeMessage(msg, claimTimeout);
     }
   }
 
   async startWorker(options: WorkerOptions = {}): Promise<() => Promise<void>> {
     const {
       workerId = "worker",
-      claimTimeout = 30,
+      claimTimeout = 120,
       batchSize = 1,
       pollInterval = 1000,
       onError = (err) => console.error("Worker error:", err),
@@ -547,13 +550,14 @@ export class Absurd {
     }
   }
 
-  private async executeMessage(msg: ClaimedMessage): Promise<void> {
+  private async executeMessage(msg: ClaimedMessage, claimTimeout: number): Promise<void> {
     const registration = this.registry.get(msg.task_name);
     const ctx = await TaskContext.create({
       taskID: msg.task_id,
       pool: this.pool,
       queueName: registration?.queue ?? "unknown",
       message: msg,
+      claimTimeout,
     });
 
     try {
