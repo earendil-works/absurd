@@ -307,8 +307,8 @@ begin
   execute format(
     'with limits as (
         select task_id,
-               (cancellation->>''max_delay_ms'')::bigint as max_delay_ms,
-               (cancellation->>''max_duration_ms'')::bigint as max_duration_ms,
+               (cancellation->>''max_delay'')::bigint as max_delay,
+               (cancellation->>''max_duration'')::bigint as max_duration,
                enqueue_at,
                first_started_at,
                state
@@ -320,15 +320,15 @@ begin
           from limits
          where
            (
-             max_delay_ms is not null
+             max_delay is not null
              and first_started_at is null
-             and extract(epoch from ($1 - enqueue_at)) * 1000 >= max_delay_ms
+             and extract(epoch from ($1 - enqueue_at)) >= max_delay
            )
            or
            (
-             max_duration_ms is not null
+             max_duration is not null
              and first_started_at is not null
-             and extract(epoch from ($1 - first_started_at)) * 1000 >= max_duration_ms
+             and extract(epoch from ($1 - first_started_at)) >= max_duration
            )
      )
      update absurd.%I t
@@ -553,7 +553,7 @@ declare
   v_max_seconds double precision;
   v_first_started timestamptz;
   v_cancellation jsonb;
-  v_max_duration_ms bigint;
+  v_max_duration bigint;
   v_task_state text;
   v_task_cancel boolean := false;
   v_new_run_id uuid;
@@ -630,9 +630,9 @@ begin
     end if;
 
     if v_cancellation is not null then
-      v_max_duration_ms := (v_cancellation->>'max_duration_ms')::bigint;
-      if v_max_duration_ms is not null and v_first_started is not null then
-        if extract(epoch from (v_next_available - v_first_started)) * 1000 >= v_max_duration_ms then
+      v_max_duration := (v_cancellation->>'max_duration')::bigint;
+      if v_max_duration is not null and v_first_started is not null then
+        if extract(epoch from (v_next_available - v_first_started)) >= v_max_duration then
           v_task_cancel := true;
         end if;
       end if;
@@ -810,7 +810,7 @@ create function absurd.await_event (
   p_run_id uuid,
   p_step_name text,
   p_event_name text,
-  p_timeout_ms integer default null
+  p_timeout integer default null
 )
   returns table (
     should_suspend boolean,
@@ -832,11 +832,11 @@ begin
     raise exception 'event_name must be provided';
   end if;
 
-  if p_timeout_ms is not null then
-    if p_timeout_ms < 0 then
-      raise exception 'timeout_ms must be non-negative';
+  if p_timeout is not null then
+    if p_timeout < 0 then
+      raise exception 'timeout must be non-negative';
     end if;
-    v_timeout_at := v_now + (p_timeout_ms::double precision * interval '1 millisecond');
+    v_timeout_at := v_now + (p_timeout::double precision * interval '1 second');
   end if;
 
   v_available_at := coalesce(v_timeout_at, 'infinity'::timestamptz);
