@@ -120,12 +120,6 @@ begin
   );
 
   execute format(
-    'alter table absurd.%I
-        add column if not exists timeout_at timestamptz',
-    'w_' || p_queue_name
-  );
-
-  execute format(
     'create index if not exists %I on absurd.%I (state, available_at)',
     ('r_' || p_queue_name) || '_sai',
     'r_' || p_queue_name
