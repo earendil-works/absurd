@@ -683,7 +683,8 @@ create function absurd.set_task_checkpoint_state (
   p_task_id uuid,
   p_step_name text,
   p_state jsonb,
-  p_owner_run uuid
+  p_owner_run uuid,
+  p_extend_claim_by integer default null
 )
   returns void
   language plpgsql
@@ -709,6 +710,19 @@ begin
 
   if v_new_attempt is null then
     raise exception 'Run "%" not found for checkpoint', p_owner_run;
+  end if;
+
+  -- Extend the claim if requested
+  if p_extend_claim_by is not null and p_extend_claim_by > 0 then
+    execute format(
+      'update absurd.%I
+          set claim_expires_at = $2 + make_interval(secs => $3)
+        where run_id = $1
+          and state = ''running''
+          and claim_expires_at is not null',
+      'r_' || p_queue_name
+    )
+    using p_owner_run, v_now, p_extend_claim_by;
   end if;
 
   execute format(
