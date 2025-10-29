@@ -39,6 +39,21 @@ def test_set_checkpoint_extends_claim_lease(client):
     assert checkpoint["state"] == {"result": "done"}
     assert checkpoint["owner_run_id"] == run_id
 
+    # Test get_task_checkpoint_state function directly
+    result = client.conn.execute(
+        """
+        select checkpoint_name, state, status, owner_run_id, updated_at
+        from absurd.get_task_checkpoint_state(%s, %s, %s)
+        """,
+        (queue, task_id, "step-1"),
+    )
+    checkpoint_row = result.fetchone()
+    assert checkpoint_row is not None
+    assert checkpoint_row[0] == "step-1"  # checkpoint_name
+    assert checkpoint_row[1] == {"result": "done"}  # state
+    assert checkpoint_row[2] == "committed"  # status
+    assert checkpoint_row[3] == run_id  # owner_run_id
+
     # Verify the lease was extended
     run_after = client.get_run(queue, run_id)
     assert run_after is not None
