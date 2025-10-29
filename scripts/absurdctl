@@ -1,51 +1,709 @@
-#!/usr/bin/env bash
+#!/usr/bin/env python3
 
-set -euo pipefail
+import json
+import os
+import subprocess
+import sys
+import shutil
+import textwrap
+from optparse import OptionParser, IndentedHelpFormatter
 
-# Default values
-HOST="${PGHOST:-localhost}"
-PORT="${PGPORT:-5432}"
-USER="${PGUSER:-$USER}"
-DATABASE="${PGDATABASE:-$USER}"
-LIMIT=1000
-VERBOSE=0
-DRY_RUN=0
 
-# Common help text for database options
-DB_OPTIONS_HELP='  -h, --host HOST     Database host (default: localhost or $PGHOST)
-  -p, --port PORT     Database port (default: 5432 or $PGPORT)
-  -U, --user USER     Database user (default: current user or $PGUSER)
-  -d, --database DB   Database name (default: current user or $PGDATABASE)'
+def get_term_width():
+    """Get terminal width for formatting."""
+    try:
+        return shutil.get_terminal_size().columns
+    except Exception:
+        return 80
 
-# Parse common database options
-# Sets DB_OPTION_MATCHED to number of arguments consumed (0 or 2)
-parse_db_option() {
-    case "$1" in
-        -h|--host)
-            HOST="$2"
-            DB_OPTION_MATCHED=2
-            ;;
-        -p|--port)
-            PORT="$2"
-            DB_OPTION_MATCHED=2
-            ;;
-        -U|--user)
-            USER="$2"
-            DB_OPTION_MATCHED=2
-            ;;
-        -d|--database)
-            DATABASE="$2"
-            DB_OPTION_MATCHED=2
-            ;;
-        *)
-            DB_OPTION_MATCHED=0
-            ;;
-    esac
-}
 
-show_help() {
-    cat << 'EOF'
-Usage: absurdctl COMMAND [OPTIONS]
+class CleanHelpFormatter(IndentedHelpFormatter):
+    """Custom formatter with better spacing and formatting."""
+
+    def __init__(self):
+        IndentedHelpFormatter.__init__(
+            self,
+            indent_increment=2,
+            max_help_position=30,
+            width=get_term_width(),
+            short_first=1,
+        )
+
+    def format_option(self, option):
+        result = []
+        opts = self.option_strings[option]
+        opt_width = self.help_position - self.current_indent - 2
+
+        if len(opts) > opt_width:
+            opts = "%*s%s\n" % (self.current_indent, "", opts)
+            indent_first = self.help_position
+        else:
+            opts = "%*s%-*s  " % (self.current_indent, "", opt_width, opts)
+            indent_first = 0
+
+        result.append(opts)
+
+        if option.help:
+            help_text = self.expand_default(option)
+            help_lines = []
+
+            help_lines = textwrap.wrap(help_text, self.width - self.help_position)
+
+            result.append("%*s%s\n" % (indent_first, "", help_lines[0]))
+            for line in help_lines[1:]:
+                result.append("%*s%s\n" % (self.help_position, "", line))
+        elif opts[-1] != "\n":
+            result.append("\n")
+
+        return "".join(result)
+
+
+class DatabaseConfig:
+    """Database connection configuration from environment and CLI args."""
+
+    def __init__(self, host=None, port=None, user=None, database=None):
+        self.host = host or os.getenv("PGHOST", "localhost")
+        self.port = port or os.getenv("PGPORT", "5432")
+        self.user = user or os.getenv("PGUSER", os.getenv("USER", ""))
+        self.database = database or os.getenv("PGDATABASE", os.getenv("USER", ""))
+
+
+def run_psql(config, query, tuples_only=False, no_align=False):
+    """Execute a PostgreSQL query and return the output."""
+    cmd = [
+        "psql",
+        "-X",
+        "-h",
+        config.host,
+        "-p",
+        config.port,
+        "-U",
+        config.user,
+        "-d",
+        config.database,
+    ]
+
+    if tuples_only:
+        cmd.append("-t")
+    if no_align:
+        cmd.append("-A")
+
+    cmd.extend(["-c", query])
+
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            check=True,
+            env={**os.environ, "PGPASSWORD": os.getenv("PGPASSWORD", "")},
+        )
+        return result.stdout.strip()
+    except subprocess.CalledProcessError as e:
+        print(f"Error executing query: {e.stderr}", file=sys.stderr)
+        sys.exit(1)
+
+
+def queue_exists(config, queue_name):
+    """Check if a queue exists."""
+    result = run_psql(
+        config,
+        f"SELECT COUNT(*) FROM absurd.queues WHERE queue_name = '{queue_name}';",
+        tuples_only=True,
+        no_align=True,
+    )
+    return int(result) > 0
+
+
+def build_json_params(param_list, base_params=None):
+    """
+    Build JSON parameters from -p flags and optional base --params.
+
+    Supports:
+      -p foo=bar           -> {"foo": "bar"}
+      -p count:=42         -> {"count": 42}
+      -p enabled:=true     -> {"enabled": true}
+      -p tags:='["a","b"]' -> {"tags": ["a","b"]}
+      -p user.name=Alice   -> {"user": {"name": "Alice"}}
+      --params '{"x":1}'   -> merged with -p flags
+    """
+    result = {}
+
+    # Start with base params if provided
+    if base_params:
+        try:
+            result = json.loads(base_params)
+            if not isinstance(result, dict):
+                raise ValueError("--params must be a JSON object")
+        except json.JSONDecodeError as e:
+            print(f"Error parsing --params: {e}", file=sys.stderr)
+            sys.exit(1)
+
+    # Process each -p flag
+    for param in param_list:
+        if ":=" in param:
+            # JSON value assignment
+            key, value_str = param.split(":=", 1)
+            try:
+                value = json.loads(value_str)
+            except json.JSONDecodeError as e:
+                print(f"Error parsing JSON value in '{param}': {e}", file=sys.stderr)
+                sys.exit(1)
+        elif "=" in param:
+            # String value assignment
+            key, value = param.split("=", 1)
+        else:
+            print(
+                f"Invalid parameter format: '{param}' (expected key=value or key:=json)",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+        # Handle dotted paths (e.g., "user.name" -> nested object)
+        set_nested_value(result, key, value)
+
+    return json.dumps(result)
+
+
+def set_nested_value(obj, path, value):
+    """Set a value in a nested dictionary using dot notation."""
+    keys = path.split(".")
+    current = obj
+
+    for key in keys[:-1]:
+        if key not in current:
+            current[key] = {}
+        elif not isinstance(current[key], dict):
+            print(
+                f"Error: Cannot set nested value, '{key}' is not an object",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        current = current[key]
+
+    current[keys[-1]] = value
+
+
+def add_db_options(parser):
+    """Add common database connection options to a parser."""
+    parser.add_option("-h", "--host", dest="host", metavar="HOST", help="Database host")
+    parser.add_option("-p", "--port", dest="port", metavar="PORT", help="Database port")
+    parser.add_option("-U", "--user", dest="user", metavar="USER", help="Database user")
+    parser.add_option(
+        "-d", "--database", dest="database", metavar="DB", help="Database name"
+    )
+    parser.add_option(
+        "-v",
+        "--verbose",
+        dest="verbose",
+        action="store_true",
+        default=False,
+        help="Verbose output",
+    )
+
+
+def cmd_cleanup(args):
+    """Clean up old completed, failed, or cancelled tasks and events."""
+    usage = "usage: %prog cleanup [options] QUEUE_NAME TTL_DAYS"
+    parser = OptionParser(
+        usage=usage, add_help_option=False, formatter=CleanHelpFormatter()
+    )
+    add_db_options(parser)
+    parser.add_option(
+        "-l",
+        "--limit",
+        dest="limit",
+        type="int",
+        default=1000,
+        help="Batch size for deletions (default: 1000)",
+    )
+    parser.add_option(
+        "-n",
+        "--dry-run",
+        dest="dry_run",
+        action="store_true",
+        default=False,
+        help="Show what would be deleted without actually deleting",
+    )
+    parser.add_option("--help", action="store_true", help="Show this help message")
+
+    options, args = parser.parse_args(args)
+
+    if options.help:
+        parser.print_help()
+        print("\nExamples:")
+        print("  # Clean up tasks older than 30 days")
+        print("  absurdctl cleanup myqueue 30")
+        print()
+        print("  # Dry run with verbose output")
+        print("  absurdctl cleanup --dry-run -v myqueue 30")
+        sys.exit(0)
+
+    if len(args) != 2:
+        print(
+            "Error: Missing required arguments QUEUE_NAME and TTL_DAYS", file=sys.stderr
+        )
+        parser.print_help()
+        sys.exit(1)
+
+    queue_name = args[0]
+    try:
+        ttl_days = int(args[1])
+    except ValueError:
+        print(
+            f"Error: TTL_DAYS must be a positive integer, got: {args[1]}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    config = DatabaseConfig(options.host, options.port, options.user, options.database)
+
+    # Validate queue exists
+    if not queue_exists(config, queue_name):
+        print(f"Queue '{queue_name}' does not exist", file=sys.stderr)
+        sys.exit(1)
+
+    # Convert days to seconds
+    ttl_seconds = ttl_days * 24 * 60 * 60
+
+    if options.verbose:
+        print(f"Configuration:")
+        print(f"  Queue: {queue_name}")
+        print(f"  TTL: {ttl_days} days ({ttl_seconds} seconds)")
+        print(f"  Host: {config.host}")
+        print(f"  Port: {config.port}")
+        print(f"  User: {config.user}")
+        print(f"  Database: {config.database}")
+        print(f"  Limit: {options.limit}")
+        print(f"  Dry run: {options.dry_run}")
+
+    if options.dry_run:
+        print("DRY RUN MODE - No data will be deleted")
+
+        # Get counts for dry run
+        task_count = run_psql(
+            config,
+            f"""SELECT COUNT(*) FROM absurd.t_{queue_name} t
+                LEFT JOIN absurd.r_{queue_name} r ON r.run_id = t.last_attempt_run
+                WHERE t.state IN ('completed', 'failed', 'cancelled')
+                AND ((t.state = 'completed' AND r.completed_at < NOW() - INTERVAL '{ttl_seconds} seconds')
+                OR (t.state = 'failed' AND r.failed_at < NOW() - INTERVAL '{ttl_seconds} seconds')
+                OR (t.state = 'cancelled' AND t.cancelled_at < NOW() - INTERVAL '{ttl_seconds} seconds'));""",
+            tuples_only=True,
+            no_align=True,
+        )
+
+        event_count = run_psql(
+            config,
+            f"SELECT COUNT(*) FROM absurd.e_{queue_name} WHERE emitted_at < NOW() - INTERVAL '{ttl_seconds} seconds';",
+            tuples_only=True,
+            no_align=True,
+        )
+
+        print(f"Would delete {task_count} tasks and {event_count} events")
+        return
+
+    print(f"Starting cleanup for queue '{queue_name}' (TTL: {ttl_days} days)")
+
+    total_tasks_deleted = 0
+    total_events_deleted = 0
+    iteration = 0
+
+    while True:
+        iteration += 1
+
+        if options.verbose:
+            print(f"Iteration {iteration}...")
+
+        # Clean up tasks
+        tasks_deleted = int(
+            run_psql(
+                config,
+                f"SELECT absurd.cleanup_tasks('{queue_name}', {ttl_seconds}, {options.limit});",
+                tuples_only=True,
+                no_align=True,
+            )
+        )
+        total_tasks_deleted += tasks_deleted
+
+        if options.verbose and tasks_deleted > 0:
+            print(f"  Deleted {tasks_deleted} tasks")
+
+        # Clean up events
+        events_deleted = int(
+            run_psql(
+                config,
+                f"SELECT absurd.cleanup_events('{queue_name}', {ttl_seconds}, {options.limit});",
+                tuples_only=True,
+                no_align=True,
+            )
+        )
+        total_events_deleted += events_deleted
+
+        if options.verbose and events_deleted > 0:
+            print(f"  Deleted {events_deleted} events")
+
+        # If nothing was deleted, we're done
+        if tasks_deleted == 0 and events_deleted == 0:
+            break
+
+        # Show progress
+        if tasks_deleted > 0 or events_deleted > 0:
+            print(f"Deleted {tasks_deleted} tasks, {events_deleted} events")
+
+    print(
+        f"Cleanup complete: {total_tasks_deleted} tasks, {total_events_deleted} events deleted in {iteration} iterations"
+    )
+
+
+def cmd_create_queue(args):
+    """Create a new Absurd queue."""
+    usage = "usage: %prog create-queue [options] QUEUE_NAME"
+    parser = OptionParser(
+        usage=usage, add_help_option=False, formatter=CleanHelpFormatter()
+    )
+    add_db_options(parser)
+    parser.add_option("--help", action="store_true", help="Show this help message")
+
+    options, args = parser.parse_args(args)
+
+    if options.help:
+        parser.print_help()
+        print("\nExamples:")
+        print("  absurdctl create-queue myqueue")
+        sys.exit(0)
+
+    if len(args) != 1:
+        print("Error: Missing required argument QUEUE_NAME", file=sys.stderr)
+        parser.print_help()
+        sys.exit(1)
+
+    queue_name = args[0]
+    config = DatabaseConfig(options.host, options.port, options.user, options.database)
+
+    if options.verbose:
+        print(f"Configuration:")
+        print(f"  Queue: {queue_name}")
+        print(f"  Host: {config.host}")
+        print(f"  Port: {config.port}")
+        print(f"  User: {config.user}")
+        print(f"  Database: {config.database}")
+        print(f"Creating queue '{queue_name}'...")
+
+    run_psql(config, f"SELECT absurd.create_queue('{queue_name}');")
+    print(f"Queue '{queue_name}' created successfully")
+
+
+def cmd_drop_queue(args):
+    """Drop an existing Absurd queue."""
+    usage = "usage: %prog drop-queue [options] QUEUE_NAME"
+    parser = OptionParser(
+        usage=usage, add_help_option=False, formatter=CleanHelpFormatter()
+    )
+    add_db_options(parser)
+    parser.add_option(
+        "-y",
+        "--yes",
+        dest="yes",
+        action="store_true",
+        default=False,
+        help="Skip confirmation prompt",
+    )
+    parser.add_option("--help", action="store_true", help="Show this help message")
+
+    options, args = parser.parse_args(args)
+
+    if options.help:
+        parser.print_help()
+        print("\nExamples:")
+        print("  absurdctl drop-queue myqueue")
+        print("  absurdctl drop-queue --yes myqueue")
+        sys.exit(0)
+
+    if len(args) != 1:
+        print("Error: Missing required argument QUEUE_NAME", file=sys.stderr)
+        parser.print_help()
+        sys.exit(1)
+
+    queue_name = args[0]
+    config = DatabaseConfig(options.host, options.port, options.user, options.database)
+
+    # Validate queue exists
+    if not queue_exists(config, queue_name):
+        print(f"Queue '{queue_name}' does not exist", file=sys.stderr)
+        sys.exit(1)
+
+    if options.verbose:
+        print(f"Configuration:")
+        print(f"  Queue: {queue_name}")
+        print(f"  Host: {config.host}")
+        print(f"  Port: {config.port}")
+        print(f"  User: {config.user}")
+        print(f"  Database: {config.database}")
+
+    # Prompt for confirmation unless --yes is specified
+    if not options.yes:
+        print(
+            f"WARNING: This will permanently delete queue '{queue_name}' and all its data."
+        )
+        response = input("Are you sure you want to continue? (yes/no): ")
+        if response != "yes":
+            print("Operation cancelled")
+            return
+
+    if options.verbose:
+        print(f"Dropping queue '{queue_name}'...")
+
+    run_psql(config, f"SELECT absurd.drop_queue('{queue_name}');")
+    print(f"Queue '{queue_name}' dropped successfully")
+
+
+def cmd_list_queues(args):
+    """List all existing Absurd queues."""
+    usage = "usage: %prog list-queues [options]"
+    parser = OptionParser(
+        usage=usage, add_help_option=False, formatter=CleanHelpFormatter()
+    )
+    add_db_options(parser)
+    parser.add_option("--help", action="store_true", help="Show this help message")
+
+    options, args = parser.parse_args(args)
+
+    if options.help:
+        parser.print_help()
+        sys.exit(0)
+
+    config = DatabaseConfig(options.host, options.port, options.user, options.database)
+
+    result = run_psql(
+        config, "SELECT * FROM absurd.list_queues();", tuples_only=True, no_align=True
+    )
+    print(result)
+
+
+def cmd_spawn_task(args):
+    """Spawn a new task."""
+    usage = "usage: %prog spawn-task [options] TASK_NAME"
+    parser = OptionParser(
+        usage=usage, add_help_option=False, formatter=CleanHelpFormatter()
+    )
+    add_db_options(parser)
+
+    # Task configuration
+    parser.add_option(
+        "-q",
+        "--queue",
+        dest="queue",
+        metavar="NAME",
+        help="Queue name (default: default)",
+    )
+
+    # Parameters and headers
+    parser.add_option(
+        "-P",
+        "--param",
+        dest="params",
+        action="append",
+        default=[],
+        metavar="K=V",
+        help="Task parameter. Use -P key=value for strings or -P key:=json for JSON values. "
+        "Supports dotted paths for nested objects (e.g., -P user.name=Alice)",
+    )
+    parser.add_option(
+        "--params",
+        dest="base_params",
+        metavar="JSON",
+        help="Base JSON object for parameters (will be merged with -P flags)",
+    )
+    parser.add_option(
+        "-H",
+        "--header",
+        dest="headers",
+        action="append",
+        default=[],
+        metavar="K=V",
+        help="Task header as key=value pair",
+    )
+
+    # Retry configuration
+    parser.add_option(
+        "--max-attempts",
+        dest="max_attempts",
+        type="int",
+        metavar="N",
+        help="Maximum number of retry attempts",
+    )
+    parser.add_option(
+        "--retry-kind",
+        dest="retry_kind",
+        metavar="KIND",
+        help="Retry strategy: fixed, exponential, or none",
+    )
+    parser.add_option(
+        "--retry-base",
+        dest="retry_base",
+        type="int",
+        metavar="SECS",
+        help="Base retry delay in seconds",
+    )
+    parser.add_option(
+        "--retry-factor",
+        dest="retry_factor",
+        type="float",
+        metavar="FACTOR",
+        help="Exponential backoff multiplier (for exponential retry)",
+    )
+    parser.add_option(
+        "--retry-max",
+        dest="retry_max",
+        type="int",
+        metavar="SECS",
+        help="Maximum retry delay cap in seconds",
+    )
+
+    # Cancellation policy
+    parser.add_option(
+        "--max-duration",
+        dest="max_duration",
+        type="int",
+        metavar="SECS",
+        help="Maximum task execution duration in seconds",
+    )
+    parser.add_option(
+        "--max-delay",
+        dest="max_delay",
+        type="int",
+        metavar="SECS",
+        help="Maximum delay before task must start in seconds",
+    )
+
+    parser.add_option("--help", action="store_true", help="Show this help message")
+
+    options, args = parser.parse_args(args)
+
+    if options.help:
+        parser.print_help()
+        print("\nExamples:")
+        print("  # Basic task with string parameters")
+        print("  absurdctl spawn-task my-task -P foo=bar -P count:=42")
+        print()
+        print("  # Nested parameters using dotted paths")
+        print("  absurdctl spawn-task my-task -P user.name=Alice -P user.age:=30")
+        print()
+        print("  # Base params with additional overrides")
+        print(
+            '  absurdctl spawn-task my-task --params \'{"foo":"bar"}\' -P extra=value'
+        )
+        print()
+        print("  # Full configuration with queue and retry settings")
+        print(
+            "  absurdctl spawn-task my-task -P email=test@example.com -q myqueue --max-attempts 5"
+        )
+        sys.exit(0)
+
+    if len(args) != 1:
+        print("Error: Missing required argument TASK_NAME", file=sys.stderr)
+        parser.print_help()
+        sys.exit(1)
+
+    task_name = args[0]
+    config = DatabaseConfig(options.host, options.port, options.user, options.database)
+
+    # Build params JSON
+    params_json = build_json_params(options.params, options.base_params)
+
+    # Build headers JSON if provided
+    headers_json = "NULL"
+    if options.headers:
+        headers_dict = {}
+        for header in options.headers:
+            if "=" not in header:
+                print(
+                    f"Invalid header format: '{header}' (expected key=value)",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            key, value = header.split("=", 1)
+            headers_dict[key] = value
+        headers_json = f"'{json.dumps(headers_dict)}'::jsonb"
+
+    # Build retry strategy JSON if options provided
+    retry_json = "NULL"
+    if (
+        options.retry_kind
+        or options.retry_base
+        or options.retry_factor
+        or options.retry_max
+    ):
+        retry = {"kind": options.retry_kind or "exponential"}
+        if options.retry_base:
+            retry["baseSeconds"] = options.retry_base
+        if options.retry_factor:
+            retry["factor"] = options.retry_factor
+        if options.retry_max:
+            retry["maxSeconds"] = options.retry_max
+        retry_json = f"'{json.dumps(retry)}'::jsonb"
+
+    # Build cancellation policy JSON if options provided
+    cancellation_json = "NULL"
+    if options.max_duration or options.max_delay:
+        cancellation = {}
+        if options.max_duration:
+            cancellation["maxDuration"] = options.max_duration
+        if options.max_delay:
+            cancellation["maxDelay"] = options.max_delay
+        cancellation_json = f"'{json.dumps(cancellation)}'::jsonb"
+
+    # Default queue if not specified
+    queue = options.queue or "default"
+
+    # Validate queue exists
+    if not queue_exists(config, queue):
+        print(f"Queue '{queue}' does not exist", file=sys.stderr)
+        sys.exit(1)
+
+    if options.verbose:
+        print(f"Configuration:")
+        print(f"  Task: {task_name}")
+        print(f"  Queue: {queue}")
+        print(f"  Params: {params_json}")
+        if headers_json != "NULL":
+            print(f"  Headers: {headers_json}")
+        if options.max_attempts:
+            print(f"  Max attempts: {options.max_attempts}")
+        if retry_json != "NULL":
+            print(f"  Retry strategy: {retry_json}")
+        if cancellation_json != "NULL":
+            print(f"  Cancellation: {cancellation_json}")
+
+    # Call spawn_task function
+    query = f"""
+        SELECT task_id, run_id, attempt
+        FROM absurd.spawn_task(
+            '{queue}',
+            '{task_name}',
+            '{params_json}'::jsonb,
+            {headers_json},
+            {options.max_attempts or "NULL"},
+            {retry_json},
+            {cancellation_json}
+        );
+    """
+
+    result = run_psql(config, query, tuples_only=True, no_align=True)
+
+    if result:
+        task_id, run_id, attempt = result.split("|")
+        print(f"Task spawned successfully:")
+        print(f"  Task ID: {task_id}")
+        print(f"  Run ID: {run_id}")
+        print(f"  Attempt: {attempt}")
+    else:
+        print("Task spawned, but no result returned", file=sys.stderr)
+
+
+def show_help():
+    print("""Usage: absurdctl COMMAND [OPTIONS]
 
 A command-line utility for managing Absurd queues.
 
@@ -54,6 +712,7 @@ Commands:
   create-queue    Create a new queue
   drop-queue      Drop an existing queue
   list-queues     List all existing queues
+  spawn-task      Spawn a new task
   help            Show this help message
 
 Run 'absurdctl COMMAND --help' for more information on a command.
@@ -70,475 +729,34 @@ Examples:
   absurdctl create-queue myqueue
   absurdctl drop-queue myqueue --yes
   absurdctl list-queues
-EOF
-}
-
-show_cleanup_help() {
-    cat << EOF
-Usage: absurdctl cleanup [OPTIONS] QUEUE_NAME TTL_DAYS
-
-Clean up old completed, failed, or cancelled tasks and events from an Absurd queue.
-Runs cleanup functions repeatedly until no more records can be deleted.
-
-Arguments:
-  QUEUE_NAME          Name of the queue to clean up
-  TTL_DAYS           Delete tasks/events older than this many days
-
-Options:
-$DB_OPTIONS_HELP
-  -l, --limit N       Batch size for deletions (default: 1000)
-  -v, --verbose       Show detailed progress information
-  -n, --dry-run       Show what would be deleted without actually deleting
-  --help              Show this help message
-
-Examples:
-  # Clean up tasks/events older than 30 days from 'myqueue'
-  absurdctl cleanup myqueue 30
-
-  # With custom database connection
-  absurdctl cleanup -h db.example.com -U admin -d mydb myqueue 7
-
-  # Using environment variables
-  export PGHOST=db.example.com PGDATABASE=mydb PGUSER=admin
-  absurdctl cleanup myqueue 30
-
-  # Dry run to see what would be deleted
-  absurdctl cleanup --dry-run -v myqueue 30
-
-  # Smaller batches for less locking
-  absurdctl cleanup --limit 100 myqueue 90
-EOF
-}
-
-show_create_queue_help() {
-    cat << EOF
-Usage: absurdctl create-queue [OPTIONS] QUEUE_NAME
-
-Create a new Absurd queue with all required tables.
-
-Arguments:
-  QUEUE_NAME          Name of the queue to create
-
-Options:
-$DB_OPTIONS_HELP
-  -v, --verbose       Show detailed progress information
-  --help              Show this help message
-
-Examples:
-  # Create a new queue named 'myqueue'
-  absurdctl create-queue myqueue
-
-  # With custom database connection
-  absurdctl create-queue -h db.example.com -U admin -d mydb myqueue
-EOF
-}
-
-show_drop_queue_help() {
-    cat << EOF
-Usage: absurdctl drop-queue [OPTIONS] QUEUE_NAME
-
-Drop an existing Absurd queue and all its data.
-
-WARNING: This operation is destructive and cannot be undone!
-
-Arguments:
-  QUEUE_NAME          Name of the queue to drop
-
-Options:
-$DB_OPTIONS_HELP
-  -v, --verbose       Show detailed progress information
-  -y, --yes           Skip confirmation prompt
-  --help              Show this help message
-
-Examples:
-  # Drop a queue with confirmation
-  absurdctl drop-queue myqueue
-
-  # Drop a queue without confirmation (use with caution!)
-  absurdctl drop-queue --yes myqueue
-EOF
-}
-
-show_list_queues_help() {
-    cat << EOF
-Usage: absurdctl list-queues [OPTIONS]
-
-List all existing Absurd queues.
-
-Options:
-$DB_OPTIONS_HELP
-  --help              Show this help message
-
-Examples:
-  # List all queues
-  absurdctl list-queues
-
-  # With custom database connection
-  absurdctl list-queues -h db.example.com -U admin -d mydb
-EOF
-}
-
-cmd_cleanup() {
-    # Parse command line arguments
-    POSITIONAL_ARGS=()
-
-    while [[ $# -gt 0 ]]; do
-        parse_db_option "$1" "${2:-}"
-        if [ $DB_OPTION_MATCHED -gt 0 ]; then
-            shift $DB_OPTION_MATCHED
-            continue
-        fi
-
-        case $1 in
-            --help)
-                show_cleanup_help
-                exit 0
-                ;;
-            -l|--limit)
-                LIMIT="$2"
-                shift 2
-                ;;
-            -v|--verbose)
-                VERBOSE=1
-                shift
-                ;;
-            -n|--dry-run)
-                DRY_RUN=1
-                shift
-                ;;
-            -*)
-                echo "Unknown option: $1"
-                echo ""
-                show_cleanup_help
-                exit 1
-                ;;
-            *)
-                POSITIONAL_ARGS+=("$1")
-                shift
-                ;;
-        esac
-    done
-
-    # Restore positional parameters
-    set -- "${POSITIONAL_ARGS[@]}"
-
-    # Validate arguments
-    if [ $# -ne 2 ]; then
-        echo "Missing required arguments"
-        echo ""
-        show_cleanup_help
-        exit 1
-    fi
-
-    QUEUE_NAME="$1"
-    TTL_DAYS="$2"
-
-    # Validate TTL_DAYS is a number
-    if ! [[ "$TTL_DAYS" =~ ^[0-9]+$ ]]; then
-        echo "TTL_DAYS must be a positive integer, got: $TTL_DAYS"
-        exit 1
-    fi
-
-    # Convert days to seconds
-    TTL_SECONDS=$((TTL_DAYS * 24 * 60 * 60))
-
-    if [ "$VERBOSE" -eq 1 ]; then
-        echo "Configuration:"
-        echo "  Queue: $QUEUE_NAME"
-        echo "  TTL: $TTL_DAYS days ($TTL_SECONDS seconds)"
-        echo "  Host: $HOST"
-        echo "  Port: $PORT"
-        echo "  User: $USER"
-        echo "  Database: $DATABASE"
-        echo "  Limit: $LIMIT"
-        echo "  Dry run: $DRY_RUN"
-    fi
-
-    # Check if queue exists
-    if [ "$VERBOSE" -eq 1 ]; then
-        echo "Checking if queue exists..."
-    fi
-    QUEUE_EXISTS=$(psql -X -h $HOST -p $PORT -U $USER -d $DATABASE -t -A -c "SELECT COUNT(*) FROM absurd.queues WHERE queue_name = '$QUEUE_NAME';")
-
-    if [ "$QUEUE_EXISTS" -eq 0 ]; then
-        echo "Queue '$QUEUE_NAME' does not exist"
-        exit 1
-    fi
-
-    echo "Starting cleanup for queue '$QUEUE_NAME' (TTL: $TTL_DAYS days)"
-
-    if [ "$DRY_RUN" -eq 1 ]; then
-        echo "DRY RUN MODE - No data will be deleted"
-
-        # Get counts for dry run
-        TASK_COUNT=$(psql -X -h $HOST -p $PORT -U $USER -d $DATABASE -t -A -c "SELECT COUNT(*) FROM absurd.t_${QUEUE_NAME} t LEFT JOIN absurd.r_${QUEUE_NAME} r ON r.run_id = t.last_attempt_run WHERE t.state IN ('completed', 'failed', 'cancelled') AND ((t.state = 'completed' AND r.completed_at < NOW() - INTERVAL '${TTL_SECONDS} seconds') OR (t.state = 'failed' AND r.failed_at < NOW() - INTERVAL '${TTL_SECONDS} seconds') OR (t.state = 'cancelled' AND t.cancelled_at < NOW() - INTERVAL '${TTL_SECONDS} seconds'));")
-
-        EVENT_COUNT=$(psql -X -h $HOST -p $PORT -U $USER -d $DATABASE -t -A -c "SELECT COUNT(*) FROM absurd.e_${QUEUE_NAME} WHERE emitted_at < NOW() - INTERVAL '${TTL_SECONDS} seconds';")
-
-        echo "Would delete $TASK_COUNT tasks and $EVENT_COUNT events"
-        exit 0
-    fi
-
-    # Cleanup loop
-    TOTAL_TASKS_DELETED=0
-    TOTAL_EVENTS_DELETED=0
-    ITERATION=0
-
-    while true; do
-        ITERATION=$((ITERATION + 1))
-
-        if [ "$VERBOSE" -eq 1 ]; then
-            echo "Iteration $ITERATION..."
-        fi
-
-        # Clean up tasks
-        TASKS_DELETED=$(psql -X -h $HOST -p $PORT -U $USER -d $DATABASE -t -A -c "SELECT absurd.cleanup_tasks('$QUEUE_NAME', $TTL_SECONDS, $LIMIT);")
-        TOTAL_TASKS_DELETED=$((TOTAL_TASKS_DELETED + TASKS_DELETED))
-
-        if [ "$VERBOSE" -eq 1 ] && [ "$TASKS_DELETED" -gt 0 ]; then
-            echo "  Deleted $TASKS_DELETED tasks"
-        fi
-
-        # Clean up events
-        EVENTS_DELETED=$(psql -X -h $HOST -p $PORT -U $USER -d $DATABASE -t -A -c "SELECT absurd.cleanup_events('$QUEUE_NAME', $TTL_SECONDS, $LIMIT);")
-        TOTAL_EVENTS_DELETED=$((TOTAL_EVENTS_DELETED + EVENTS_DELETED))
-
-        if [ "$VERBOSE" -eq 1 ] && [ "$EVENTS_DELETED" -gt 0 ]; then
-            echo "  Deleted $EVENTS_DELETED events"
-        fi
-
-        # If nothing was deleted, we're done
-        if [ "$TASKS_DELETED" -eq 0 ] && [ "$EVENTS_DELETED" -eq 0 ]; then
-            break
-        fi
-
-        # Show progress
-        if [ "$TASKS_DELETED" -gt 0 ] || [ "$EVENTS_DELETED" -gt 0 ]; then
-            echo "Deleted $TASKS_DELETED tasks, $EVENTS_DELETED events"
-        fi
-    done
-
-    echo "Cleanup complete: $TOTAL_TASKS_DELETED tasks, $TOTAL_EVENTS_DELETED events deleted in $ITERATION iterations"
-}
-
-cmd_create_queue() {
-    # Parse command line arguments
-    POSITIONAL_ARGS=()
-
-    while [[ $# -gt 0 ]]; do
-        parse_db_option "$1" "${2:-}"
-        if [ $DB_OPTION_MATCHED -gt 0 ]; then
-            shift $DB_OPTION_MATCHED
-            continue
-        fi
-
-        case $1 in
-            --help)
-                show_create_queue_help
-                exit 0
-                ;;
-            -v|--verbose)
-                VERBOSE=1
-                shift
-                ;;
-            -*)
-                echo "Unknown option: $1"
-                echo ""
-                show_create_queue_help
-                exit 1
-                ;;
-            *)
-                POSITIONAL_ARGS+=("$1")
-                shift
-                ;;
-        esac
-    done
-
-    # Restore positional parameters
-    set -- "${POSITIONAL_ARGS[@]}"
-
-    # Validate arguments
-    if [ $# -ne 1 ]; then
-        echo "Missing required argument: QUEUE_NAME"
-        echo ""
-        show_create_queue_help
-        exit 1
-    fi
-
-    QUEUE_NAME="$1"
-
-    if [ "$VERBOSE" -eq 1 ]; then
-        echo "Configuration:"
-        echo "  Queue: $QUEUE_NAME"
-        echo "  Host: $HOST"
-        echo "  Port: $PORT"
-        echo "  User: $USER"
-        echo "  Database: $DATABASE"
-    fi
-
-    if [ "$VERBOSE" -eq 1 ]; then
-        echo "Creating queue '$QUEUE_NAME'..."
-    fi
-
-    psql -X -h $HOST -p $PORT -U $USER -d $DATABASE -c "SELECT absurd.create_queue('$QUEUE_NAME');" > /dev/null
-
-    echo "Queue '$QUEUE_NAME' created successfully"
-}
-
-cmd_drop_queue() {
-    # Parse command line arguments
-    POSITIONAL_ARGS=()
-    SKIP_CONFIRM=0
-
-    while [[ $# -gt 0 ]]; do
-        parse_db_option "$1" "${2:-}"
-        if [ $DB_OPTION_MATCHED -gt 0 ]; then
-            shift $DB_OPTION_MATCHED
-            continue
-        fi
-
-        case $1 in
-            --help)
-                show_drop_queue_help
-                exit 0
-                ;;
-            -v|--verbose)
-                VERBOSE=1
-                shift
-                ;;
-            -y|--yes)
-                SKIP_CONFIRM=1
-                shift
-                ;;
-            -*)
-                echo "Unknown option: $1"
-                echo ""
-                show_drop_queue_help
-                exit 1
-                ;;
-            *)
-                POSITIONAL_ARGS+=("$1")
-                shift
-                ;;
-        esac
-    done
-
-    # Restore positional parameters
-    set -- "${POSITIONAL_ARGS[@]}"
-
-    # Validate arguments
-    if [ $# -ne 1 ]; then
-        echo "Missing required argument: QUEUE_NAME"
-        echo ""
-        show_drop_queue_help
-        exit 1
-    fi
-
-    QUEUE_NAME="$1"
-
-    if [ "$VERBOSE" -eq 1 ]; then
-        echo "Configuration:"
-        echo "  Queue: $QUEUE_NAME"
-        echo "  Host: $HOST"
-        echo "  Port: $PORT"
-        echo "  User: $USER"
-        echo "  Database: $DATABASE"
-    fi
-
-    # Check if queue exists
-    if [ "$VERBOSE" -eq 1 ]; then
-        echo "Checking if queue exists..."
-    fi
-    QUEUE_EXISTS=$(psql -X -h $HOST -p $PORT -U $USER -d $DATABASE -t -A -c "SELECT COUNT(*) FROM absurd.queues WHERE queue_name = '$QUEUE_NAME';")
-
-    if [ "$QUEUE_EXISTS" -eq 0 ]; then
-        echo "Queue '$QUEUE_NAME' does not exist"
-        exit 1
-    fi
-
-    # Prompt for confirmation unless --yes is specified
-    if [ "$SKIP_CONFIRM" -eq 0 ]; then
-        echo "WARNING: This will permanently delete queue '$QUEUE_NAME' and all its data."
-        echo -n "Are you sure you want to continue? (yes/no): "
-        read -r CONFIRM
-
-        if [ "$CONFIRM" != "yes" ]; then
-            echo "Operation cancelled"
-            exit 0
-        fi
-    fi
-
-    if [ "$VERBOSE" -eq 1 ]; then
-        echo "Dropping queue '$QUEUE_NAME'..."
-    fi
-
-    psql -X -h $HOST -p $PORT -U $USER -d $DATABASE -c "SELECT absurd.drop_queue('$QUEUE_NAME');" > /dev/null
-
-    echo "Queue '$QUEUE_NAME' dropped successfully"
-}
-
-cmd_list_queues() {
-    # Parse command line arguments
-    while [[ $# -gt 0 ]]; do
-        parse_db_option "$1" "${2:-}"
-        if [ $DB_OPTION_MATCHED -gt 0 ]; then
-            shift $DB_OPTION_MATCHED
-            continue
-        fi
-
-        case $1 in
-            --help)
-                show_list_queues_help
-                exit 0
-                ;;
-            -*)
-                echo "Unknown option: $1"
-                echo ""
-                show_list_queues_help
-                exit 1
-                ;;
-            *)
-                echo "Unexpected argument: $1"
-                echo ""
-                show_list_queues_help
-                exit 1
-                ;;
-        esac
-    done
-
-    psql -X -h $HOST -p $PORT -U $USER -d $DATABASE -t -A -c "SELECT * FROM absurd.list_queues();"
-}
-
-# Main command dispatch
-if [ $# -eq 0 ]; then
-    show_help
-    exit 0
-fi
-
-COMMAND="$1"
-shift
-
-case "$COMMAND" in
-    cleanup)
-        cmd_cleanup "$@"
-        ;;
-    create-queue)
-        cmd_create_queue "$@"
-        ;;
-    drop-queue)
-        cmd_drop_queue "$@"
-        ;;
-    list-queues)
-        cmd_list_queues "$@"
-        ;;
-    help|--help|-h)
-        show_help
-        exit 0
-        ;;
-    *)
-        echo "Unknown command: $COMMAND"
-        echo ""
-        show_help
-        exit 1
-        ;;
-esac
+  absurdctl spawn-task my-task -P foo=bar -P count:=42
+""")
+
+
+def main():
+    if len(sys.argv) < 2 or sys.argv[1] in ("help", "--help", "-h"):
+        show_help()
+        sys.exit(0)
+
+    command = sys.argv[1]
+    args = sys.argv[2:]
+
+    if command == "cleanup":
+        cmd_cleanup(args)
+    elif command == "create-queue":
+        cmd_create_queue(args)
+    elif command == "drop-queue":
+        cmd_drop_queue(args)
+    elif command == "list-queues":
+        cmd_list_queues(args)
+    elif command == "spawn-task":
+        cmd_spawn_task(args)
+    else:
+        print(f"Unknown command: {command}", file=sys.stderr)
+        print("")
+        show_help()
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
