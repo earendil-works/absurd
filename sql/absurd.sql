@@ -33,9 +33,28 @@ create extension if not exists "uuid-ossp";
 
 create schema if not exists absurd;
 
+-- Returns either the actual current timestamp or a fake one if
+-- the session sets `absurd.fake_now`.  This lets tests control time.
+create function absurd.current_time ()
+  returns timestamptz
+  language plpgsql
+  volatile
+as $$
+declare
+  v_fake text;
+begin
+  v_fake := current_setting('absurd.fake_now', true);
+  if v_fake is not null and length(trim(v_fake)) > 0 then
+    return v_fake::timestamptz;
+  end if;
+
+  return clock_timestamp();
+end;
+$$;
+
 create table if not exists absurd.queues (
   queue_name text primary key,
-  created_at timestamptz not null default now()
+  created_at timestamptz not null default absurd.current_time()
 );
 
 create function absurd.ensure_queue_tables (p_queue_name text)
@@ -52,7 +71,7 @@ begin
         retry_strategy jsonb,
         max_attempts integer,
         cancellation jsonb,
-        enqueue_at timestamptz not null default now(),
+        enqueue_at timestamptz not null default absurd.current_time(),
         first_started_at timestamptz,
         state text not null check (state in (''pending'', ''running'', ''sleeping'', ''completed'', ''failed'', ''cancelled'')),
         attempts integer not null default 0,
@@ -79,7 +98,7 @@ begin
         failed_at timestamptz,
         result jsonb,
         failure_reason jsonb,
-        created_at timestamptz not null default now()
+        created_at timestamptz not null default absurd.current_time()
      ) with (fillfactor=70)',
     'r_' || p_queue_name
   );
@@ -91,7 +110,7 @@ begin
         state jsonb,
         status text not null default ''committed'',
         owner_run_id uuid,
-        updated_at timestamptz not null default now(),
+        updated_at timestamptz not null default absurd.current_time(),
         primary key (task_id, checkpoint_name)
      ) with (fillfactor=70)',
     'c_' || p_queue_name
@@ -101,7 +120,7 @@ begin
     'create table if not exists absurd.%I (
         event_name text primary key,
         payload jsonb,
-        emitted_at timestamptz not null default now()
+        emitted_at timestamptz not null default absurd.current_time()
      )',
     'e_' || p_queue_name
   );
@@ -113,7 +132,7 @@ begin
         step_name text not null,
         event_name text not null,
         timeout_at timestamptz,
-        created_at timestamptz not null default now(),
+        created_at timestamptz not null default absurd.current_time(),
         primary key (run_id, step_name)
      )',
     'w_' || p_queue_name
@@ -222,7 +241,7 @@ declare
   v_retry_strategy jsonb;
   v_max_attempts integer;
   v_cancellation jsonb;
-  v_now timestamptz := clock_timestamp();
+  v_now timestamptz := absurd.current_time();
   v_params jsonb := coalesce(p_params, 'null'::jsonb);
 begin
   if p_task_name is null or length(trim(p_task_name)) = 0 then
@@ -282,7 +301,7 @@ create function absurd.claim_task (
   language plpgsql
 as $$
 declare
-  v_now timestamptz := clock_timestamp();
+  v_now timestamptz := absurd.current_time();
   v_claim_timeout integer := greatest(coalesce(p_claim_timeout, 30), 0);
   v_worker_id text := coalesce(nullif(p_worker_id, ''), 'worker');
   v_qty integer := greatest(coalesce(p_qty, 1), 1);
@@ -430,7 +449,7 @@ create function absurd.complete_run (
 as $$
 declare
   v_task_id uuid;
-  v_now timestamptz := clock_timestamp();
+  v_now timestamptz := absurd.current_time();
 begin
   execute format(
     'select task_id
@@ -533,7 +552,7 @@ declare
   v_attempt integer;
   v_retry_strategy jsonb;
   v_max_attempts integer;
-  v_now timestamptz := clock_timestamp();
+  v_now timestamptz := absurd.current_time();
   v_next_attempt integer;
   v_delay_seconds double precision := 0;
   v_next_available timestamptz;
@@ -680,7 +699,7 @@ create function absurd.set_task_checkpoint_state (
   language plpgsql
 as $$
 declare
-  v_now timestamptz := clock_timestamp();
+  v_now timestamptz := absurd.current_time();
   v_new_attempt integer;
   v_existing_attempt integer;
   v_existing_owner uuid;
@@ -816,7 +835,7 @@ declare
   v_resolved_payload jsonb;
   v_timeout_at timestamptz;
   v_available_at timestamptz;
-  v_now timestamptz := clock_timestamp();
+  v_now timestamptz := absurd.current_time();
 begin
   if p_event_name is null or length(trim(p_event_name)) = 0 then
     raise exception 'event_name must be provided';
@@ -948,7 +967,7 @@ create function absurd.emit_event (
   language plpgsql
 as $$
 declare
-  v_now timestamptz := clock_timestamp();
+  v_now timestamptz := absurd.current_time();
   v_payload jsonb := coalesce(p_payload, 'null'::jsonb);
 begin
   if p_event_name is null or length(trim(p_event_name)) = 0 then
@@ -1033,7 +1052,7 @@ create function absurd.cleanup_tasks (
   language plpgsql
 as $$
 declare
-  v_now timestamptz := clock_timestamp();
+  v_now timestamptz := absurd.current_time();
   v_cutoff timestamptz;
   v_deleted_count integer;
 begin
@@ -1109,7 +1128,7 @@ create function absurd.cleanup_events (
   language plpgsql
 as $$
 declare
-  v_now timestamptz := clock_timestamp();
+  v_now timestamptz := absurd.current_time();
   v_cutoff timestamptz;
   v_deleted_count integer;
 begin
@@ -1159,7 +1178,7 @@ begin
   if v_server_num >= 180000 then
     return uuidv7 ();
   end if;
-  ts_ms := floor(extract(epoch from clock_timestamp()) * 1000)::bigint;
+  ts_ms := floor(extract(epoch from absurd.current_time()) * 1000)::bigint;
   rnd := uuid_send(uuid_generate_v4 ());
   b := repeat(E'\\000', 16)::bytea;
   for i in 0..5 loop
