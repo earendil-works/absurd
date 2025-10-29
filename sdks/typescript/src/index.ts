@@ -443,6 +443,8 @@ export class Absurd {
       throw new Error(
         `Task "${taskName}" is not registered. Provide options.queue when spawning unregistered tasks.`,
       );
+    } else {
+      queue = options.queue;
     }
     const effectiveMaxAttempts =
       options.maxAttempts !== undefined

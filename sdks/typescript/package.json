@@ -3,12 +3,13 @@
   "version": "0.1.0",
   "description": "TypeScript SDK for Absurd - PostgreSQL-based durable task execution",
   "type": "module",
-  "main": "./dist/index.js",
+  "main": "./dist/cjs/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
+      "import": "./dist/index.js",
+      "require": "./dist/cjs/index.js"
     }
   },
   "files": [
@@ -16,7 +17,7 @@
     "README.md"
   ],
   "scripts": {
-    "build": "tsc",
+    "build": "tsc --project tsconfig.json && tsc --project tsconfig.cjs.json",
     "prepare": "npm run build",
     "test": "echo \"Error: no test specified\" && exit 1"
   },

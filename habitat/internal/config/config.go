@@ -12,7 +12,9 @@ import (
 const (
 	envPrefix            = "HABITAT_"
 	defaultListenAddress = ":7890"
-	defaultDBURL         = "postgres://localhost/absurd?sslmode=disable"
+	defaultDBURL         = ""
+	defaultDBHost        = "localhost"
+	defaultDBName        = "absurd"
 	defaultDBPort        = 5432
 	defaultDBSSLMode     = "disable"
 )
@@ -43,11 +45,11 @@ func FromArgs(args []string) (Config, error) {
 		ListenAddress: envDefault("LISTEN", defaultListenAddress),
 		DB: DBConfig{
 			URL:      envDefault("DB_URL", defaultDBURL),
-			Host:     envDefault("DB_HOST", ""),
+			Host:     envDefault("DB_HOST", defaultDBHost),
 			Port:     envDefaultInt("DB_PORT", defaultDBPort),
 			User:     envDefault("DB_USER", ""),
 			Password: envDefault("DB_PASSWORD", ""),
-			Name:     envDefault("DB_NAME", ""),
+			Name:     envDefault("DB_NAME", defaultDBName),
 			SSLMode:  envDefault("DB_SSLMODE", defaultDBSSLMode),
 		},
 	}

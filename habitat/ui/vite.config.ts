@@ -5,6 +5,7 @@ import path from "path";
 import { consoleForwardPlugin } from "vite-console-forward-plugin";
 
 export default defineConfig(({ mode }) => ({
+  base: mode === "production" ? "/_static/" : "/",
   plugins: [
     solid(),
     tailwindcss(),
