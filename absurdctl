@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
-
 import json
 import os
 import subprocess
 import sys
 import shutil
 import textwrap
+from urllib.request import urlopen
+from urllib.error import URLError
 from optparse import OptionParser, IndentedHelpFormatter
+
+
+SQL_URL = "https://raw.githubusercontent.com/earendil-works/absurd/refs/heads/main/sql/absurd.sql"
 
 
 def get_term_width():
@@ -58,50 +62,117 @@ class CleanHelpFormatter(IndentedHelpFormatter):
         return "".join(result)
 
 
-class DatabaseConfig:
-    """Database connection configuration from environment and CLI args."""
+def build_database_config(host=None, port=None, user=None, database=None):
+    """Build a dict with database configuration."""
+    return {
+        "host": host or os.getenv("PGHOST", "localhost"),
+        "port": port or os.getenv("PGPORT", "5432"),
+        "user": user or os.getenv("PGUSER", os.getenv("USER", "")),
+        "database": database or os.getenv("PGDATABASE", os.getenv("USER", "")),
+    }
 
-    def __init__(self, host=None, port=None, user=None, database=None):
-        self.host = host or os.getenv("PGHOST", "localhost")
-        self.port = port or os.getenv("PGPORT", "5432")
-        self.user = user or os.getenv("PGUSER", os.getenv("USER", ""))
-        self.database = database or os.getenv("PGDATABASE", os.getenv("USER", ""))
+
+def config_from_options(options):
+    """Shortcut to construct a database config from parsed options."""
+    return build_database_config(
+        options.host,
+        options.port,
+        options.user,
+        options.database,
+    )
 
 
-def run_psql(config, query, tuples_only=False, no_align=False):
-    """Execute a PostgreSQL query and return the output."""
+def build_psql_command(config, extra_args=None):
+    """Construct the base psql command with optional additional arguments."""
     cmd = [
         "psql",
         "-X",
         "-h",
-        config.host,
+        config["host"],
         "-p",
-        config.port,
+        config["port"],
         "-U",
-        config.user,
+        config["user"],
         "-d",
-        config.database,
+        config["database"],
     ]
 
+    if extra_args:
+        cmd.extend(extra_args)
+
+    return cmd
+
+
+def get_common_db_details(config):
+    """Return standard database connection details for verbose output."""
+    return [
+        ("Host", config["host"]),
+        ("Port", config["port"]),
+        ("User", config["user"]),
+        ("Database", config["database"]),
+    ]
+
+
+def print_verbose_configuration(enabled, details):
+    """Print a formatted configuration block when verbose output is enabled."""
+    if not enabled:
+        return
+    print("Configuration:")
+    for label, value in details:
+        print(f"  {label}: {value}")
+
+
+def run_psql(
+    config,
+    query=None,
+    *,
+    tuples_only=False,
+    no_align=False,
+    extra_args=None,
+    input_data=None,
+    error_message=None,
+):
+    """
+    Execute a PostgreSQL command. Returns stripped stdout for queries and the
+    CompletedProcess for other invocations.
+    """
+    cmd_args = []
+
     if tuples_only:
-        cmd.append("-t")
+        cmd_args.append("-t")
     if no_align:
-        cmd.append("-A")
+        cmd_args.append("-A")
+    if extra_args:
+        cmd_args.extend(extra_args)
+    if query is not None:
+        cmd_args.extend(["-c", query])
 
-    cmd.extend(["-c", query])
+    message = error_message
+    if message is None:
+        message = (
+            "Error executing query"
+            if query is not None
+            else "Error executing psql command"
+        )
 
+    env = os.environ.copy()
+    env["PGPASSWORD"] = os.getenv("PGPASSWORD", "")
     try:
         result = subprocess.run(
-            cmd,
+            build_psql_command(config, cmd_args),
+            input=input_data,
             capture_output=True,
             text=True,
             check=True,
-            env={**os.environ, "PGPASSWORD": os.getenv("PGPASSWORD", "")},
+            env=env,
         )
-        return result.stdout.strip()
     except subprocess.CalledProcessError as e:
-        print(f"Error executing query: {e.stderr}", file=sys.stderr)
+        print(f"{message}: {e.stderr}", file=sys.stderr)
         sys.exit(1)
+
+    if query is not None:
+        return result.stdout.strip()
+    return result
 
 
 def queue_exists(config, queue_name):
@@ -129,7 +200,6 @@ def build_json_params(param_list, base_params=None):
     """
     result = {}
 
-    # Start with base params if provided
     if base_params:
         try:
             result = json.loads(base_params)
@@ -139,10 +209,8 @@ def build_json_params(param_list, base_params=None):
             print(f"Error parsing --params: {e}", file=sys.stderr)
             sys.exit(1)
 
-    # Process each -p flag
     for param in param_list:
         if ":=" in param:
-            # JSON value assignment
             key, value_str = param.split(":=", 1)
             try:
                 value = json.loads(value_str)
@@ -150,7 +218,6 @@ def build_json_params(param_list, base_params=None):
                 print(f"Error parsing JSON value in '{param}': {e}", file=sys.stderr)
                 sys.exit(1)
         elif "=" in param:
-            # String value assignment
             key, value = param.split("=", 1)
         else:
             print(
@@ -159,7 +226,6 @@ def build_json_params(param_list, base_params=None):
             )
             sys.exit(1)
 
-        # Handle dotted paths (e.g., "user.name" -> nested object)
         set_nested_value(result, key, value)
 
     return json.dumps(result)
@@ -202,13 +268,42 @@ def add_db_options(parser):
     )
 
 
+def build_command_parser(usage):
+    """Create an OptionParser with common Absurd defaults."""
+    parser = OptionParser(
+        usage=usage,
+        add_help_option=False,
+        formatter=CleanHelpFormatter(),
+    )
+    add_db_options(parser)
+    parser.add_option("--help", action="store_true", help="Show this help message")
+    return parser
+
+
+def parse_args_with_help(parser, args, examples=None):
+    """Parse args and handle --help in a consistent way."""
+    options, remaining = parser.parse_args(args)
+    if getattr(options, "help", False):
+        parser.print_help()
+        if examples:
+            print("\nExamples:")
+            for example in examples:
+                print(f"  {example}")
+        sys.exit(0)
+    return options, remaining
+
+
+def ensure_queue_exists(config, queue_name):
+    """Exit with error if queue is missing."""
+    if not queue_exists(config, queue_name):
+        print(f"Queue '{queue_name}' does not exist", file=sys.stderr)
+        sys.exit(1)
+
+
 def cmd_cleanup(args):
     """Clean up old completed, failed, or cancelled tasks and events."""
     usage = "usage: %prog cleanup [options] QUEUE_NAME TTL_DAYS"
-    parser = OptionParser(
-        usage=usage, add_help_option=False, formatter=CleanHelpFormatter()
-    )
-    add_db_options(parser)
+    parser = build_command_parser(usage)
     parser.add_option(
         "-l",
         "--limit",
@@ -225,19 +320,12 @@ def cmd_cleanup(args):
         default=False,
         help="Show what would be deleted without actually deleting",
     )
-    parser.add_option("--help", action="store_true", help="Show this help message")
+    examples = [
+        "absurdctl cleanup myqueue 30",
+        "absurdctl cleanup --dry-run -v myqueue 30",
+    ]
 
-    options, args = parser.parse_args(args)
-
-    if options.help:
-        parser.print_help()
-        print("\nExamples:")
-        print("  # Clean up tasks older than 30 days")
-        print("  absurdctl cleanup myqueue 30")
-        print()
-        print("  # Dry run with verbose output")
-        print("  absurdctl cleanup --dry-run -v myqueue 30")
-        sys.exit(0)
+    options, args = parse_args_with_help(parser, args, examples)
 
     if len(args) != 2:
         print(
@@ -256,31 +344,27 @@ def cmd_cleanup(args):
         )
         sys.exit(1)
 
-    config = DatabaseConfig(options.host, options.port, options.user, options.database)
+    config = config_from_options(options)
+    ensure_queue_exists(config, queue_name)
 
-    # Validate queue exists
-    if not queue_exists(config, queue_name):
-        print(f"Queue '{queue_name}' does not exist", file=sys.stderr)
-        sys.exit(1)
-
-    # Convert days to seconds
     ttl_seconds = ttl_days * 24 * 60 * 60
 
-    if options.verbose:
-        print(f"Configuration:")
-        print(f"  Queue: {queue_name}")
-        print(f"  TTL: {ttl_days} days ({ttl_seconds} seconds)")
-        print(f"  Host: {config.host}")
-        print(f"  Port: {config.port}")
-        print(f"  User: {config.user}")
-        print(f"  Database: {config.database}")
-        print(f"  Limit: {options.limit}")
-        print(f"  Dry run: {options.dry_run}")
+    print_verbose_configuration(
+        options.verbose,
+        [
+            ("Queue", queue_name),
+            ("TTL", f"{ttl_days} days ({ttl_seconds} seconds)"),
+        ]
+        + get_common_db_details(config)
+        + [
+            ("Limit", options.limit),
+            ("Dry run", options.dry_run),
+        ],
+    )
 
     if options.dry_run:
         print("DRY RUN MODE - No data will be deleted")
 
-        # Get counts for dry run
         task_count = run_psql(
             config,
             f"""SELECT COUNT(*) FROM absurd.t_{queue_name} t
@@ -315,7 +399,6 @@ def cmd_cleanup(args):
         if options.verbose:
             print(f"Iteration {iteration}...")
 
-        # Clean up tasks
         tasks_deleted = int(
             run_psql(
                 config,
@@ -329,7 +412,6 @@ def cmd_cleanup(args):
         if options.verbose and tasks_deleted > 0:
             print(f"  Deleted {tasks_deleted} tasks")
 
-        # Clean up events
         events_deleted = int(
             run_psql(
                 config,
@@ -343,11 +425,9 @@ def cmd_cleanup(args):
         if options.verbose and events_deleted > 0:
             print(f"  Deleted {events_deleted} events")
 
-        # If nothing was deleted, we're done
         if tasks_deleted == 0 and events_deleted == 0:
             break
 
-        # Show progress
         if tasks_deleted > 0 or events_deleted > 0:
             print(f"Deleted {tasks_deleted} tasks, {events_deleted} events")
 
@@ -359,19 +439,11 @@ def cmd_cleanup(args):
 def cmd_create_queue(args):
     """Create a new Absurd queue."""
     usage = "usage: %prog create-queue [options] QUEUE_NAME"
-    parser = OptionParser(
-        usage=usage, add_help_option=False, formatter=CleanHelpFormatter()
+    parser = build_command_parser(usage)
+
+    options, args = parse_args_with_help(
+        parser, args, ["absurdctl create-queue myqueue"]
     )
-    add_db_options(parser)
-    parser.add_option("--help", action="store_true", help="Show this help message")
-
-    options, args = parser.parse_args(args)
-
-    if options.help:
-        parser.print_help()
-        print("\nExamples:")
-        print("  absurdctl create-queue myqueue")
-        sys.exit(0)
 
     if len(args) != 1:
         print("Error: Missing required argument QUEUE_NAME", file=sys.stderr)
@@ -379,15 +451,13 @@ def cmd_create_queue(args):
         sys.exit(1)
 
     queue_name = args[0]
-    config = DatabaseConfig(options.host, options.port, options.user, options.database)
+    config = config_from_options(options)
 
+    print_verbose_configuration(
+        options.verbose,
+        [("Queue", queue_name)] + get_common_db_details(config),
+    )
     if options.verbose:
-        print(f"Configuration:")
-        print(f"  Queue: {queue_name}")
-        print(f"  Host: {config.host}")
-        print(f"  Port: {config.port}")
-        print(f"  User: {config.user}")
-        print(f"  Database: {config.database}")
         print(f"Creating queue '{queue_name}'...")
 
     run_psql(config, f"SELECT absurd.create_queue('{queue_name}');")
@@ -397,10 +467,7 @@ def cmd_create_queue(args):
 def cmd_drop_queue(args):
     """Drop an existing Absurd queue."""
     usage = "usage: %prog drop-queue [options] QUEUE_NAME"
-    parser = OptionParser(
-        usage=usage, add_help_option=False, formatter=CleanHelpFormatter()
-    )
-    add_db_options(parser)
+    parser = build_command_parser(usage)
     parser.add_option(
         "-y",
         "--yes",
@@ -409,16 +476,12 @@ def cmd_drop_queue(args):
         default=False,
         help="Skip confirmation prompt",
     )
-    parser.add_option("--help", action="store_true", help="Show this help message")
+    examples = [
+        "absurdctl drop-queue myqueue",
+        "absurdctl drop-queue --yes myqueue",
+    ]
 
-    options, args = parser.parse_args(args)
-
-    if options.help:
-        parser.print_help()
-        print("\nExamples:")
-        print("  absurdctl drop-queue myqueue")
-        print("  absurdctl drop-queue --yes myqueue")
-        sys.exit(0)
+    options, args = parse_args_with_help(parser, args, examples)
 
     if len(args) != 1:
         print("Error: Missing required argument QUEUE_NAME", file=sys.stderr)
@@ -426,22 +489,15 @@ def cmd_drop_queue(args):
         sys.exit(1)
 
     queue_name = args[0]
-    config = DatabaseConfig(options.host, options.port, options.user, options.database)
+    config = config_from_options(options)
 
-    # Validate queue exists
-    if not queue_exists(config, queue_name):
-        print(f"Queue '{queue_name}' does not exist", file=sys.stderr)
-        sys.exit(1)
+    ensure_queue_exists(config, queue_name)
 
-    if options.verbose:
-        print(f"Configuration:")
-        print(f"  Queue: {queue_name}")
-        print(f"  Host: {config.host}")
-        print(f"  Port: {config.port}")
-        print(f"  User: {config.user}")
-        print(f"  Database: {config.database}")
+    print_verbose_configuration(
+        options.verbose,
+        [("Queue", queue_name)] + get_common_db_details(config),
+    )
 
-    # Prompt for confirmation unless --yes is specified
     if not options.yes:
         print(
             f"WARNING: This will permanently delete queue '{queue_name}' and all its data."
@@ -461,35 +517,65 @@ def cmd_drop_queue(args):
 def cmd_list_queues(args):
     """List all existing Absurd queues."""
     usage = "usage: %prog list-queues [options]"
-    parser = OptionParser(
-        usage=usage, add_help_option=False, formatter=CleanHelpFormatter()
-    )
-    add_db_options(parser)
-    parser.add_option("--help", action="store_true", help="Show this help message")
+    parser = build_command_parser(usage)
 
-    options, args = parser.parse_args(args)
+    options, args = parse_args_with_help(parser, args)
 
-    if options.help:
-        parser.print_help()
-        sys.exit(0)
-
-    config = DatabaseConfig(options.host, options.port, options.user, options.database)
+    config = config_from_options(options)
 
     result = run_psql(
         config, "SELECT * FROM absurd.list_queues();", tuples_only=True, no_align=True
-    )
-    print(result)
+    ).strip()
+    if result:
+        print(result)
+
+
+def cmd_init(args):
+    """Initialize the Absurd schema by applying absurd.sql."""
+    usage = "usage: %prog init [options]"
+    parser = build_command_parser(usage)
+
+    options, args = parse_args_with_help(parser, args, ["absurdctl init"])
+
+    config = config_from_options(options)
+
+    print_verbose_configuration(options.verbose, get_common_db_details(config))
+
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    local_sql_path = os.path.join(script_dir, "sql", "absurd.sql")
+
+    if os.path.exists(local_sql_path):
+        if options.verbose:
+            print(f"Using local SQL file: {local_sql_path}")
+
+        result = run_psql(
+            config,
+            extra_args=["-f", local_sql_path],
+            error_message="Error applying SQL file",
+        )
+    else:
+        if options.verbose:
+            print(f"Local SQL file not found, fetching from: {SQL_URL}")
+        try:
+            with urlopen(SQL_URL) as response:
+                sql_content = response.read().decode("utf-8")
+        except URLError as e:
+            print(f"Error downloading SQL file from GitHub: {e}", file=sys.stderr)
+            sys.exit(1)
+        result = run_psql(
+            config, input_data=sql_content, error_message="Error applying SQL file"
+        )
+
+    if options.verbose and result.stdout:
+        print(result.stdout)
+    print("Absurd schema initialized successfully")
 
 
 def cmd_spawn_task(args):
     """Spawn a new task."""
     usage = "usage: %prog spawn-task [options] TASK_NAME"
-    parser = OptionParser(
-        usage=usage, add_help_option=False, formatter=CleanHelpFormatter()
-    )
-    add_db_options(parser)
+    parser = build_command_parser(usage)
 
-    # Task configuration
     parser.add_option(
         "-q",
         "--queue",
@@ -498,7 +584,6 @@ def cmd_spawn_task(args):
         help="Queue name (default: default)",
     )
 
-    # Parameters and headers
     parser.add_option(
         "-P",
         "--param",
@@ -525,7 +610,6 @@ def cmd_spawn_task(args):
         help="Task header as key=value pair",
     )
 
-    # Retry configuration
     parser.add_option(
         "--max-attempts",
         dest="max_attempts",
@@ -561,7 +645,6 @@ def cmd_spawn_task(args):
         help="Maximum retry delay cap in seconds",
     )
 
-    # Cancellation policy
     parser.add_option(
         "--max-duration",
         dest="max_duration",
@@ -577,29 +660,14 @@ def cmd_spawn_task(args):
         help="Maximum delay before task must start in seconds",
     )
 
-    parser.add_option("--help", action="store_true", help="Show this help message")
+    examples = [
+        "absurdctl spawn-task my-task -P foo=bar -P count:=42",
+        "absurdctl spawn-task my-task -P user.name=Alice -P user.age:=30",
+        'absurdctl spawn-task my-task --params \'{"foo":"bar"}\' -P extra=value',
+        "absurdctl spawn-task my-task -P email=test@example.com -q myqueue --max-attempts 5",
+    ]
 
-    options, args = parser.parse_args(args)
-
-    if options.help:
-        parser.print_help()
-        print("\nExamples:")
-        print("  # Basic task with string parameters")
-        print("  absurdctl spawn-task my-task -P foo=bar -P count:=42")
-        print()
-        print("  # Nested parameters using dotted paths")
-        print("  absurdctl spawn-task my-task -P user.name=Alice -P user.age:=30")
-        print()
-        print("  # Base params with additional overrides")
-        print(
-            '  absurdctl spawn-task my-task --params \'{"foo":"bar"}\' -P extra=value'
-        )
-        print()
-        print("  # Full configuration with queue and retry settings")
-        print(
-            "  absurdctl spawn-task my-task -P email=test@example.com -q myqueue --max-attempts 5"
-        )
-        sys.exit(0)
+    options, args = parse_args_with_help(parser, args, examples)
 
     if len(args) != 1:
         print("Error: Missing required argument TASK_NAME", file=sys.stderr)
@@ -607,12 +675,10 @@ def cmd_spawn_task(args):
         sys.exit(1)
 
     task_name = args[0]
-    config = DatabaseConfig(options.host, options.port, options.user, options.database)
+    config = config_from_options(options)
 
-    # Build params JSON
     params_json = build_json_params(options.params, options.base_params)
 
-    # Build headers JSON if provided
     headers_json = "NULL"
     if options.headers:
         headers_dict = {}
@@ -627,7 +693,6 @@ def cmd_spawn_task(args):
             headers_dict[key] = value
         headers_json = f"'{json.dumps(headers_dict)}'::jsonb"
 
-    # Build retry strategy JSON if options provided
     retry_json = "NULL"
     if (
         options.retry_kind
@@ -644,7 +709,6 @@ def cmd_spawn_task(args):
             retry["maxSeconds"] = options.retry_max
         retry_json = f"'{json.dumps(retry)}'::jsonb"
 
-    # Build cancellation policy JSON if options provided
     cancellation_json = "NULL"
     if options.max_duration or options.max_delay:
         cancellation = {}
@@ -654,29 +718,26 @@ def cmd_spawn_task(args):
             cancellation["maxDelay"] = options.max_delay
         cancellation_json = f"'{json.dumps(cancellation)}'::jsonb"
 
-    # Default queue if not specified
     queue = options.queue or "default"
 
-    # Validate queue exists
-    if not queue_exists(config, queue):
-        print(f"Queue '{queue}' does not exist", file=sys.stderr)
-        sys.exit(1)
+    ensure_queue_exists(config, queue)
 
-    if options.verbose:
-        print(f"Configuration:")
-        print(f"  Task: {task_name}")
-        print(f"  Queue: {queue}")
-        print(f"  Params: {params_json}")
-        if headers_json != "NULL":
-            print(f"  Headers: {headers_json}")
-        if options.max_attempts:
-            print(f"  Max attempts: {options.max_attempts}")
-        if retry_json != "NULL":
-            print(f"  Retry strategy: {retry_json}")
-        if cancellation_json != "NULL":
-            print(f"  Cancellation: {cancellation_json}")
+    details = [
+        ("Task", task_name),
+        ("Queue", queue),
+        ("Params", params_json),
+    ]
+    if headers_json != "NULL":
+        details.append(("Headers", headers_json))
+    if options.max_attempts:
+        details.append(("Max attempts", options.max_attempts))
+    if retry_json != "NULL":
+        details.append(("Retry strategy", retry_json))
+    if cancellation_json != "NULL":
+        details.append(("Cancellation", cancellation_json))
+    details.extend(get_common_db_details(config))
+    print_verbose_configuration(options.verbose, details)
 
-    # Call spawn_task function
     query = f"""
         SELECT task_id, run_id, attempt
         FROM absurd.spawn_task(
@@ -703,11 +764,13 @@ def cmd_spawn_task(args):
 
 
 def show_help():
-    print("""Usage: absurdctl COMMAND [OPTIONS]
+    print(
+        """Usage: absurdctl COMMAND [OPTIONS]
 
 A command-line utility for managing Absurd queues.
 
 Commands:
+  init            Initialize the Absurd schema by applying absurd.sql
   cleanup         Clean up old completed, failed, or cancelled tasks and events
   create-queue    Create a new queue
   drop-queue      Drop an existing queue
@@ -725,12 +788,14 @@ Environment Variables:
   PGPASSWORD      Database password (recommended over command line)
 
 Examples:
+  absurdctl init
   absurdctl cleanup myqueue 30
   absurdctl create-queue myqueue
   absurdctl drop-queue myqueue --yes
   absurdctl list-queues
   absurdctl spawn-task my-task -P foo=bar -P count:=42
-""")
+"""
+    )
 
 
 def main():
@@ -749,6 +814,8 @@ def main():
         cmd_drop_queue(args)
     elif command == "list-queues":
         cmd_list_queues(args)
+    elif command == "init":
+        cmd_init(args)
     elif command == "spawn-task":
         cmd_spawn_task(args)
     else:
