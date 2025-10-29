@@ -79,13 +79,22 @@ the state storage in Postgres again.
 Additionally tasks can *sleep* or *suspend for events*.  Events are cached
 which means that they are race-free.
 
-## Management
+## Getting Started
 
 Absurd comes with two basic tools that help you to work with it.  Once is
 called [`absurdctl`](absurdctl) which allows you to create, drop and list
 queues as well as spawn tasks.  The other is [habitat](habitat) which is
 a Go application that serves up a web UI to show you the current state of
 running and executed tasks.
+
+```bash
+absurdctl init -d database-name
+absurdctl create-queue -d database-name default
+```
+
+Right now there is only a typescript SDK which isn't published, so you
+need to use the SDK from the repository.  You can run `npm run build`
+to get a JS only build or to use the typescript code right away.
 
 ## Example
 
