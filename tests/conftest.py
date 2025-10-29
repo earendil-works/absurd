@@ -250,7 +250,7 @@ class AbsurdTestClient:
             from absurd.{table}
             where task_id = %s
             """
-        ).format(table=self._table("t", queue))
+        ).format(table=self.get_table("t", queue))
         result = self.conn.execute(query, (task_id,))
         return _fetchone_dict(result)
 
@@ -264,7 +264,7 @@ class AbsurdTestClient:
             where task_id = %s
             order by attempt
             """
-        ).format(table=self._table("r", queue))
+        ).format(table=self.get_table("r", queue))
         result = self.conn.execute(query, (task_id,))
         return _fetchall_dicts(result)
 
@@ -277,7 +277,7 @@ class AbsurdTestClient:
             from absurd.{table}
             where run_id = %s
             """
-        ).format(table=self._table("r", queue))
+        ).format(table=self.get_table("r", queue))
         result = self.conn.execute(query, (run_id,))
         return _fetchone_dict(result)
 
@@ -293,13 +293,13 @@ class AbsurdTestClient:
             from absurd.{table}
             where task_id = %s and checkpoint_name = %s
             """
-        ).format(table=self._table("c", queue))
+        ).format(table=self.get_table("c", queue))
         result = self.conn.execute(query, (task_id, step_name))
         return _fetchone_dict(result)
 
     def count_tasks(self, queue):
         query = sql.SQL("select count(*) from absurd.{table}").format(
-            table=self._table("t", queue)
+            table=self.get_table("t", queue)
         )
         result = self.conn.execute(query)
         row = result.fetchone()
@@ -307,7 +307,7 @@ class AbsurdTestClient:
 
     def count_events(self, queue):
         query = sql.SQL("select count(*) from absurd.{table}").format(
-            table=self._table("e", queue)
+            table=self.get_table("e", queue)
         )
         result = self.conn.execute(query)
         row = result.fetchone()
@@ -324,5 +324,5 @@ class AbsurdTestClient:
     def clear_fake_now(self):
         self.conn.execute("set absurd.fake_now = default")
 
-    def _table(self, prefix, queue):
+    def get_table(self, prefix, queue):
         return sql.Identifier(f"{prefix}_{queue}")
