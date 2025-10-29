@@ -88,7 +88,6 @@ async function main() {
       absurd.startWorker({
         workerId: `demo-worker-${idx + 1}`,
         batchSize: 1,
-        pollInterval: 250,
         onError: (error) => {
           console.log("worker loop error", {
             workerId: `demo-worker-${idx + 1}`,

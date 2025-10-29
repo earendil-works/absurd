@@ -527,7 +527,7 @@ export class Absurd {
       workerId = "worker",
       claimTimeout = 120,
       batchSize = 1,
-      pollInterval = 1,
+      pollInterval = 0.25,
       onError = (err) => console.error("Worker error:", err),
     } = options;
 
