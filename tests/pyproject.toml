@@ -1,0 +1,17 @@
+[project]
+name = "absurd-tests"
+version = "0.0.0"
+description = "Test suite for Absurd SQL workflows"
+requires-python = ">=3.10"
+dependencies = [
+  "psycopg[binary]>=3.2.12",
+  "pytest>=8.4.2",
+  "testcontainers[postgres]>=4.13.2",
+]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["."]
+filterwarnings = [
+  "ignore:The @wait_container_is_ready decorator is deprecated:DeprecationWarning:testcontainers",
+]
