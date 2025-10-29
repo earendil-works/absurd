@@ -38,7 +38,7 @@ absurd.registerTask(
               description: "Get the current weather in a given location",
               inputSchema: z.object({
                 location: z.string(),
-              }),
+              }) as any,
             }),
           },
         });
@@ -49,21 +49,31 @@ absurd.registerTask(
         if (finishReason === "tool-calls") {
           const toolCalls = await result.toolCalls;
 
-          // Handle all tool call execution here
-          for (const toolCall of toolCalls) {
-            if (toolCall.toolName === "getWeather") {
-              const toolOutput = await getWeather(toolCall.input as any);
-              newMessages.push({
-                role: "tool",
-                content: [
-                  {
-                    toolName: toolCall.toolName,
-                    toolCallId: toolCall.toolCallId,
-                    type: "tool-result",
-                    output: { type: "text", value: toolOutput },
-                  },
-                ],
-              });
+          // Execute all tool calls in parallel
+          const toolResults = await Promise.all(
+            toolCalls.map(async (toolCall) => {
+              if (toolCall.toolName === "getWeather") {
+                const toolOutput = await getWeather(toolCall.input as any);
+                return {
+                  role: "tool" as const,
+                  content: [
+                    {
+                      toolName: toolCall.toolName,
+                      toolCallId: toolCall.toolCallId,
+                      type: "tool-result" as const,
+                      output: { type: "text" as const, value: toolOutput },
+                    },
+                  ],
+                };
+              }
+              return null;
+            }),
+          );
+
+          // Add all tool results to messages
+          for (const result of toolResults) {
+            if (result !== null) {
+              newMessages.push(result);
             }
           }
         }
@@ -83,11 +93,11 @@ absurd.registerTask(
 async function main() {
   await absurd.createQueue();
 
-  const workerShutdowns = await Promise.all(
+  const workers = await Promise.all(
     Array.from({ length: 2 }, (_, idx) =>
       absurd.startWorker({
         workerId: `demo-worker-${idx + 1}`,
-        batchSize: 1,
+        concurrency: 2,
         onError: (error) => {
           console.log("worker loop error", {
             workerId: `demo-worker-${idx + 1}`,
@@ -104,8 +114,8 @@ async function main() {
 
   await sleep(10000);
 
-  for (const shutdown of workerShutdowns) {
-    await shutdown();
+  for (const worker of workers) {
+    await worker.close();
   }
 }
 

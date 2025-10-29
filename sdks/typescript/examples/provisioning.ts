@@ -6,6 +6,7 @@
  * Environment:
  *   ABSURD_WORKERS    - Number of worker loops to start (default: 3)
  *   ABSURD_RUNTIME    - Worker lifetime before shutdown in seconds (default: 20)
+ *   SPAWN_CONCURRENCY - Max concurrent task spawns (default: 3)
  */
 import crypto from "node:crypto";
 import process from "node:process";
@@ -334,9 +335,11 @@ function registerTasks(absurd: Absurd) {
 async function main() {
   const workerCount = Number(process.env.ABSURD_WORKERS ?? "6");
   const runtime = Number(process.env.ABSURD_RUNTIME ?? "15");
+  const spawnConcurrency = Number(process.env.SPAWN_CONCURRENCY ?? "3");
 
   log("main", "connecting to absurd queue", {
     workers: workerCount,
+    spawnConcurrency,
   });
 
   const absurd = new Absurd();
@@ -346,56 +349,64 @@ async function main() {
 
   registerTasks(absurd);
 
-  const workerShutdowns = await Promise.all(
-    Array.from({ length: workerCount }, (_, idx) =>
-      absurd.startWorker({
-        workerId: `demo-worker-${idx + 1}`,
-        batchSize: 1,
-        onError: (error) => {
-          log("worker", "worker loop error", {
-            workerId: `demo-worker-${idx + 1}`,
-            error: error.message,
-          });
-        },
-      }),
-    ),
-  );
+  const worker = await absurd.startWorker({
+    workerId: "demo-worker",
+    concurrency: workerCount,
+    onError: (error) => {
+      log("worker", "worker loop error", {
+        workerId: "demo-worker",
+        error: error.message,
+      });
+    },
+  });
 
-  const pendingTasks = [];
-  for (let i = 0; i < 12; i++) {
-    const params: ProvisionCustomerParams = {
+  // Generate all task parameters upfront
+  const taskParams: ProvisionCustomerParams[] = Array.from(
+    { length: 12 },
+    () => ({
       customerId: crypto.randomUUID(),
       email: `${crypto.randomUUID()}@example.com`,
       plan: Math.random() > 0.5 ? "pro" : "basic",
-    };
+    }),
+  );
 
-    pendingTasks.push(
-      (async () => {
-        const { taskID, runID } = await absurd.spawn(
-          "provision-customer",
-          params,
-          {
-            maxAttempts: 3,
-          },
-        );
-        log("main", "spawned provisioning workflow", {
-          taskId: taskID,
-          runId: runID,
-          customerId: params.customerId,
-        });
-      })(),
+  // Spawn tasks with controlled concurrency using SDK pattern
+  const executing = new Set<Promise<void>>();
+  for (const params of taskParams) {
+    const promise = (async () => {
+      const { taskID, runID } = await absurd.spawn(
+        "provision-customer",
+        params,
+        {
+          maxAttempts: 3,
+        },
+      );
+      log("main", "spawned provisioning workflow", {
+        taskId: taskID,
+        runId: runID,
+        customerId: params.customerId,
+      });
+    })();
+
+    const trackedPromise = promise.finally(() =>
+      executing.delete(trackedPromise),
     );
+    executing.add(trackedPromise);
+
+    // Wait for one to finish if we've reached the concurrency limit
+    if (executing.size >= spawnConcurrency) {
+      await Promise.race(executing);
+    }
   }
 
-  await Promise.all(pendingTasks);
+  // Wait for all remaining spawns to complete
+  await Promise.all(executing);
 
-  log("main", "workers running", { runtime });
+  log("main", "worker running", { runtime, concurrency: workerCount });
   await sleep(runtime * 1000);
 
-  log("main", "shutting down workers");
-  for (const shutdown of workerShutdowns) {
-    await shutdown();
-  }
+  log("main", "shutting down worker");
+  await worker.close();
 
   await absurd.close();
   log("main", "example finished");

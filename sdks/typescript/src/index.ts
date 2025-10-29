@@ -32,7 +32,7 @@ export interface SpawnOptions {
   cancellation?: CancellationPolicy;
 }
 
-export interface ClaimedMessage {
+export interface ClaimedTask {
   run_id: string;
   task_id: string;
   task_name: string;
@@ -49,8 +49,13 @@ export interface WorkerOptions {
   workerId?: string;
   claimTimeout?: number;
   batchSize?: number;
+  concurrency?: number;
   pollInterval?: number;
   onError?: (error: Error) => void;
+}
+
+export interface Worker {
+  close(): Promise<void>;
 }
 
 interface CheckpointRow {
@@ -115,7 +120,7 @@ export class TaskContext {
     readonly taskID: string,
     private readonly pool: pg.Pool,
     private readonly queueName: string,
-    private readonly message: ClaimedMessage,
+    private readonly task: ClaimedTask,
     private readonly checkpointCache: Map<string, JsonValue>,
     private readonly claimTimeout: number,
   ) {}
@@ -124,27 +129,20 @@ export class TaskContext {
     taskID: string;
     pool: pg.Pool;
     queueName: string;
-    message: ClaimedMessage;
+    task: ClaimedTask;
     claimTimeout: number;
   }): Promise<TaskContext> {
-    const { taskID, pool, queueName, message, claimTimeout } = args;
+    const { taskID, pool, queueName, task, claimTimeout } = args;
     const result = await pool.query<CheckpointRow>(
       `SELECT checkpoint_name, state, status, owner_run_id, updated_at
        FROM absurd.get_task_checkpoint_states($1, $2, $3)`,
-      [queueName, message.task_id, message.run_id],
+      [queueName, task.task_id, task.run_id],
     );
     const cache = new Map<string, JsonValue>();
     for (const row of result.rows) {
       cache.set(row.checkpoint_name, row.state);
     }
-    return new TaskContext(
-      taskID,
-      pool,
-      queueName,
-      message,
-      cache,
-      claimTimeout,
-    );
+    return new TaskContext(taskID, pool, queueName, task, cache, claimTimeout);
   }
 
   /**
@@ -213,7 +211,7 @@ export class TaskContext {
     const result = await this.pool.query<CheckpointRow>(
       `SELECT checkpoint_name, state, status, owner_run_id, updated_at
        FROM absurd.get_task_checkpoint_state($1, $2, $3)`,
-      [this.queueName, this.message.task_id, checkpointName],
+      [this.queueName, this.task.task_id, checkpointName],
     );
     if (result.rows.length > 0) {
       const state = result.rows[0].state;
@@ -231,10 +229,10 @@ export class TaskContext {
       `SELECT absurd.set_task_checkpoint_state($1, $2, $3, $4, $5, $6)`,
       [
         this.queueName,
-        this.message.task_id,
+        this.task.task_id,
         checkpointName,
         JSON.stringify(value),
-        this.message.run_id,
+        this.task.run_id,
         this.claimTimeout,
       ],
     );
@@ -244,7 +242,7 @@ export class TaskContext {
   private async scheduleRun(wakeAt: Date): Promise<void> {
     await this.pool.query(`SELECT absurd.schedule_run($1, $2, $3)`, [
       this.queueName,
-      this.message.run_id,
+      this.task.run_id,
       wakeAt,
     ]);
   }
@@ -273,12 +271,12 @@ export class TaskContext {
       return cached as JsonValue;
     }
     if (
-      this.message.wake_event === eventName &&
-      (this.message.event_payload === null ||
-        this.message.event_payload === undefined)
+      this.task.wake_event === eventName &&
+      (this.task.event_payload === null ||
+        this.task.event_payload === undefined)
     ) {
-      this.message.wake_event = null;
-      this.message.event_payload = null;
+      this.task.wake_event = null;
+      this.task.event_payload = null;
       throw new TimeoutError(`Timed out waiting for event "${eventName}"`);
     }
     const result = await this.pool.query<{
@@ -289,8 +287,8 @@ export class TaskContext {
        FROM absurd.await_event($1, $2, $3, $4, $5, $6)`,
       [
         this.queueName,
-        this.message.task_id,
-        this.message.run_id,
+        this.task.task_id,
+        this.task.run_id,
         checkpointName,
         eventName,
         timeout,
@@ -305,7 +303,7 @@ export class TaskContext {
 
     if (!should_suspend) {
       this.checkpointCache.set(checkpointName, payload);
-      this.message.event_payload = null;
+      this.task.event_payload = null;
       return payload;
     }
 
@@ -329,7 +327,7 @@ export class TaskContext {
   async complete(result?: any): Promise<void> {
     await this.pool.query(`SELECT absurd.complete_run($1, $2, $3)`, [
       this.queueName,
-      this.message.run_id,
+      this.task.run_id,
       JSON.stringify(result ?? null),
     ]);
   }
@@ -338,7 +336,7 @@ export class TaskContext {
     console.error("[absurd] task execution failed:", err);
     await this.pool.query(`SELECT absurd.fail_run($1, $2, $3, $4)`, [
       this.queueName,
-      this.message.run_id,
+      this.task.run_id,
       JSON.stringify(serializeError(err)),
       null,
     ]);
@@ -350,7 +348,7 @@ export class Absurd {
   private readonly ownedPool: boolean;
   private readonly queueName: string;
   private readonly registry = new Map<string, RegisteredTask>();
-  private workerShutdown: (() => void) | null = null;
+  private worker: Worker | null = null;
 
   constructor(
     poolOrUrl?: pg.Pool | string | null,
@@ -505,58 +503,106 @@ export class Absurd {
     ]);
   }
 
-  async workOnce(
+  async claimTasks(options?: {
+    batchSize?: number;
+    claimTimeout?: number;
+    workerId?: string;
+  }): Promise<ClaimedTask[]> {
+    const {
+      batchSize: count = 1,
+      claimTimeout = 120,
+      workerId = "worker",
+    } = options ?? {};
+
+    const result = await this.pool.query<ClaimedTask>(
+      `SELECT run_id, task_id, attempt, task_name, params, retry_strategy, max_attempts,
+              headers, wake_event, event_payload
+       FROM absurd.claim_task($1, $2, $3, $4)`,
+      [this.queueName, workerId, claimTimeout, count],
+    );
+
+    return result.rows;
+  }
+
+  /**
+   * Polls and processes a batch of messages sequentially.
+   * For parallel processing, use startWorker with concurrency option.
+   */
+  async workBatch(
     workerId: string = "worker",
     claimTimeout: number = 120,
     batchSize: number = 1,
   ): Promise<void> {
-    const result = await this.pool.query<ClaimedMessage>(
-      `SELECT run_id, task_id, attempt, task_name, params, retry_strategy, max_attempts,
-              headers, wake_event, event_payload
-       FROM absurd.claim_task($1, $2, $3, $4)`,
-      [this.queueName, workerId, claimTimeout, batchSize],
-    );
+    const tasks = await this.claimTasks({ batchSize, claimTimeout, workerId });
 
-    for (const msg of result.rows) {
-      await this.executeMessage(msg, claimTimeout);
+    for (const task of tasks) {
+      await this.executeTask(task, claimTimeout);
     }
   }
 
-  async startWorker(options: WorkerOptions = {}): Promise<() => Promise<void>> {
+  /**
+   * Starts a worker that continuously polls for tasks and processes them.
+   * Returns a Worker instance with a close() method for graceful shutdown.
+   */
+  async startWorker(options: WorkerOptions = {}): Promise<Worker> {
     const {
       workerId = "worker",
       claimTimeout = 120,
-      batchSize = 1,
+      concurrency = 1,
+      batchSize,
       pollInterval = 0.25,
       onError = (err) => console.error("Worker error:", err),
     } = options;
-
+    const effectiveBatchSize = batchSize ?? concurrency;
     let running = true;
+    let workerLoopPromise: Promise<void>;
 
-    const shutdown = async () => {
-      running = false;
+    const worker: Worker = {
+      close: async () => {
+        running = false;
+        await workerLoopPromise;
+      },
     };
 
-    this.workerShutdown = shutdown;
-
-    // Start worker loop
-    (async () => {
+    this.worker = worker;
+    workerLoopPromise = (async () => {
       while (running) {
         try {
-          await this.workOnce(workerId, claimTimeout, batchSize);
+          const messages = await this.claimTasks({
+            batchSize: effectiveBatchSize,
+            claimTimeout: claimTimeout,
+            workerId,
+          });
+
+          if (messages.length === 0) {
+            await sleep(pollInterval);
+            continue;
+          }
+
+          const executing = new Set<Promise<void>>();
+          for (const task of messages) {
+            const promise = this.executeTask(task, claimTimeout)
+              .catch((err) => onError(err as Error))
+              .finally(() => executing.delete(promise));
+            executing.add(promise);
+            if (executing.size >= concurrency) {
+              await Promise.race(executing);
+            }
+          }
+          await Promise.all(executing);
         } catch (err) {
           onError(err as Error);
+          await sleep(pollInterval);
         }
-        await sleep(pollInterval * 1000);
       }
     })();
 
-    return shutdown;
+    return worker;
   }
 
   async close(): Promise<void> {
-    if (this.workerShutdown) {
-      await this.workerShutdown();
+    if (this.worker) {
+      await this.worker.close();
     }
 
     if (this.ownedPool) {
@@ -564,16 +610,16 @@ export class Absurd {
     }
   }
 
-  private async executeMessage(
-    msg: ClaimedMessage,
+  private async executeTask(
+    task: ClaimedTask,
     claimTimeout: number,
   ): Promise<void> {
-    const registration = this.registry.get(msg.task_name);
+    const registration = this.registry.get(task.task_name);
     const ctx = await TaskContext.create({
-      taskID: msg.task_id,
+      taskID: task.task_id,
       pool: this.pool,
       queueName: registration?.queue ?? "unknown",
-      message: msg,
+      task: task,
       claimTimeout,
     });
 
@@ -583,7 +629,7 @@ export class Absurd {
       } else if (registration.queue !== this.queueName) {
         throw new Error("Misconfigured task (queue mismatch)");
       }
-      const result = await registration.handler(msg.params, ctx);
+      const result = await registration.handler(task.params, ctx);
       await ctx.complete(result);
     } catch (err) {
       if (err instanceof SuspendTask) {
@@ -657,5 +703,5 @@ function normalizeCancellation(
 }
 
 async function sleep(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+  return new Promise((resolve) => setTimeout(resolve, ms * 1000));
 }
