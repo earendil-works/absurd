@@ -5,7 +5,7 @@
 
 # Absurd
 
-Absurd is the most simple durable execution workflow system you can think of.
+Absurd is the simplest durable execution workflow system you can think of.
 It's entirely based on Postgres and nothing else.  It's almost as easy to use as
 a queue, but it handles scheduling and retries, and it does all of that without
 needing any other services to run in addition to Postgres.
@@ -13,7 +13,7 @@ needing any other services to run in addition to Postgres.
 *… because it's absurd how much you can over-design such a simple thing.*
 
 **Warning:** *this is an early experiment and should not be used in production.
-It's an exploration of if such a system can be built in a way that the majority
+It's an exploration of whether such a system can be built in a way that the majority
 of the complexity sits with the database and not the client SDKs.*
 
 ## What is Durable Execution?
@@ -25,12 +25,12 @@ of a queue system and a state store that remembers the most recently seen state.
 
 Instead of running your logic in memory, a durable execution system decomposes
 a task into smaller pieces (step functions) and records every step and decision.
-When the process stops (fails, intentionally suspends or a machine dies), the
+When the process stops (fails, intentionally suspends, or a machine dies), the
 engine can replay those events to restore the exact state and continue where it
 left off, as if nothing happened.
 
 In practice, that makes it possible to build dependable systems for things like
-LLM based agents, payments, email scheduling, order processing, really anything
+LLM-based agents, payments, email scheduling, order processing--really anything
 that spans minutes, days, or even years.  Rather than bolting on ad-hoc retry
 logic and database checkpoints, durable workflows give you one consistent model
 for ensuring progress without double execution.  It's the promise of
@@ -48,23 +48,23 @@ might want to look at if you think you need more:
   OG of durable execution systems.  It was built at Uber and has inspired many
   systems since.
 * [Temporal](https://temporal.io/) was built by the Cadence authors to be a
-  more modern interpreation of it.  What sets it apart, is that it takes strong
+  more modern interpretation of it.  What sets it apart is that it takes strong
   control of the runtime environment within the target language to help you build
   deterministic workflows.
-* [Inngest](https://www.inngest.com/) is an event driven workflow system.  It's
-  self hostable and can run locally, but it's licensed under a fair-source
-  inspired license.
+* [Inngest](https://www.inngest.com/) is an event-driven workflow system.  It's
+  self-hostable and can run locally, but it's licensed under a fair-source-inspired
+  license.
 
 ## Push vs Pull
 
-Absurd is a pull based system which means that your code pulls tasks from
+Absurd is a pull-based system, which means that your code pulls tasks from
 Postgres as it has capacity.  It does not support push at all, which would
 require a coordinator to run and call HTTP endpoints or similar.  Push systems
 have the inherent disadvantage that you need to take greater care of system load
 constraints.  If you need this, you can write yourself a simple service that
 consumes messages and makes HTTP requests.
 
-## Highlevel Operations
+## High-Level Operations
 
 Absurd's goal is to move the complexity of SDKs into the underlying stored
 functions.  The goal of the SDKs is that they make the system convenient by
@@ -72,20 +72,20 @@ abstracting the low-level operations in a way that leverages the ergonomics
 of the language you are working with.
 
 A *task* dispatches onto a given *queue* from where a *worker* picks it up
-to work on.  Tasks are subdivided into *steps* which are excuted in sequence
-by the worker.  Tasks can be suspended or fail, and when that happens they
+to work on.  Tasks are subdivided into *steps*, which are executed in sequence
+by the worker.  Tasks can be suspended or fail, and when that happens, they
 execute again (a *run*).  The result of a step is stored in the database (a
 *checkpoint*).  To not repeat work, checkpoints are automatically loaded from
 the state storage in Postgres again.
 
-Additionally tasks can *sleep* or *suspend for events*.  Events are cached
-which means that they are race-free.
+Additionally, tasks can *sleep* or *suspend for events*.  Events are cached,
+which means they are race-free.
 
-## Getting Started
+## Components
 
-Absurd comes with two basic tools that help you to work with it.  Once is
-called [`absurdctl`](absurdctl) which allows you to create, drop and list
-queues as well as spawn tasks.  The other is [habitat](habitat) which is
+Absurd comes with two basic tools that help you work with it.  One is
+called [`absurdctl`](absurdctl) which allows you to create, drop, and list
+queues, as well as spawn tasks.  The other is [habitat](habitat) which is
 a Go application that serves up a web UI to show you the current state of
 running and executed tasks.
 
@@ -94,13 +94,17 @@ absurdctl init -d database-name
 absurdctl create-queue -d database-name default
 ```
 
-Right now there is only a typescript SDK which isn't published, so you
+Right now, there is only a TypeScript SDK, which isn't published yet, so you
 need to use the SDK from the repository.  You can run `npm run build`
-to get a JS only build or to use the typescript code right away.
+to get a JS-only build or use the TypeScript code right away.
+
+<div style="text-align: center" align="center">
+  <img src="habitat/screenshot.png" width="550" alt="Screenshot of habitat">
+</div>
 
 ## Example
 
-This demonstrates this for TypeScript.
+Here's what that looks like in TypeScript.
 
 ```typescript
 import { Absurd } from 'absurd';
@@ -108,16 +112,16 @@ import { Absurd } from 'absurd';
 const app = new Absurd();
 
 // A task represents a series of operations.  It can be decomposed into
-// steps which act as checkpoints.  Once a step has been passed
-// successfully the return value is retained and it won't execute again.
-// if it fails, the entire task is retried.  Code that runs outside of
+// steps, which act as checkpoints.  Once a step has been passed
+// successfully, the return value is retained and it won't execute again.
+// If it fails, the entire task is retried.  Code that runs outside of
 // steps will potentially be executed multiple times.
 app.registerTask({ name: 'order-fulfillment' }, async (params, ctx) => {
 
-  // Each step is checkpointed - if the process crashes, we resume
+  // Each step is checkpointed, so if the process crashes, we resume
   // from the last completed step
   const payment = await ctx.step('process-payment', async () => {
-    // if you need an idempotency-key you can derive one from ctx.taskID.
+    // If you need an idempotency key, you can derive one from ctx.taskID.
     return await stripe.charges.create({ amount: params.amount, ... });
   });
 
@@ -126,11 +130,11 @@ app.registerTask({ name: 'order-fulfillment' }, async (params, ctx) => {
   });
 
   // Wait indefinitely for a warehouse event - the task suspends
-  // until the event arrives.  Events are cached like step checkpoints
-  // which means that this is race-free.
+  // until the event arrives.  Events are cached like step checkpoints,
+  // which means this is race-free.
   const shipment = await ctx.awaitEvent(`shipment.packed:${params.orderId}`);
 
-  // ready to send a notification!
+  // Ready to send a notification!
   await ctx.step('send-notification', async () => {
     return await sendEmail(params.email, shipment);
   });
@@ -165,10 +169,10 @@ app.spawn('order-fulfillment', {
 ## Idempotency Keys
 
 Because steps have their return values cached, for all intents and purposes
-they simulate "exact-once" semantics.  However, all the code outside of steps
+they simulate "exactly-once" semantics.  However, all the code outside of steps
 will run multiple times.  Sometimes you want to integrate into systems that
 themselves have some sort of idempotency mechanism (like the `idempotency-key`
-HTTP header).  In that case it's recommended to use use `taskID` from the
+HTTP header).  In that case, it's recommended to use `taskID` from the
 context to derive one:
 
 ```typescript
@@ -186,7 +190,7 @@ const payment = await ctx.step('process-payment', async () => {
 One of the fun perks of working with durable execution systems is that your
 tasks might keep running for... well, geological timescales.  The codebase
 evolves but that workflow you kicked off six months ago?  If you sleep long
-enough that is still ticking.  There's no magic fix for this, just awareness.
+enough, that is still ticking.  There's no magic fix for this, just awareness.
 
 In practice, it means that if you change what a step returns, some future code
 might suddenly receive old results from a bygone era.  That's part of the
@@ -197,13 +201,25 @@ deal.  So what can you do? Two options:
 
 Both work. The first is cleaner, the second is braver.
 
+## Retries
+
+Unlike some other durable execution systems, Absurd only knows about tasks. Tasks
+are the unit that gets retried, and they happen to be composed of steps that act
+as checkpoints. Retries therefore happen at the task level. When a worker starts
+on a task it "claims" it, reserving the task for a configured duration. Each time
+the task stores a checkpoint, the claim is extended. If the worker crashes or does
+not make progress before the claim times out, the task resets and is handed to
+another worker. This overlap can lead to two workers running the same task, so
+write tasks so they always make observable progress well inside the claim timeout,
+with ample headroom.
+
 ## Cleanup
 
-By default data will live forever which is unlikely to be what you want.  Currently
-there is no support for time based partitioning.  To get rid of data you can run
+By default, data will live forever, which is unlikely to be what you want.  Currently,
+there is no support for time-based partitioning.  To get rid of data, you can run
 the cleanup functions (`absurd.cleanup_tasks` and `absurd.cleanup_events`)
 manually or use the `absurdctl cleanup` command which lets you define a queue name
-and a TTL in days.  For instance the following command deletes runs older than 7
+and a TTL in days.  For instance, the following command deletes runs older than 7
 days on the default queue:
 
 ```
@@ -213,10 +229,10 @@ absurdctl cleanup default 7
 ## Working With Agents
 
 Absurd is built so that agents such as Claude Code can efficiently work with the
-state in the database.  You can either point them straight at postgres and hope
-that they pry the information out, but the better ideas is to make `absurdctl`
-available on `PATH` and to give them some ideas of what to do with it.  `absurdctl`
-can output some agent specific help that you can put into your `AGENTS.md` /
+state in the database.  You can either point them straight at Postgres and hope
+that they pry the information out, but the better idea is to make `absurdctl`
+available on `PATH` and give them some ideas of what to do with it.  `absurdctl`
+can output some agent-specific help that you can put into your `AGENTS.md` /
 `CLAUDE.md` files:
 
 ```
