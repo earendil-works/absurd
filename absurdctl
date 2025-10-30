@@ -789,9 +789,9 @@ def format_json_value(value, indent=0):
         lines.append(f"{error_info['name']}")
         lines.append(f"\nMessage:")
         lines.append(f"  {error_info['message']}")
-        if error_info['stack']:
+        if error_info["stack"]:
             lines.append(f"\nStack trace:")
-            for line in error_info['stack'].split('\n'):
+            for line in error_info["stack"].split("\n"):
                 lines.append(f"  {line}")
         return "\n".join(lines)
 
@@ -805,10 +805,204 @@ def format_timestamp(ts_str):
         return "—"
     try:
         from datetime import datetime
-        dt = datetime.fromisoformat(ts_str.replace('Z', '+00:00'))
+
+        dt = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
         return dt.strftime("%b %d, %Y %I:%M:%S %p")
     except:
         return ts_str
+
+
+def format_age(timestamp_str):
+    """Format a timestamp as a relative age (e.g., '2h ago', '3d ago')."""
+    if not timestamp_str:
+        return "—"
+    try:
+        from datetime import datetime, timezone
+
+        dt = datetime.fromisoformat(timestamp_str.replace("Z", "+00:00"))
+        now = datetime.now(timezone.utc)
+        delta = now - dt
+
+        seconds = delta.total_seconds()
+        if seconds < 60:
+            return f"{int(seconds)}s ago"
+        elif seconds < 3600:
+            return f"{int(seconds / 60)}m ago"
+        elif seconds < 86400:
+            return f"{int(seconds / 3600)}h ago"
+        elif seconds < 604800:
+            return f"{int(seconds / 86400)}d ago"
+        else:
+            return f"{int(seconds / 604800)}w ago"
+    except:
+        return timestamp_str
+
+
+def cmd_list_tasks(args):
+    """List tasks across queues with filtering options."""
+    usage = "usage: %prog list-tasks [options]"
+    parser = build_command_parser(usage)
+    parser.add_option(
+        "-q",
+        "--queue",
+        dest="queue",
+        metavar="NAME",
+        help="Filter by queue name",
+    )
+    parser.add_option(
+        "-n",
+        "--task-name",
+        dest="task_name",
+        metavar="NAME",
+        help="Filter by task name (exact match)",
+    )
+    parser.add_option(
+        "-s",
+        "--status",
+        dest="status",
+        metavar="STATUS",
+        help="Filter by status (pending, running, sleeping, completed, failed, cancelled)",
+    )
+    parser.add_option(
+        "-l",
+        "--limit",
+        dest="limit",
+        type="int",
+        default=50,
+        metavar="N",
+        help="Maximum number of tasks to display (default: 50)",
+    )
+
+    examples = [
+        "absurdctl list-tasks",
+        "absurdctl list-tasks --queue=default",
+        "absurdctl list-tasks --status=failed",
+        "absurdctl list-tasks --task-name=my-task --queue=default",
+        "absurdctl list-tasks --limit=100",
+    ]
+
+    options, args = parse_args_with_help(parser, args, examples)
+
+    config = config_from_options(options)
+
+    # Validate status if provided
+    valid_statuses = [
+        "pending",
+        "running",
+        "sleeping",
+        "completed",
+        "failed",
+        "cancelled",
+    ]
+    if options.status and options.status not in valid_statuses:
+        print(
+            f"Error: Invalid status '{options.status}'. Must be one of: {', '.join(valid_statuses)}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    # Get list of queues
+    queues_result = run_psql(
+        config,
+        "SELECT queue_name FROM absurd.queues;",
+        tuples_only=True,
+        no_align=True,
+    )
+
+    if not queues_result:
+        print("No queues found in the database", file=sys.stderr)
+        sys.exit(0)
+
+    queues = [q for q in queues_result.strip().split("\n") if q]
+
+    # Filter to specific queue if requested
+    if options.queue:
+        if options.queue not in queues:
+            print(f"Queue '{options.queue}' does not exist", file=sys.stderr)
+            sys.exit(1)
+        queues = [options.queue]
+
+    # Build query for each queue and collect results
+    all_tasks = []
+
+    for queue in queues:
+        # Build WHERE clause based on filters
+        where_clauses = []
+        if options.task_name:
+            where_clauses.append(f"t.task_name = '{options.task_name}'")
+        if options.status:
+            where_clauses.append(f"t.state = '{options.status}'")
+
+        where_clause = ""
+        if where_clauses:
+            where_clause = "WHERE " + " AND ".join(where_clauses)
+
+        query = f"""
+            SELECT
+                t.task_id,
+                r.run_id,
+                t.task_name,
+                '{queue}' as queue_name,
+                t.state,
+                r.attempt,
+                t.max_attempts,
+                COALESCE(r.completed_at, r.failed_at, r.started_at, r.created_at) AS updated_at
+            FROM absurd.t_{queue} t
+            LEFT JOIN absurd.r_{queue} r ON r.run_id = t.last_attempt_run
+            {where_clause}
+            ORDER BY updated_at DESC
+            LIMIT {options.limit}
+        """
+
+        result = run_psql(
+            config,
+            query,
+            tuples_only=True,
+            no_align=True,
+        )
+
+        if result:
+            for line in result.strip().split("\n"):
+                parts = line.split("|")
+                if len(parts) >= 8:
+                    all_tasks.append(
+                        {
+                            "task_id": parts[0],
+                            "run_id": parts[1] if parts[1] else "—",
+                            "task_name": parts[2],
+                            "queue": parts[3],
+                            "status": parts[4],
+                            "attempt": parts[5],
+                            "max_attempts": parts[6] if parts[6] else "∞",
+                            "updated_at": parts[7],
+                        }
+                    )
+
+    # Sort all tasks by updated_at descending
+    all_tasks.sort(key=lambda x: x["updated_at"], reverse=True)
+
+    # Apply global limit
+    all_tasks = all_tasks[: options.limit]
+
+    if not all_tasks:
+        print("No tasks found")
+        return
+
+    # Print tasks with full identifiers on two lines for easier copying.
+    for task in all_tasks:
+        attempts = f"{task['attempt']}/{task['max_attempts']}"
+        age = format_age(task["updated_at"])
+        print(f"task_id={task['task_id']}")
+        print(f"  run_id={task['run_id']}")
+        print(f"  attempts={attempts}")
+        print(f"  age={age}")
+        print(f"  queue={task['queue']}")
+        print(f"  task_name={task['task_name']}")
+        print(f"  status={task['status']}")
+        print()
+
+    print()
+    print(f"Total: {len(all_tasks)} task(s)")
 
 
 def cmd_dump_task(args):
@@ -859,7 +1053,7 @@ def cmd_dump_task(args):
         print("No queues found in the database", file=sys.stderr)
         sys.exit(1)
 
-    queues = [q for q in queues_result.strip().split('\n') if q]
+    queues = [q for q in queues_result.strip().split("\n") if q]
 
     # Find which queue contains the task/run
     target_queue = None
@@ -966,27 +1160,27 @@ def cmd_dump_task(args):
 
     # Parse runs
     runs = []
-    for line in runs_result.strip().split('\n'):
-        parts = line.split('|')
+    for line in runs_result.strip().split("\n"):
+        parts = line.split("|")
         if len(parts) >= 17:
             run = {
-                'task_id': parts[0],
-                'run_id': parts[1],
-                'task_name': parts[2],
-                'task_state': parts[3],
-                'run_state': parts[4],
-                'attempt': parts[5],
-                'max_attempts': parts[6] if parts[6] else None,
-                'params': json.loads(parts[7]) if parts[7] else None,
-                'retry_strategy': json.loads(parts[8]) if parts[8] else None,
-                'headers': json.loads(parts[9]) if parts[9] else None,
-                'final_state': json.loads(parts[10]) if parts[10] else None,
-                'created_at': parts[11],
-                'started_at': parts[12],
-                'completed_at': parts[13],
-                'failed_at': parts[14],
-                'cancelled_at': parts[15],
-                'updated_at': parts[16],
+                "task_id": parts[0],
+                "run_id": parts[1],
+                "task_name": parts[2],
+                "task_state": parts[3],
+                "run_state": parts[4],
+                "attempt": parts[5],
+                "max_attempts": parts[6] if parts[6] else None,
+                "params": json.loads(parts[7]) if parts[7] else None,
+                "retry_strategy": json.loads(parts[8]) if parts[8] else None,
+                "headers": json.loads(parts[9]) if parts[9] else None,
+                "final_state": json.loads(parts[10]) if parts[10] else None,
+                "created_at": parts[11],
+                "started_at": parts[12],
+                "completed_at": parts[13],
+                "failed_at": parts[14],
+                "cancelled_at": parts[15],
+                "updated_at": parts[16],
             }
             runs.append(run)
 
@@ -1014,18 +1208,20 @@ def cmd_dump_task(args):
 
         checkpoints = []
         if checkpoints_result:
-            for line in checkpoints_result.strip().split('\n'):
-                parts = line.split('|')
+            for line in checkpoints_result.strip().split("\n"):
+                parts = line.split("|")
                 if len(parts) >= 5:
-                    checkpoints.append({
-                        'name': parts[0],
-                        'state': json.loads(parts[1]) if parts[1] else None,
-                        'status': parts[2],
-                        'owner_run_id': parts[3],
-                        'updated_at': parts[4],
-                    })
+                    checkpoints.append(
+                        {
+                            "name": parts[0],
+                            "state": json.loads(parts[1]) if parts[1] else None,
+                            "status": parts[2],
+                            "owner_run_id": parts[3],
+                            "updated_at": parts[4],
+                        }
+                    )
 
-        run['checkpoints'] = checkpoints
+        run["checkpoints"] = checkpoints
 
         # Fetch wait states
         waits_query = f"""
@@ -1057,21 +1253,23 @@ def cmd_dump_task(args):
 
         waits = []
         if waits_result:
-            for line in waits_result.strip().split('\n'):
-                parts = line.split('|')
+            for line in waits_result.strip().split("\n"):
+                parts = line.split("|")
                 if len(parts) >= 8 and parts[0]:
-                    waits.append({
-                        'wait_type': parts[0],
-                        'wake_at': parts[1],
-                        'wake_event': parts[2] if parts[2] else None,
-                        'step_name': parts[3] if parts[3] else None,
-                        'payload': json.loads(parts[4]) if parts[4] else None,
-                        'event_payload': json.loads(parts[5]) if parts[5] else None,
-                        'emitted_at': parts[6] if parts[6] else None,
-                        'updated_at': parts[7],
-                    })
+                    waits.append(
+                        {
+                            "wait_type": parts[0],
+                            "wake_at": parts[1],
+                            "wake_event": parts[2] if parts[2] else None,
+                            "step_name": parts[3] if parts[3] else None,
+                            "payload": json.loads(parts[4]) if parts[4] else None,
+                            "event_payload": json.loads(parts[5]) if parts[5] else None,
+                            "emitted_at": parts[6] if parts[6] else None,
+                            "updated_at": parts[7],
+                        }
+                    )
 
-        run['waits'] = waits
+        run["waits"] = waits
 
     # Now output the results
     print("=" * 80)
@@ -1096,83 +1294,119 @@ def cmd_dump_task(args):
         print(f"TIMING")
         print(f"  Created:           {format_timestamp(run['created_at'])}")
         print(f"  Updated:           {format_timestamp(run['updated_at'])}")
-        if run['started_at']:
+        if run["started_at"]:
             print(f"  Started:           {format_timestamp(run['started_at'])}")
-        if run['completed_at']:
+        if run["completed_at"]:
             print(f"  Completed:         {format_timestamp(run['completed_at'])}")
-        if run['failed_at']:
+        if run["failed_at"]:
             print(f"  Failed:            {format_timestamp(run['failed_at'])}")
-        if run['cancelled_at']:
+        if run["cancelled_at"]:
             print(f"  Cancelled:         {format_timestamp(run['cancelled_at'])}")
         print()
 
         # Wait states
-        if run['waits']:
+        if run["waits"]:
             print(f"WAIT STATES")
-            for wait in run['waits']:
-                wait_type = wait['wait_type'].capitalize() + " wait" if wait['wait_type'] else "Wait"
+            for wait in run["waits"]:
+                wait_type = (
+                    wait["wait_type"].capitalize() + " wait"
+                    if wait["wait_type"]
+                    else "Wait"
+                )
                 print(f"  {wait_type}")
-                if wait['step_name']:
+                if wait["step_name"]:
                     print(f"    Step:            {wait['step_name']}")
-                if wait['wake_at']:
+                if wait["wake_at"]:
                     print(f"    Wake at:         {format_timestamp(wait['wake_at'])}")
-                if wait['wake_event']:
+                if wait["wake_event"]:
                     print(f"    Wake event:      {wait['wake_event']}")
-                if wait['emitted_at']:
-                    print(f"    Last emit:       {format_timestamp(wait['emitted_at'])}")
+                if wait["emitted_at"]:
+                    print(
+                        f"    Last emit:       {format_timestamp(wait['emitted_at'])}"
+                    )
                 print(f"    Updated:         {format_timestamp(wait['updated_at'])}")
-                if wait['payload']:
+                if wait["payload"]:
                     print(f"    Wait payload:")
-                    for line in format_json_value(wait['payload']).split('\n'):
+                    for line in format_json_value(wait["payload"]).split("\n"):
                         print(f"      {line}")
-                if wait['event_payload']:
+                if wait["event_payload"]:
                     print(f"    Event payload:")
-                    for line in format_json_value(wait['event_payload']).split('\n'):
+                    for line in format_json_value(wait["event_payload"]).split("\n"):
                         print(f"      {line}")
             print()
 
         print(f"RETRY INFORMATION")
-        max_attempts_str = run['max_attempts'] if run['max_attempts'] else "unlimited"
+        max_attempts_str = run["max_attempts"] if run["max_attempts"] else "unlimited"
         print(f"  Attempt:           {run['attempt']} of {max_attempts_str}")
-        if run['retry_strategy']:
+        if run["retry_strategy"]:
             print(f"  Retry Strategy:")
-            for line in format_json_value(run['retry_strategy']).split('\n'):
+            for line in format_json_value(run["retry_strategy"]).split("\n"):
                 print(f"    {line}")
         print()
 
         # Parameters
-        if run['params']:
+        if run["params"]:
             print(f"PARAMETERS")
-            for line in format_json_value(run['params']).split('\n'):
+            for line in format_json_value(run["params"]).split("\n"):
                 print(f"  {line}")
             print()
 
         # Headers
-        if run['headers']:
+        if run["headers"]:
             print(f"HEADERS")
-            for line in format_json_value(run['headers']).split('\n'):
+            for line in format_json_value(run["headers"]).split("\n"):
                 print(f"  {line}")
             print()
 
         # Final state
-        if run['final_state']:
-            state_label = "FAILURE" if run['run_state'] == 'failed' else "FINAL STATE"
+        if run["final_state"]:
+            state_label = "FAILURE" if run["run_state"] == "failed" else "FINAL STATE"
             print(state_label)
-            for line in format_json_value(run['final_state']).split('\n'):
+            for line in format_json_value(run["final_state"]).split("\n"):
                 print(f"  {line}")
             print()
 
         # Checkpoints
-        if run['checkpoints']:
+        if run["checkpoints"]:
             print(f"CHECKPOINTS")
-            for checkpoint in run['checkpoints']:
+            for checkpoint in run["checkpoints"]:
                 print(f"  {checkpoint['name']} ({checkpoint['status']})")
-                print(f"    Updated:         {format_timestamp(checkpoint['updated_at'])}")
-                if checkpoint['state']:
+                print(
+                    f"    Updated:         {format_timestamp(checkpoint['updated_at'])}"
+                )
+                if checkpoint["state"]:
                     print(f"    State:")
-                    for line in format_json_value(checkpoint['state']).split('\n'):
+                    for line in format_json_value(checkpoint["state"]).split("\n"):
                         print(f"      {line}")
                 print()
+
+
+def cmd_agent_help(args):
+    """Print quick guidance for automated agents."""
+    if args:
+        print("Error: agent-help does not accept arguments", file=sys.stderr)
+        sys.exit(1)
+
+    message = textwrap.dedent(
+        """
+        This project uses "Absurd", a durable workflow system built on postgres.  It can be
+        debugged with the `absurdctl` command-line tool.
+
+        Connection: set PGHOST, PGPORT, PGUSER, PGDATABASE, and PGPASSWORD just like for psql.
+
+        Core commands to explore:
+        - list-queues: discover available queues (`absurdctl list-queues`)
+        - list-tasks: inspect recent activity in a queue (`absurdctl list-tasks --queue=default`)
+        - dump-task: pull full details for a task or run (`absurdctl dump-task --task-id=<uuid>`)
+        - spawn-task: enqueue new work (`absurdctl spawn-task my-task`)
+
+        Use `absurdctl <command> --help` to see every option when you need more detail.
+
+        Task state includes all checkpointed step results as JSON.
+        """
+    ).strip()
+
+    print(message)
 
 
 def show_help():
@@ -1188,7 +1422,9 @@ Commands:
   drop-queue      Drop an existing queue
   list-queues     List all existing queues
   spawn-task      Spawn a new task
+  list-tasks      List tasks with optional filtering
   dump-task       Dump task or run details including checkpoints
+  agent-help      Print quick guidance tailored for coding agents
   help            Show this help message
 
 Run 'absurdctl COMMAND --help' for more information on a command.
@@ -1207,7 +1443,9 @@ Examples:
   absurdctl drop-queue myqueue --yes
   absurdctl list-queues
   absurdctl spawn-task my-task -P foo=bar -P count:=42
+  absurdctl list-tasks --queue=default --status=failed
   absurdctl dump-task --task-id=019a32d3-8425-7ae2-a5af-2f17a6707666
+  absurdctl agent-help >> AGENTS.md
 """
     )
 
@@ -1232,8 +1470,12 @@ def main():
         cmd_init(args)
     elif command == "spawn-task":
         cmd_spawn_task(args)
+    elif command == "list-tasks":
+        cmd_list_tasks(args)
     elif command == "dump-task":
         cmd_dump_task(args)
+    elif command == "agent-help":
+        cmd_agent_help(args)
     else:
         print(f"Unknown command: {command}", file=sys.stderr)
         print("")

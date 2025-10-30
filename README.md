@@ -178,3 +178,18 @@ const payment = await ctx.step('process-payment', async () => {
   });
 });
 ```
+
+## Working With Agents
+
+Absurd is built so that agents such as Claude Code can efficiently work with the
+state in the database.  You can either point them straight at postgres and hope
+that they pry the information out, but the better ideas is to make `absurdctl`
+available on `PATH` and to give them some ideas of what to do with it.  `absurdctl`
+can output some agent specific help that you can put into your `AGENTS.md` /
+`CLAUDE.md` files:
+
+```
+absurdctl agent-help >> AGENTS.md
+```
+
+You might have to tweak the outputs afterwards to work best for your setup.
