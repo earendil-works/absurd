@@ -55,7 +55,7 @@ export function IdDisplay(props: IdDisplayProps) {
   return (
     <span
       class={cn(
-        "inline-flex items-center rounded border px-1.5 py-0.5 font-mono text-xs leading-tight break-all transition-all",
+        "inline-flex items-center rounded border px-1.5 py-0.5 font-mono text-xs leading-tight whitespace-nowrap transition-all",
         isHighlighted() && "ring-2 ring-current ring-offset-2 scale-105",
         local.class,
       )}
