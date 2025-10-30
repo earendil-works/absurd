@@ -30,7 +30,7 @@
     "workflow"
   ],
   "author": "",
-  "license": "ISC",
+  "license": "Apache-2.0",
   "dependencies": {
     "pg": "^8.13.1",
     "typescript": "^5.9.3"
