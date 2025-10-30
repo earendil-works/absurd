@@ -1,0 +1,179 @@
+name: Build
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+  pull_request:
+
+jobs:
+  build-habitat:
+    name: Build Habitat (${{ matrix.os }}-${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          - os: linux
+            arch: x86_64
+            runner: ubuntu-latest
+            goos: linux
+            goarch: amd64
+          - os: linux
+            arch: arm64
+            runner: ubuntu-latest
+            goos: linux
+            goarch: arm64
+          - os: macos
+            arch: arm64
+            runner: macos-latest
+            goos: darwin
+            goarch: arm64
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Build UI
+        working-directory: habitat
+        run: |
+          cd ui
+          npm install
+          npm run build
+
+      - name: Build Habitat binary
+        working-directory: habitat
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          mkdir -p bin
+          go build -o bin/habitat ./cmd/habitat
+
+      - name: Create artifact name
+        id: artifact
+        run: |
+          echo "name=habitat-${{ matrix.os }}-${{ matrix.arch }}" >> $GITHUB_OUTPUT
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.artifact.outputs.name }}
+          path: habitat/bin/habitat
+          if-no-files-found: error
+
+  release:
+    name: Create Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build-habitat]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Prepare release assets
+        run: |
+          mkdir -p release
+
+          # Copy habitat binaries and rename them
+          cp artifacts/habitat-linux-x86_64/habitat release/habitat-linux-x86_64
+          cp artifacts/habitat-linux-arm64/habitat release/habitat-linux-arm64
+          cp artifacts/habitat-macos-arm64/habitat release/habitat-macos-arm64
+
+          # Make binaries executable
+          chmod +x release/habitat-*
+
+          # Copy absurdctl
+          cp absurdctl release/absurdctl
+          chmod +x release/absurdctl
+
+          # Copy SQL file
+          cp sql/absurd.sql release/absurd.sql
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release/*
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  test-npm-build:
+    name: Test npm Package Build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        working-directory: sdks/typescript
+        run: npm ci
+
+      - name: Build SDK
+        working-directory: sdks/typescript
+        run: npm run build
+
+      - name: Test package (dry-run)
+        working-directory: sdks/typescript
+        run: npm publish --dry-run
+
+  publish-npm:
+    name: Publish to npm
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [test-npm-build]
+    runs-on: ubuntu-latest
+    environment: npm-publish
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Install dependencies
+        working-directory: sdks/typescript
+        run: npm ci
+
+      - name: Build SDK
+        working-directory: sdks/typescript
+        run: npm run build
+
+      - name: Publish to npm
+        working-directory: sdks/typescript
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
