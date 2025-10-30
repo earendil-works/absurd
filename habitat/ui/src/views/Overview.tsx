@@ -7,6 +7,7 @@ import {
   createEffect,
   onCleanup,
 } from "solid-js";
+import { A } from "@solidjs/router";
 import {
   Card,
   CardContent,
@@ -152,6 +153,9 @@ export default function Overview() {
                         <th class="px-3 py-2 font-medium">Oldest age</th>
                         <th class="px-3 py-2 font-medium">Total seen</th>
                         <th class="px-3 py-2 font-medium">Scraped</th>
+                        <th class="px-3 py-2 font-medium text-right">
+                          Actions
+                        </th>
                       </tr>
                     </thead>
                     <tbody class="divide-y divide-border">
@@ -178,6 +182,22 @@ export default function Overview() {
                             </td>
                             <td class="px-3 py-2 text-xs text-muted-foreground">
                               {formatTimestamp(new Date(queue.scrapeTime))}
+                            </td>
+                            <td class="px-3 py-2">
+                              <div class="flex justify-end gap-3 text-xs font-medium">
+                                <A
+                                  class="text-primary hover:underline"
+                                  href={`/tasks?queue=${encodeURIComponent(queue.queueName)}`}
+                                >
+                                  Tasks →
+                                </A>
+                                <A
+                                  class="text-primary hover:underline"
+                                  href={`/events?queue=${encodeURIComponent(queue.queueName)}`}
+                                >
+                                  Events →
+                                </A>
+                              </div>
                             </td>
                           </tr>
                         )}

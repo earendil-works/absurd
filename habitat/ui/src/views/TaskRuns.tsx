@@ -146,16 +146,118 @@ export default function TaskRuns() {
     return Array.from(new Set(items.map((run) => run.queueName)));
   });
 
-  const stats = createMemo(() => {
+  const orderedRuns = createMemo(() => {
     const items = runs();
-    const totals = new Map<string, number>();
-    if (items) {
-      for (const item of items) {
-        const status = item.status.toLowerCase();
-        totals.set(status, (totals.get(status) ?? 0) + 1);
+    if (!items) return [];
+    return [...items].sort((a, b) => {
+      if (a.attempt !== b.attempt) {
+        return a.attempt - b.attempt;
+      }
+      const aCreated = Date.parse(a.createdAt);
+      const bCreated = Date.parse(b.createdAt);
+      if (Number.isNaN(aCreated) || Number.isNaN(bCreated)) {
+        return 0;
+      }
+      return aCreated - bCreated;
+    });
+  });
+
+  const totalDurationMs = createMemo(() => {
+    const items = orderedRuns();
+    if (items.length === 0) {
+      return null;
+    }
+
+    let earliest = Number.POSITIVE_INFINITY;
+    let latest = Number.NEGATIVE_INFINITY;
+
+    for (const run of items) {
+      const created = Date.parse(run.createdAt);
+      if (!Number.isNaN(created)) {
+        if (created < earliest) {
+          earliest = created;
+        }
+        if (created > latest) {
+          latest = created;
+        }
+      }
+
+      const updated = Date.parse(run.updatedAt);
+      if (!Number.isNaN(updated) && updated > latest) {
+        latest = updated;
+      }
+
+      if (run.completedAt) {
+        const completed = Date.parse(run.completedAt);
+        if (!Number.isNaN(completed) && completed > latest) {
+          latest = completed;
+        }
       }
     }
-    return totals;
+
+    if (
+      !Number.isFinite(earliest) ||
+      !Number.isFinite(latest) ||
+      latest < earliest
+    ) {
+      return null;
+    }
+
+    return Math.max(0, latest - earliest);
+  });
+
+  const completionAttempts = createMemo(() => {
+    const items = orderedRuns();
+    if (items.length === 0) {
+      return null;
+    }
+
+    const completedIndex = items.findIndex(
+      (run) => run.status.toLowerCase() === "completed",
+    );
+    if (completedIndex === -1) {
+      return null;
+    }
+
+    const attemptNumber = items[completedIndex]?.attempt;
+    const derivedAttempts =
+      typeof attemptNumber === "number" && attemptNumber > 0
+        ? attemptNumber
+        : completedIndex + 1;
+    return Math.max(derivedAttempts, completedIndex + 1);
+  });
+
+  const checkpointsInfo = createMemo(() => {
+    const items = orderedRuns();
+    if (items.length === 0) {
+      return { total: 0, pending: false };
+    }
+
+    const detailMap = runDetails();
+    let total = 0;
+    let missing = 0;
+
+    for (const run of items) {
+      const detail = detailMap[run.runId];
+      if (!detail) {
+        missing += 1;
+        continue;
+      }
+      total += detail.checkpoints?.length ?? 0;
+    }
+
+    return { total, pending: missing > 0 };
+  });
+
+  const queueSummary = createMemo(() => {
+    const names = queueNames();
+    if (!names || names.length === 0) {
+      return { label: "Queue", value: null as string | null };
+    }
+    return {
+      label: names.length > 1 ? "Queues" : "Queue",
+      value: names.join(", "),
+    };
   });
 
   const handleRefresh = async () => {
@@ -205,6 +307,46 @@ export default function TaskRuns() {
     }
   };
 
+  const formatDuration = (ms: number | null) => {
+    if (ms === null || ms === undefined) {
+      return "—";
+    }
+    if (!Number.isFinite(ms)) {
+      return "—";
+    }
+    if (ms < 1000) {
+      return "<1s";
+    }
+
+    const totalSeconds = Math.floor(ms / 1000);
+    const units = [
+      { label: "d", size: 86400 },
+      { label: "h", size: 3600 },
+      { label: "m", size: 60 },
+      { label: "s", size: 1 },
+    ] as const;
+
+    const parts: string[] = [];
+    let remainder = totalSeconds;
+
+    for (const unit of units) {
+      if (unit.size > remainder && parts.length === 0 && unit.label !== "s") {
+        continue;
+      }
+      const value = Math.floor(remainder / unit.size);
+      if (value > 0) {
+        parts.push(`${value}${unit.label}`);
+        remainder -= value * unit.size;
+      }
+    }
+
+    if (parts.length === 0) {
+      return "0s";
+    }
+
+    return parts.join(" ");
+  };
+
   return (
     <>
       <header class="flex flex-col gap-4 border-b bg-background px-6 py-6 sm:flex-row sm:items-center sm:justify-between">
@@ -243,35 +385,93 @@ export default function TaskRuns() {
       </header>
 
       <section class="flex-1 space-y-6 px-6 py-6">
-        <Card>
-          <CardHeader>
-            <CardTitle>Run Summary</CardTitle>
-            <CardDescription>
-              This task has {runs()?.length ?? 0} recorded run
-              {runs()?.length === 1 ? "" : "s"}.
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <Show
-              when={stats().size > 0}
-              fallback={
-                <p class="text-sm text-muted-foreground">
-                  No runs have been recorded for this task yet.
-                </p>
-              }
-            >
-              <div class="flex flex-wrap gap-4 text-sm">
-                <For each={Array.from(stats().entries())}>
-                  {([status, count]) => (
-                    <div class="flex items-center gap-2 rounded border px-3 py-1.5">
-                      <span class="capitalize">{status}</span>
-                      <span class="font-mono text-xs">{count.toString()}</span>
-                    </div>
-                  )}
-                </For>
+        <Card class="border-dashed bg-muted/20">
+          <Show
+            when={orderedRuns().length > 0}
+            fallback={
+              <CardContent class="p-4 text-xs text-muted-foreground sm:text-sm">
+                No runs have been recorded for this task yet.
+              </CardContent>
+            }
+          >
+            <CardContent class="flex flex-wrap items-center gap-x-6 gap-y-2 p-4 text-xs sm:flex-nowrap sm:text-sm">
+              <div class="flex items-center gap-2">
+                <span class="text-muted-foreground">Runs</span>
+                <span class="font-medium text-foreground">
+                  {runs()?.length ?? 0}
+                </span>
               </div>
-            </Show>
-          </CardContent>
+              <div class="flex items-center gap-2">
+                <span class="text-muted-foreground">Statuses</span>
+                <div class="flex flex-wrap items-center gap-1">
+                  <For each={orderedRuns()}>
+                    {(run) => (
+                      <span title={`Attempt ${run.attempt}`}>
+                        <TaskStatusBadge status={run.status} />
+                      </span>
+                    )}
+                  </For>
+                </div>
+              </div>
+              <div class="flex items-center gap-1">
+                <span class="text-muted-foreground">Duration</span>
+                <span class="font-medium text-foreground">
+                  {formatDuration(totalDurationMs())}
+                </span>
+              </div>
+              <div class="flex items-center gap-1">
+                <span class="text-muted-foreground">Completion</span>
+                <span class="font-medium text-foreground">
+                  {(() => {
+                    const attempts = completionAttempts();
+                    if (attempts === null) {
+                      return "Not completed";
+                    }
+                    return `Completed in ${attempts} attempt${
+                      attempts === 1 ? "" : "s"
+                    }`;
+                  })()}
+                </span>
+              </div>
+              <div class="flex items-center gap-1">
+                <span class="text-muted-foreground">{queueSummary().label}</span>
+                <span class="font-medium text-foreground">
+                  {queueSummary().value ?? "—"}
+                </span>
+              </div>
+              <div class="flex items-center gap-1">
+                <span class="text-muted-foreground">Checkpoints</span>
+                <span class="font-medium text-foreground">
+                  {(() => {
+                    const info = checkpointsInfo();
+                    if (info.pending) {
+                      return "Loading…";
+                    }
+                    return info.total.toString();
+                  })()}
+                </span>
+              </div>
+              <div class="flex items-center gap-1">
+                <span class="text-muted-foreground">Updated</span>
+                <span class="font-medium text-foreground">
+                  {(() => {
+                    const items = orderedRuns();
+                    if (items.length === 0) {
+                      return "—";
+                    }
+                    const latest = items.reduce((acc, run) => {
+                      const updated = Date.parse(run.updatedAt);
+                      return Number.isNaN(updated) ? acc : Math.max(acc, updated);
+                    }, Number.NEGATIVE_INFINITY);
+                    if (!Number.isFinite(latest)) {
+                      return "—";
+                    }
+                    return `${formatRelativeAge(new Date(latest).toISOString())} ago`;
+                  })()}
+                </span>
+              </div>
+            </CardContent>
+          </Show>
         </Card>
 
         <Show
