@@ -42,6 +42,8 @@ read and reason about.
 Absurd wants to be absurdly simple.  There are many systems on the market you
 might want to look at if you think you need more:
 
+* [pgmq](https://github.com/pgmq/pgmq) is a lightweight message queue built on
+  top of just Postgres.  Absurd has been heavily influenced by it.
 * [Cadence](https://github.com/cadence-workflow/cadence) in many ways is the
   OG of durable execution systems.  It was built at Uber and has inspired many
   systems since.
@@ -193,3 +195,9 @@ absurdctl agent-help >> AGENTS.md
 ```
 
 You might have to tweak the outputs afterwards to work best for your setup.
+
+## License and Links
+
+- [Examples](https://github.com/earendil-works/absurd/tree/main/sdks/typescript/examples)
+- [Issue Tracker](https://github.com/earendil-works/absurd/issues)
+- License: [Apache-2.0](https://github.com/earendil-works/absurd/blob/main/LICENSE)
