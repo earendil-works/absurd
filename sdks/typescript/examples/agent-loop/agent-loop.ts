@@ -93,20 +93,16 @@ absurd.registerTask(
 async function main() {
   await absurd.createQueue();
 
-  const workers = await Promise.all(
-    Array.from({ length: 2 }, (_, idx) =>
-      absurd.startWorker({
-        workerId: `demo-worker-${idx + 1}`,
-        concurrency: 2,
-        onError: (error) => {
-          console.log("worker loop error", {
-            workerId: `demo-worker-${idx + 1}`,
-            error: error.message,
-          });
-        },
-      }),
-    ),
-  );
+  const worker = await absurd.startWorker({
+    workerId: "demo-worker",
+    concurrency: 4,
+    onError: (error) => {
+      console.log("worker loop error", {
+        workerId: "demo-worker",
+        error: error.message,
+      });
+    },
+  });
 
   await absurd.spawn("weather-agent", {
     prompt: "Get the weather in New York and San Francisco",
@@ -114,9 +110,7 @@ async function main() {
 
   await sleep(10000);
 
-  for (const worker of workers) {
-    await worker.close();
-  }
+  await worker.close();
 }
 
 function sleep(ms: number): Promise<void> {
