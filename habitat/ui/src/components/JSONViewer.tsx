@@ -45,7 +45,7 @@ export function JSONViewer(props: JSONViewerProps) {
       <Show
         when={errorInfo()}
         fallback={
-          <pre class="overflow-x-auto p-3 text-xs whitespace-pre-wrap">
+          <pre class="p-3 text-xs whitespace-pre-wrap break-all">
             <code>{jsonString()}</code>
           </pre>
         }
@@ -57,7 +57,7 @@ export function JSONViewer(props: JSONViewerProps) {
               <div class="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
                 Message
               </div>
-              <pre class="max-h-48 overflow-auto rounded border bg-background px-2 py-1 text-xs whitespace-pre-wrap">
+              <pre class="max-h-48 overflow-auto rounded border bg-background px-2 py-1 text-xs whitespace-pre-wrap break-all">
                 {info().message}
               </pre>
             </div>
@@ -66,7 +66,7 @@ export function JSONViewer(props: JSONViewerProps) {
                 <div class="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
                   Stack trace
                 </div>
-                <pre class="max-h-64 overflow-auto rounded border bg-background px-2 py-1 text-xs whitespace-pre-wrap">
+                <pre class="max-h-64 overflow-auto rounded border bg-background px-2 py-1 text-xs whitespace-pre-wrap break-all">
                   {info().stack}
                 </pre>
               </div>

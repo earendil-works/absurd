@@ -347,12 +347,14 @@ export class Absurd {
   private readonly pool: pg.Pool;
   private readonly ownedPool: boolean;
   private readonly queueName: string;
+  private readonly defaultMaxAttempts: number;
   private readonly registry = new Map<string, RegisteredTask>();
   private worker: Worker | null = null;
 
   constructor(
     poolOrUrl?: pg.Pool | string | null,
     queueName: string = "default",
+    defaultMaxAttempts: number = 5,
   ) {
     if (!poolOrUrl) {
       poolOrUrl =
@@ -366,6 +368,7 @@ export class Absurd {
       this.ownedPool = false;
     }
     this.queueName = queueName;
+    this.defaultMaxAttempts = defaultMaxAttempts;
   }
 
   /**
@@ -449,7 +452,7 @@ export class Absurd {
     const effectiveMaxAttempts =
       options.maxAttempts !== undefined
         ? options.maxAttempts
-        : registration?.defaultMaxAttempts;
+        : (registration?.defaultMaxAttempts ?? this.defaultMaxAttempts);
     const effectiveCancellation =
       options.cancellation !== undefined
         ? options.cancellation

@@ -3,3 +3,4 @@
 ./habitat
 internal/web/dist/
 ui/.vite
+bin
