@@ -1,12 +1,25 @@
-import { createSignal, Show } from "solid-js";
+import { createSignal, Show, For, createMemo } from "solid-js";
 
 interface JSONViewerProps {
   data: any;
   label?: string;
 }
 
+type JSONToken =
+  | { type: "key"; value: string; path: string }
+  | { type: "string"; value: string; path: string }
+  | { type: "number"; value: string; path: string }
+  | { type: "boolean"; value: string; path: string }
+  | { type: "null"; value: string; path: string }
+  | { type: "punctuation"; value: string }
+  | { type: "whitespace"; value: string }
+  | { type: "foldable-start"; value: string; path: string; foldType: "object" | "array" }
+  | { type: "foldable-end"; value: string };
+
 export function JSONViewer(props: JSONViewerProps) {
   const [copied, setCopied] = createSignal(false);
+  const [toggledStrings, setToggledStrings] = createSignal<Set<string>>(new Set());
+  const [foldedPaths, setFoldedPaths] = createSignal<Set<string>>(new Set());
 
   const errorInfo = () => extractErrorLike(props.data);
 
@@ -18,6 +31,14 @@ export function JSONViewer(props: JSONViewerProps) {
     }
   };
 
+  const tokens = createMemo(() => {
+    try {
+      return tokenizeJSON(props.data, toggledStrings(), foldedPaths());
+    } catch {
+      return [];
+    }
+  });
+
   const handleCopy = async () => {
     try {
       await navigator.clipboard.writeText(jsonString());
@@ -26,6 +47,28 @@ export function JSONViewer(props: JSONViewerProps) {
     } catch (error) {
       console.error("Failed to copy:", error);
     }
+  };
+
+  const toggleString = (path: string) => {
+    const current = toggledStrings();
+    const next = new Set(current);
+    if (next.has(path)) {
+      next.delete(path);
+    } else {
+      next.add(path);
+    }
+    setToggledStrings(next);
+  };
+
+  const toggleFold = (path: string) => {
+    const current = foldedPaths();
+    const next = new Set(current);
+    if (next.has(path)) {
+      next.delete(path);
+    } else {
+      next.add(path);
+    }
+    setFoldedPaths(next);
   };
 
   return (
@@ -45,8 +88,56 @@ export function JSONViewer(props: JSONViewerProps) {
       <Show
         when={errorInfo()}
         fallback={
-          <pre class="p-3 text-xs whitespace-pre-wrap break-all">
-            <code>{jsonString()}</code>
+          <pre class="p-3 text-xs font-mono overflow-x-auto whitespace-pre-wrap break-all">
+            <code>
+              <For each={tokens()}>
+                {(token) => {
+                  if (token.type === "key") {
+                    return <span class="text-emerald-600">{token.value}</span>;
+                  }
+                  if (token.type === "string") {
+                    return (
+                      <span
+                        class="text-sky-600 cursor-pointer hover:text-sky-800"
+                        onClick={() => toggleString(token.path)}
+                      >
+                        {token.value}
+                      </span>
+                    );
+                  }
+                  if (token.type === "number") {
+                    return <span class="text-amber-700">{token.value}</span>;
+                  }
+                  if (token.type === "boolean" || token.type === "null") {
+                    return <span class="text-violet-600">{token.value}</span>;
+                  }
+                  if (token.type === "foldable-start") {
+                    const isFolded = foldedPaths().has(token.path);
+                    return (
+                      <span>
+                        <span
+                          class="text-muted-foreground cursor-pointer hover:text-foreground select-none inline-block w-4 text-center"
+                          onClick={() => toggleFold(token.path)}
+                        >
+                          {isFolded ? "▶" : "▼"}
+                        </span>
+                        <span class="text-muted-foreground">{token.value}</span>
+                      </span>
+                    );
+                  }
+                  if (token.type === "punctuation") {
+                    return <span class="text-muted-foreground">{token.value}</span>;
+                  }
+                  if (token.type === "whitespace") {
+                    return <span>{token.value}</span>;
+                  }
+                  if (token.type === "foldable-end") {
+                    return <span class="text-muted-foreground">{token.value}</span>;
+                  }
+                  return null;
+                }}
+              </For>
+            </code>
           </pre>
         }
       >
@@ -76,6 +167,90 @@ export function JSONViewer(props: JSONViewerProps) {
       </Show>
     </div>
   );
+}
+
+function tokenizeJSON(
+  data: any,
+  toggledStrings: Set<string>,
+  foldedPaths: Set<string>,
+  path: string = "$",
+  indent: number = 0
+): JSONToken[] {
+  const tokens: JSONToken[] = [];
+  const indentStr = "  ".repeat(indent);
+
+  if (data === null) {
+    tokens.push({ type: "null", value: "null", path });
+  } else if (typeof data === "boolean") {
+    tokens.push({ type: "boolean", value: String(data), path });
+  } else if (typeof data === "number") {
+    tokens.push({ type: "number", value: String(data), path });
+  } else if (typeof data === "string") {
+    const isToggled = toggledStrings.has(path);
+    if (isToggled) {
+      // Show the unescaped string (raw rendering)
+      tokens.push({ type: "string", value: `"${data}"`, path });
+    } else {
+      // Show the escaped string (JSON.stringify handles escaping)
+      tokens.push({ type: "string", value: JSON.stringify(data), path });
+    }
+  } else if (Array.isArray(data)) {
+    if (data.length === 0) {
+      tokens.push({ type: "punctuation", value: "[]" });
+    } else {
+      const isFolded = foldedPaths.has(path);
+      tokens.push({ type: "foldable-start", value: "[", path, foldType: "array" });
+
+      if (isFolded) {
+        tokens.push({ type: "punctuation", value: " ... " });
+      } else {
+        tokens.push({ type: "whitespace", value: "\n" });
+        data.forEach((item, index) => {
+          tokens.push({ type: "whitespace", value: indentStr + "  " });
+          tokens.push(...tokenizeJSON(item, toggledStrings, foldedPaths, `${path}[${index}]`, indent + 1));
+          if (index < data.length - 1) {
+            tokens.push({ type: "punctuation", value: "," });
+          }
+          tokens.push({ type: "whitespace", value: "\n" });
+        });
+        tokens.push({ type: "whitespace", value: indentStr });
+      }
+
+      tokens.push({ type: "foldable-end", value: "]" });
+    }
+  } else if (typeof data === "object") {
+    const entries = Object.entries(data);
+    if (entries.length === 0) {
+      tokens.push({ type: "punctuation", value: "{}" });
+    } else {
+      const isFolded = foldedPaths.has(path);
+      tokens.push({ type: "foldable-start", value: "{", path, foldType: "object" });
+
+      if (isFolded) {
+        tokens.push({ type: "punctuation", value: " ... " });
+      } else {
+        tokens.push({ type: "whitespace", value: "\n" });
+        entries.forEach(([key, value], index) => {
+          const keyPath = `${path}.${key}`;
+          tokens.push({ type: "whitespace", value: indentStr + "  " });
+          tokens.push({ type: "key", value: JSON.stringify(key), path: keyPath });
+          tokens.push({ type: "punctuation", value: ": " });
+          tokens.push(...tokenizeJSON(value, toggledStrings, foldedPaths, keyPath, indent + 1));
+          if (index < entries.length - 1) {
+            tokens.push({ type: "punctuation", value: "," });
+          }
+          tokens.push({ type: "whitespace", value: "\n" });
+        });
+        tokens.push({ type: "whitespace", value: indentStr });
+      }
+
+      tokens.push({ type: "foldable-end", value: "}" });
+    }
+  } else {
+    tokens.push({ type: "string", value: JSON.stringify(String(data)), path });
+  }
+
+  return tokens;
 }
 
 type ErrorLikeInfo = {
