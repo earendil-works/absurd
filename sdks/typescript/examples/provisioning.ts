@@ -6,7 +6,6 @@
  * Environment:
  *   ABSURD_WORKERS    - Number of worker loops to start (default: 3)
  *   ABSURD_RUNTIME    - Worker lifetime before shutdown in seconds (default: 20)
- *   SPAWN_CONCURRENCY - Max concurrent task spawns (default: 3)
  */
 import crypto from "node:crypto";
 import process from "node:process";
@@ -335,11 +334,9 @@ function registerTasks(absurd: Absurd) {
 async function main() {
   const workerCount = Number(process.env.ABSURD_WORKERS ?? "6");
   const runtime = Number(process.env.ABSURD_RUNTIME ?? "15");
-  const spawnConcurrency = Number(process.env.SPAWN_CONCURRENCY ?? "3");
 
   log("main", "connecting to absurd queue", {
     workers: workerCount,
-    spawnConcurrency,
   });
 
   const absurd = new Absurd();
@@ -370,37 +367,17 @@ async function main() {
     }),
   );
 
-  // Spawn tasks with controlled concurrency using SDK pattern
-  const executing = new Set<Promise<void>>();
+  // Enqueue sequentially; worker concurrency controls processing parallelism.
   for (const params of taskParams) {
-    const promise = (async () => {
-      const { taskID, runID } = await absurd.spawn(
-        "provision-customer",
-        params,
-        {
-          maxAttempts: 3,
-        },
-      );
-      log("main", "spawned provisioning workflow", {
-        taskId: taskID,
-        runId: runID,
-        customerId: params.customerId,
-      });
-    })();
-
-    const trackedPromise = promise.finally(() =>
-      executing.delete(trackedPromise),
-    );
-    executing.add(trackedPromise);
-
-    // Wait for one to finish if we've reached the concurrency limit
-    if (executing.size >= spawnConcurrency) {
-      await Promise.race(executing);
-    }
+    const { taskID, runID } = await absurd.spawn("provision-customer", params, {
+      maxAttempts: 3,
+    });
+    log("main", "spawned provisioning workflow", {
+      taskId: taskID,
+      runId: runID,
+      customerId: params.customerId,
+    });
   }
-
-  // Wait for all remaining spawns to complete
-  await Promise.all(executing);
 
   log("main", "worker running", { runtime, concurrency: workerCount });
   await sleep(runtime * 1000);
