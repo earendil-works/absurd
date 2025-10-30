@@ -763,6 +763,418 @@ def cmd_spawn_task(args):
         print("Task spawned, but no result returned", file=sys.stderr)
 
 
+def format_error_like(data):
+    """Try to extract and format error-like objects with name, message, and stack."""
+    if not isinstance(data, dict):
+        return None
+
+    if "name" in data and "message" in data and "stack" in data:
+        return {
+            "name": data["name"],
+            "message": data["message"],
+            "stack": data["stack"],
+        }
+    return None
+
+
+def format_json_value(value, indent=0):
+    """Format a JSON value with proper indentation."""
+    if value is None:
+        return "null"
+
+    # Check if it's an error-like object
+    error_info = format_error_like(value)
+    if error_info:
+        lines = []
+        lines.append(f"{error_info['name']}")
+        lines.append(f"\nMessage:")
+        lines.append(f"  {error_info['message']}")
+        if error_info['stack']:
+            lines.append(f"\nStack trace:")
+            for line in error_info['stack'].split('\n'):
+                lines.append(f"  {line}")
+        return "\n".join(lines)
+
+    # Otherwise, render as JSON
+    return json.dumps(value, indent=2)
+
+
+def format_timestamp(ts_str):
+    """Format a timestamp string in a human-readable way."""
+    if not ts_str:
+        return "—"
+    try:
+        from datetime import datetime
+        dt = datetime.fromisoformat(ts_str.replace('Z', '+00:00'))
+        return dt.strftime("%b %d, %Y %I:%M:%S %p")
+    except:
+        return ts_str
+
+
+def cmd_dump_task(args):
+    """Dump task or run details including checkpoints."""
+    usage = "usage: %prog dump-task [options]"
+    parser = build_command_parser(usage)
+    parser.add_option(
+        "--task-id",
+        dest="task_id",
+        metavar="UUID",
+        help="Task ID to dump",
+    )
+    parser.add_option(
+        "--run-id",
+        dest="run_id",
+        metavar="UUID",
+        help="Run ID to dump",
+    )
+
+    examples = [
+        "absurdctl dump-task --task-id=019a32d3-8425-7ae2-a5af-2f17a6707666",
+        "absurdctl dump-task --run-id=019a32d3-8425-7ae2-a5af-2f17a6707666",
+    ]
+
+    options, args = parse_args_with_help(parser, args, examples)
+
+    if not options.task_id and not options.run_id:
+        print("Error: Either --task-id or --run-id must be specified", file=sys.stderr)
+        parser.print_help()
+        sys.exit(1)
+
+    if options.task_id and options.run_id:
+        print("Error: Cannot specify both --task-id and --run-id", file=sys.stderr)
+        parser.print_help()
+        sys.exit(1)
+
+    config = config_from_options(options)
+
+    # Get list of queues
+    queues_result = run_psql(
+        config,
+        "SELECT queue_name FROM absurd.queues;",
+        tuples_only=True,
+        no_align=True,
+    )
+
+    if not queues_result:
+        print("No queues found in the database", file=sys.stderr)
+        sys.exit(1)
+
+    queues = [q for q in queues_result.strip().split('\n') if q]
+
+    # Find which queue contains the task/run
+    target_queue = None
+    task_id = None
+
+    if options.run_id:
+        # Search for run_id across all queues
+        for queue in queues:
+            result = run_psql(
+                config,
+                f"SELECT task_id FROM absurd.r_{queue} WHERE run_id = '{options.run_id}';",
+                tuples_only=True,
+                no_align=True,
+            )
+            if result:
+                target_queue = queue
+                task_id = result.strip()
+                break
+
+        if not target_queue:
+            print(f"Run ID '{options.run_id}' not found in any queue", file=sys.stderr)
+            sys.exit(1)
+    else:
+        # Search for task_id across all queues
+        task_id = options.task_id
+        for queue in queues:
+            result = run_psql(
+                config,
+                f"SELECT COUNT(*) FROM absurd.t_{queue} WHERE task_id = '{task_id}';",
+                tuples_only=True,
+                no_align=True,
+            )
+            if result and int(result.strip()) > 0:
+                target_queue = queue
+                break
+
+        if not target_queue:
+            print(f"Task ID '{task_id}' not found in any queue", file=sys.stderr)
+            sys.exit(1)
+
+    # Fetch task and runs
+    if options.run_id:
+        # Fetch specific run
+        runs_query = f"""
+            SELECT
+                t.task_id,
+                r.run_id,
+                t.task_name,
+                t.state,
+                r.state as run_state,
+                r.attempt,
+                t.max_attempts,
+                t.params,
+                t.retry_strategy,
+                t.headers,
+                COALESCE(r.failure_reason, r.result) AS final_state,
+                r.created_at,
+                r.started_at,
+                r.completed_at,
+                r.failed_at,
+                t.cancelled_at,
+                COALESCE(r.completed_at, r.failed_at, r.started_at, r.created_at) AS updated_at
+            FROM absurd.t_{target_queue} t
+            JOIN absurd.r_{target_queue} r ON r.task_id = t.task_id
+            WHERE r.run_id = '{options.run_id}'
+        """
+    else:
+        # Fetch all runs for task
+        runs_query = f"""
+            SELECT
+                t.task_id,
+                r.run_id,
+                t.task_name,
+                t.state,
+                r.state as run_state,
+                r.attempt,
+                t.max_attempts,
+                t.params,
+                t.retry_strategy,
+                t.headers,
+                COALESCE(r.failure_reason, r.result) AS final_state,
+                r.created_at,
+                r.started_at,
+                r.completed_at,
+                r.failed_at,
+                t.cancelled_at,
+                COALESCE(r.completed_at, r.failed_at, r.started_at, r.created_at) AS updated_at
+            FROM absurd.t_{target_queue} t
+            JOIN absurd.r_{target_queue} r ON r.task_id = t.task_id
+            WHERE t.task_id = '{task_id}'
+            ORDER BY r.attempt
+        """
+
+    runs_result = run_psql(
+        config,
+        runs_query,
+        tuples_only=True,
+        no_align=True,
+    )
+
+    if not runs_result:
+        print("No data found", file=sys.stderr)
+        sys.exit(1)
+
+    # Parse runs
+    runs = []
+    for line in runs_result.strip().split('\n'):
+        parts = line.split('|')
+        if len(parts) >= 17:
+            run = {
+                'task_id': parts[0],
+                'run_id': parts[1],
+                'task_name': parts[2],
+                'task_state': parts[3],
+                'run_state': parts[4],
+                'attempt': parts[5],
+                'max_attempts': parts[6] if parts[6] else None,
+                'params': json.loads(parts[7]) if parts[7] else None,
+                'retry_strategy': json.loads(parts[8]) if parts[8] else None,
+                'headers': json.loads(parts[9]) if parts[9] else None,
+                'final_state': json.loads(parts[10]) if parts[10] else None,
+                'created_at': parts[11],
+                'started_at': parts[12],
+                'completed_at': parts[13],
+                'failed_at': parts[14],
+                'cancelled_at': parts[15],
+                'updated_at': parts[16],
+            }
+            runs.append(run)
+
+    # For each run, fetch checkpoints and waits
+    for run in runs:
+        # Fetch checkpoints
+        checkpoints_query = f"""
+            SELECT
+                checkpoint_name,
+                state,
+                status,
+                owner_run_id,
+                updated_at
+            FROM absurd.c_{target_queue}
+            WHERE task_id = '{run['task_id']}' AND owner_run_id = '{run['run_id']}'
+            ORDER BY updated_at DESC
+        """
+
+        checkpoints_result = run_psql(
+            config,
+            checkpoints_query,
+            tuples_only=True,
+            no_align=True,
+        )
+
+        checkpoints = []
+        if checkpoints_result:
+            for line in checkpoints_result.strip().split('\n'):
+                parts = line.split('|')
+                if len(parts) >= 5:
+                    checkpoints.append({
+                        'name': parts[0],
+                        'state': json.loads(parts[1]) if parts[1] else None,
+                        'status': parts[2],
+                        'owner_run_id': parts[3],
+                        'updated_at': parts[4],
+                    })
+
+        run['checkpoints'] = checkpoints
+
+        # Fetch wait states
+        waits_query = f"""
+            SELECT
+                CASE
+                    WHEN r.wake_event IS NOT NULL THEN 'event'
+                    WHEN r.available_at IS NOT NULL THEN 'sleep'
+                    ELSE NULL
+                END AS wait_type,
+                r.available_at,
+                r.wake_event,
+                w.step_name,
+                r.event_payload,
+                e.payload as event_payload_emitted,
+                e.emitted_at,
+                COALESCE(w.created_at, r.started_at) as updated_at
+            FROM absurd.r_{target_queue} r
+            LEFT JOIN absurd.w_{target_queue} w ON w.run_id = r.run_id
+            LEFT JOIN absurd.e_{target_queue} e ON e.event_name = r.wake_event
+            WHERE r.run_id = '{run['run_id']}' AND r.state = 'sleeping'
+        """
+
+        waits_result = run_psql(
+            config,
+            waits_query,
+            tuples_only=True,
+            no_align=True,
+        )
+
+        waits = []
+        if waits_result:
+            for line in waits_result.strip().split('\n'):
+                parts = line.split('|')
+                if len(parts) >= 8 and parts[0]:
+                    waits.append({
+                        'wait_type': parts[0],
+                        'wake_at': parts[1],
+                        'wake_event': parts[2] if parts[2] else None,
+                        'step_name': parts[3] if parts[3] else None,
+                        'payload': json.loads(parts[4]) if parts[4] else None,
+                        'event_payload': json.loads(parts[5]) if parts[5] else None,
+                        'emitted_at': parts[6] if parts[6] else None,
+                        'updated_at': parts[7],
+                    })
+
+        run['waits'] = waits
+
+    # Now output the results
+    print("=" * 80)
+    print(f"TASK DUMP")
+    print("=" * 80)
+    print()
+
+    for idx, run in enumerate(runs):
+        if idx > 0:
+            print()
+            print("-" * 80)
+            print()
+
+        print(f"BASIC INFORMATION")
+        print(f"  Current status:    {run['run_state']}")
+        print(f"  Task Name:         {run['task_name']}")
+        print(f"  Queue:             {target_queue}")
+        print(f"  Task ID:           {run['task_id']}")
+        print(f"  Run ID:            {run['run_id']}")
+        print()
+
+        print(f"TIMING")
+        print(f"  Created:           {format_timestamp(run['created_at'])}")
+        print(f"  Updated:           {format_timestamp(run['updated_at'])}")
+        if run['started_at']:
+            print(f"  Started:           {format_timestamp(run['started_at'])}")
+        if run['completed_at']:
+            print(f"  Completed:         {format_timestamp(run['completed_at'])}")
+        if run['failed_at']:
+            print(f"  Failed:            {format_timestamp(run['failed_at'])}")
+        if run['cancelled_at']:
+            print(f"  Cancelled:         {format_timestamp(run['cancelled_at'])}")
+        print()
+
+        # Wait states
+        if run['waits']:
+            print(f"WAIT STATES")
+            for wait in run['waits']:
+                wait_type = wait['wait_type'].capitalize() + " wait" if wait['wait_type'] else "Wait"
+                print(f"  {wait_type}")
+                if wait['step_name']:
+                    print(f"    Step:            {wait['step_name']}")
+                if wait['wake_at']:
+                    print(f"    Wake at:         {format_timestamp(wait['wake_at'])}")
+                if wait['wake_event']:
+                    print(f"    Wake event:      {wait['wake_event']}")
+                if wait['emitted_at']:
+                    print(f"    Last emit:       {format_timestamp(wait['emitted_at'])}")
+                print(f"    Updated:         {format_timestamp(wait['updated_at'])}")
+                if wait['payload']:
+                    print(f"    Wait payload:")
+                    for line in format_json_value(wait['payload']).split('\n'):
+                        print(f"      {line}")
+                if wait['event_payload']:
+                    print(f"    Event payload:")
+                    for line in format_json_value(wait['event_payload']).split('\n'):
+                        print(f"      {line}")
+            print()
+
+        print(f"RETRY INFORMATION")
+        max_attempts_str = run['max_attempts'] if run['max_attempts'] else "unlimited"
+        print(f"  Attempt:           {run['attempt']} of {max_attempts_str}")
+        if run['retry_strategy']:
+            print(f"  Retry Strategy:")
+            for line in format_json_value(run['retry_strategy']).split('\n'):
+                print(f"    {line}")
+        print()
+
+        # Parameters
+        if run['params']:
+            print(f"PARAMETERS")
+            for line in format_json_value(run['params']).split('\n'):
+                print(f"  {line}")
+            print()
+
+        # Headers
+        if run['headers']:
+            print(f"HEADERS")
+            for line in format_json_value(run['headers']).split('\n'):
+                print(f"  {line}")
+            print()
+
+        # Final state
+        if run['final_state']:
+            state_label = "FAILURE" if run['run_state'] == 'failed' else "FINAL STATE"
+            print(state_label)
+            for line in format_json_value(run['final_state']).split('\n'):
+                print(f"  {line}")
+            print()
+
+        # Checkpoints
+        if run['checkpoints']:
+            print(f"CHECKPOINTS")
+            for checkpoint in run['checkpoints']:
+                print(f"  {checkpoint['name']} ({checkpoint['status']})")
+                print(f"    Updated:         {format_timestamp(checkpoint['updated_at'])}")
+                if checkpoint['state']:
+                    print(f"    State:")
+                    for line in format_json_value(checkpoint['state']).split('\n'):
+                        print(f"      {line}")
+                print()
+
+
 def show_help():
     print(
         """Usage: absurdctl COMMAND [OPTIONS]
@@ -776,6 +1188,7 @@ Commands:
   drop-queue      Drop an existing queue
   list-queues     List all existing queues
   spawn-task      Spawn a new task
+  dump-task       Dump task or run details including checkpoints
   help            Show this help message
 
 Run 'absurdctl COMMAND --help' for more information on a command.
@@ -794,6 +1207,7 @@ Examples:
   absurdctl drop-queue myqueue --yes
   absurdctl list-queues
   absurdctl spawn-task my-task -P foo=bar -P count:=42
+  absurdctl dump-task --task-id=019a32d3-8425-7ae2-a5af-2f17a6707666
 """
     )
 
@@ -818,6 +1232,8 @@ def main():
         cmd_init(args)
     elif command == "spawn-task":
         cmd_spawn_task(args)
+    elif command == "dump-task":
+        cmd_dump_task(args)
     else:
         print(f"Unknown command: {command}", file=sys.stderr)
         print("")

@@ -13,12 +13,19 @@ type JSONToken =
   | { type: "null"; value: string; path: string }
   | { type: "punctuation"; value: string }
   | { type: "whitespace"; value: string }
-  | { type: "foldable-start"; value: string; path: string; foldType: "object" | "array" }
+  | {
+      type: "foldable-start";
+      value: string;
+      path: string;
+      foldType: "object" | "array";
+    }
   | { type: "foldable-end"; value: string };
 
 export function JSONViewer(props: JSONViewerProps) {
   const [copied, setCopied] = createSignal(false);
-  const [toggledStrings, setToggledStrings] = createSignal<Set<string>>(new Set());
+  const [toggledStrings, setToggledStrings] = createSignal<Set<string>>(
+    new Set(),
+  );
   const [foldedPaths, setFoldedPaths] = createSignal<Set<string>>(new Set());
 
   const errorInfo = () => extractErrorLike(props.data);
@@ -126,13 +133,17 @@ export function JSONViewer(props: JSONViewerProps) {
                     );
                   }
                   if (token.type === "punctuation") {
-                    return <span class="text-muted-foreground">{token.value}</span>;
+                    return (
+                      <span class="text-muted-foreground">{token.value}</span>
+                    );
                   }
                   if (token.type === "whitespace") {
                     return <span>{token.value}</span>;
                   }
                   if (token.type === "foldable-end") {
-                    return <span class="text-muted-foreground">{token.value}</span>;
+                    return (
+                      <span class="text-muted-foreground">{token.value}</span>
+                    );
                   }
                   return null;
                 }}
@@ -174,7 +185,7 @@ function tokenizeJSON(
   toggledStrings: Set<string>,
   foldedPaths: Set<string>,
   path: string = "$",
-  indent: number = 0
+  indent: number = 0,
 ): JSONToken[] {
   const tokens: JSONToken[] = [];
   const indentStr = "  ".repeat(indent);
@@ -199,7 +210,12 @@ function tokenizeJSON(
       tokens.push({ type: "punctuation", value: "[]" });
     } else {
       const isFolded = foldedPaths.has(path);
-      tokens.push({ type: "foldable-start", value: "[", path, foldType: "array" });
+      tokens.push({
+        type: "foldable-start",
+        value: "[",
+        path,
+        foldType: "array",
+      });
 
       if (isFolded) {
         tokens.push({ type: "punctuation", value: " ... " });
@@ -207,7 +223,15 @@ function tokenizeJSON(
         tokens.push({ type: "whitespace", value: "\n" });
         data.forEach((item, index) => {
           tokens.push({ type: "whitespace", value: indentStr + "  " });
-          tokens.push(...tokenizeJSON(item, toggledStrings, foldedPaths, `${path}[${index}]`, indent + 1));
+          tokens.push(
+            ...tokenizeJSON(
+              item,
+              toggledStrings,
+              foldedPaths,
+              `${path}[${index}]`,
+              indent + 1,
+            ),
+          );
           if (index < data.length - 1) {
             tokens.push({ type: "punctuation", value: "," });
           }
@@ -224,7 +248,12 @@ function tokenizeJSON(
       tokens.push({ type: "punctuation", value: "{}" });
     } else {
       const isFolded = foldedPaths.has(path);
-      tokens.push({ type: "foldable-start", value: "{", path, foldType: "object" });
+      tokens.push({
+        type: "foldable-start",
+        value: "{",
+        path,
+        foldType: "object",
+      });
 
       if (isFolded) {
         tokens.push({ type: "punctuation", value: " ... " });
@@ -233,9 +262,21 @@ function tokenizeJSON(
         entries.forEach(([key, value], index) => {
           const keyPath = `${path}.${key}`;
           tokens.push({ type: "whitespace", value: indentStr + "  " });
-          tokens.push({ type: "key", value: JSON.stringify(key), path: keyPath });
+          tokens.push({
+            type: "key",
+            value: JSON.stringify(key),
+            path: keyPath,
+          });
           tokens.push({ type: "punctuation", value: ": " });
-          tokens.push(...tokenizeJSON(value, toggledStrings, foldedPaths, keyPath, indent + 1));
+          tokens.push(
+            ...tokenizeJSON(
+              value,
+              toggledStrings,
+              foldedPaths,
+              keyPath,
+              indent + 1,
+            ),
+          );
           if (index < entries.length - 1) {
             tokens.push({ type: "punctuation", value: "," });
           }
