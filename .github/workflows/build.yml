@@ -5,7 +5,7 @@ on:
     branches:
       - main
     tags:
-      - 'v*'
+      - '[0-9]+.*'
   pull_request:
 
 jobs:
@@ -76,7 +76,7 @@ jobs:
 
   release:
     name: Create Release
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/')
     needs: [build-habitat]
     runs-on: ubuntu-latest
     permissions:
@@ -147,7 +147,7 @@ jobs:
 
   publish-npm:
     name: Publish to npm
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/')
     needs: [test-npm-build]
     runs-on: ubuntu-latest
     environment: npm-publish
