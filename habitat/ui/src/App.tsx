@@ -59,48 +59,47 @@ export default function App() {
 
 function Layout(props: { children: JSX.Element }) {
   return (
-    <div class="flex min-h-screen bg-background text-foreground">
-      <aside class="hidden w-64 flex-col border-r bg-muted/40 lg:flex">
-        <div class="flex items-center gap-2 px-6 py-5">
+    <div class="flex min-h-screen flex-col bg-background text-foreground">
+      <header class="border-b bg-muted/40">
+        <div class="flex flex-col gap-3 px-4 py-4 sm:flex-row sm:items-center sm:justify-between lg:px-6">
           <p class="text-sm font-semibold leading-none">Absurd Habitat</p>
+          <nav class="flex flex-wrap items-center gap-2">
+            <A
+              href="/"
+              class="inline-flex items-center gap-2 rounded-md border border-transparent px-3 py-2 text-sm font-medium text-muted-foreground transition-colors hover:border-transparent hover:bg-background/60 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              activeClass="border-border bg-background text-foreground shadow-sm"
+              end
+            >
+              <span class="h-2 w-2 rounded-full bg-emerald-500" />
+              Overview
+            </A>
+            <A
+              href="/tasks"
+              class="inline-flex items-center gap-2 rounded-md border border-transparent px-3 py-2 text-sm font-medium text-muted-foreground transition-colors hover:border-transparent hover:bg-background/60 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              activeClass="border-border bg-background text-foreground shadow-sm"
+            >
+              <span class="h-2 w-2 rounded-full bg-blue-500" />
+              Tasks
+            </A>
+            <A
+              href="/events"
+              class="inline-flex items-center gap-2 rounded-md border border-transparent px-3 py-2 text-sm font-medium text-muted-foreground transition-colors hover:border-transparent hover:bg-background/60 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              activeClass="border-border bg-background text-foreground shadow-sm"
+            >
+              <span class="h-2 w-2 rounded-full bg-purple-500" />
+              Events
+            </A>
+            <A
+              href="/queues"
+              class="inline-flex items-center gap-2 rounded-md border border-transparent px-3 py-2 text-sm font-medium text-muted-foreground transition-colors hover:border-transparent hover:bg-background/60 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              activeClass="border-border bg-background text-foreground shadow-sm"
+            >
+              <span class="h-2 w-2 rounded-full bg-amber-500" />
+              Queues
+            </A>
+          </nav>
         </div>
-        <nav class="flex-1 px-3 space-y-1">
-          <A
-            href="/"
-            class="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm font-medium transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-            activeClass="bg-muted"
-            end
-          >
-            <span class="h-2 w-2 rounded-full bg-emerald-500" />
-            Overview
-          </A>
-          <A
-            href="/tasks"
-            class="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm font-medium transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-            activeClass="bg-muted"
-          >
-            <span class="h-2 w-2 rounded-full bg-blue-500" />
-            Tasks
-          </A>
-          <A
-            href="/events"
-            class="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm font-medium transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-            activeClass="bg-muted"
-          >
-            <span class="h-2 w-2 rounded-full bg-purple-500" />
-            Events
-          </A>
-          <A
-            href="/queues"
-            class="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm font-medium transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-            activeClass="bg-muted"
-          >
-            <span class="h-2 w-2 rounded-full bg-amber-500" />
-            Queues
-          </A>
-        </nav>
-      </aside>
-
+      </header>
       <main class="flex flex-1 flex-col">{props.children}</main>
     </div>
   );

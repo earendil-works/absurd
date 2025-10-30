@@ -10,11 +10,17 @@ interface TaskDetailViewProps {
   task: TaskSummary;
   detail: TaskDetail | undefined;
   taskLink?: string;
+  variant?: "default" | "compact";
 }
 
 export function TaskDetailView(props: TaskDetailViewProps) {
+  const containerClass =
+    props.variant === "compact"
+      ? "px-4 pb-4 pt-0 space-y-2"
+      : "p-6 space-y-4";
+
   return (
-    <div class="p-6 space-y-4">
+    <div class={containerClass}>
       <Show
         when={props.detail}
         fallback={
@@ -22,16 +28,25 @@ export function TaskDetailView(props: TaskDetailViewProps) {
         }
       >
         {(detail) => (
-          <DetailContent detail={detail()} taskLink={props.taskLink} />
+          <DetailContent
+            detail={detail()}
+            taskLink={props.taskLink}
+            variant={props.variant ?? "default"}
+          />
         )}
       </Show>
     </div>
   );
 }
 
-function DetailContent(props: { detail: TaskDetail; taskLink?: string }) {
+function DetailContent(props: {
+  detail: TaskDetail;
+  taskLink?: string;
+  variant: "default" | "compact";
+}) {
   const stateLabel = () =>
     props.detail.status?.toLowerCase() === "failed" ? "Failure" : "Final State";
+  const isDefault = props.variant === "default";
 
   return (
     <>
@@ -46,87 +61,78 @@ function DetailContent(props: { detail: TaskDetail; taskLink?: string }) {
         )}
       </Show>
 
-      <div class="grid gap-4 md:grid-cols-2">
-        <div>
-          <h3 class="text-sm font-semibold mb-2">Basic Information</h3>
-          <dl class="space-y-1 text-sm">
-            <div class="flex gap-2">
-              <dt class="text-muted-foreground w-32">Current status:</dt>
-              <dd>
-                <TaskStatusBadge status={props.detail.status} />
-              </dd>
-            </div>
-            <div class="flex gap-2">
-              <dt class="text-muted-foreground w-32">Task Name:</dt>
-              <dd class="font-medium">
-                <Show when={props.taskLink} fallback={props.detail.taskName}>
-                  {(link) => (
-                    <A href={link()} class="text-primary hover:underline">
-                      {props.detail.taskName}
-                    </A>
-                  )}
-                </Show>
-              </dd>
-            </div>
-            <div class="flex gap-2">
-              <dt class="text-muted-foreground w-32">Queue:</dt>
-              <dd>{props.detail.queueName}</dd>
-            </div>
-            <div class="flex gap-2">
-              <dt class="text-muted-foreground w-32">Task ID:</dt>
-              <dd>
-                <Show
-                  when={props.taskLink}
-                  fallback={<IdDisplay value={props.detail.taskId} />}
-                >
-                  {(link) => (
-                    <A
-                      href={link()}
-                      class="inline-flex items-center gap-1 hover:underline"
-                    >
-                      <IdDisplay value={props.detail.taskId} />
-                    </A>
-                  )}
-                </Show>
-              </dd>
-            </div>
-            <div class="flex gap-2">
-              <dt class="text-muted-foreground w-32">Run ID:</dt>
-              <dd>
-                <IdDisplay value={props.detail.runId} />
-              </dd>
-            </div>
-            <Show when={props.detail.workerId}>
+      <Show when={isDefault}>
+        <div class="grid gap-4 md:grid-cols-2">
+          <div>
+            <h3 class="text-sm font-semibold mb-2">Basic Information</h3>
+            <dl class="space-y-1 text-sm">
               <div class="flex gap-2">
-                <dt class="text-muted-foreground w-32">Worker:</dt>
+                <dt class="text-muted-foreground w-32">Current status:</dt>
                 <dd>
-                  <IdDisplay value={props.detail.workerId!} />
+                  <TaskStatusBadge status={props.detail.status} />
                 </dd>
               </div>
-            </Show>
-          </dl>
-        </div>
-
-        <div>
-          <h3 class="text-sm font-semibold mb-2">Timing</h3>
-          <dl class="space-y-1 text-sm">
-            <div class="flex gap-2">
-              <dt class="text-muted-foreground w-32">Created:</dt>
-              <dd>{formatTimestamp(props.detail.createdAt)}</dd>
-            </div>
-            <div class="flex gap-2">
-              <dt class="text-muted-foreground w-32">Updated:</dt>
-              <dd>{formatTimestamp(props.detail.updatedAt)}</dd>
-            </div>
-            <Show when={props.detail.completedAt}>
               <div class="flex gap-2">
-                <dt class="text-muted-foreground w-32">Completed:</dt>
-                <dd>{formatTimestamp(props.detail.completedAt!)}</dd>
+                <dt class="text-muted-foreground w-32">Task Name:</dt>
+                <dd class="font-medium">
+                  <Show when={props.taskLink} fallback={props.detail.taskName}>
+                    {(link) => (
+                      <A href={link()} class="text-primary hover:underline">
+                        {props.detail.taskName}
+                      </A>
+                    )}
+                  </Show>
+                </dd>
               </div>
-            </Show>
-          </dl>
+              <div class="flex gap-2">
+                <dt class="text-muted-foreground w-32">Queue:</dt>
+                <dd>{props.detail.queueName}</dd>
+              </div>
+              <div class="flex gap-2">
+                <dt class="text-muted-foreground w-32">Task ID:</dt>
+                <dd>
+                  <Show
+                    when={props.taskLink}
+                    fallback={<IdDisplay value={props.detail.taskId} />}
+                  >
+                    {(link) => (
+                      <A
+                        href={link()}
+                        class="inline-flex items-center gap-1 hover:underline"
+                      >
+                        <IdDisplay value={props.detail.taskId} />
+                      </A>
+                    )}
+                  </Show>
+                </dd>
+              </div>
+              <div class="flex gap-2">
+                <dt class="text-muted-foreground w-32">Run ID:</dt>
+                <dd>
+                  <IdDisplay value={props.detail.runId} />
+                </dd>
+              </div>
+              <Show when={props.detail.workerId}>
+                <div class="flex gap-2">
+                  <dt class="text-muted-foreground w-32">Worker:</dt>
+                  <dd>
+                    <IdDisplay value={props.detail.workerId!} />
+                  </dd>
+                </div>
+              </Show>
+            </dl>
+          </div>
         </div>
-      </div>
+      </Show>
+
+      <Show when={props.detail.retryStrategy}>
+        <div>
+          <JSONViewer
+            data={props.detail.retryStrategy}
+            label="Retry Strategy"
+          />
+        </div>
+      </Show>
 
       <Show when={props.detail.waits.length > 0}>
         <div>
@@ -194,29 +200,6 @@ function DetailContent(props: { detail: TaskDetail; taskLink?: string }) {
           </div>
         </div>
       </Show>
-
-      <div>
-        <h3 class="text-sm font-semibold mb-2">Retry Information</h3>
-        <dl class="space-y-1 text-sm">
-          <div class="flex gap-2">
-            <dt class="text-muted-foreground w-32">Attempt:</dt>
-            <dd>
-              {props.detail.attempt}
-              {props.detail.maxAttempts
-                ? ` of ${props.detail.maxAttempts}`
-                : " (unlimited)"}
-            </dd>
-          </div>
-        </dl>
-        <Show when={props.detail.retryStrategy}>
-          <div class="mt-2">
-            <JSONViewer
-              data={props.detail.retryStrategy}
-              label="Retry Strategy"
-            />
-          </div>
-        </Show>
-      </div>
 
       <Show when={props.detail.params}>
         <div>

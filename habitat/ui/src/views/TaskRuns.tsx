@@ -190,6 +190,21 @@ export default function TaskRuns() {
     return `${diffDay}d`;
   };
 
+  const formatAbsolute = (timestamp: string) => {
+    const date = new Date(timestamp);
+    if (Number.isNaN(date.getTime())) {
+      return "—";
+    }
+    try {
+      return new Intl.DateTimeFormat(undefined, {
+        dateStyle: "medium",
+        timeStyle: "medium",
+      }).format(date);
+    } catch {
+      return date.toISOString();
+    }
+  };
+
   return (
     <>
       <header class="flex flex-col gap-4 border-b bg-background px-6 py-6 sm:flex-row sm:items-center sm:justify-between">
@@ -281,29 +296,84 @@ export default function TaskRuns() {
                         <IdDisplay value={run.runId} />
                         <TaskStatusBadge status={run.status} />
                       </CardTitle>
-                      <CardDescription class="flex flex-wrap gap-2 text-xs">
-                        <span>Queue: {run.queueName}</span>
-                        <span>Attempt: {run.attempt}</span>
-                        <Show
-                          when={
-                            run.maxAttempts !== null &&
-                            run.maxAttempts !== undefined
-                          }
-                        >
-                          <span>Max attempts: {run.maxAttempts}</span>
-                        </Show>
-                        <span>
-                          Created: {formatRelativeAge(run.createdAt)} ago
-                        </span>
-                        <span>
-                          Updated: {formatRelativeAge(run.updatedAt)} ago
-                        </span>
+                      <CardDescription>
+                        <div class="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+                          <span class="inline-flex items-center gap-1">
+                            <span class="text-muted-foreground opacity-80">
+                              Queue:
+                            </span>
+                            <span class="font-medium text-foreground">
+                              {run.queueName}
+                            </span>
+                          </span>
+                          <span class="inline-flex items-center gap-1">
+                            <span class="text-muted-foreground opacity-80">
+                              Attempt:
+                            </span>
+                            <span class="font-medium text-foreground">
+                              {run.attempt}
+                            </span>
+                          </span>
+                          <Show
+                            when={
+                              run.maxAttempts !== null &&
+                              run.maxAttempts !== undefined
+                            }
+                          >
+                            <span class="inline-flex items-center gap-1">
+                              <span class="text-muted-foreground opacity-80">
+                                Max attempts:
+                              </span>
+                              <span class="font-medium text-foreground">
+                                {run.maxAttempts}
+                              </span>
+                            </span>
+                          </Show>
+                          <span class="inline-flex items-center gap-1">
+                            <span class="text-muted-foreground opacity-80">
+                              Created:
+                            </span>
+                            <span
+                              class="font-medium text-foreground"
+                              title={formatAbsolute(run.createdAt)}
+                            >
+                              {formatRelativeAge(run.createdAt)} ago
+                            </span>
+                          </span>
+                          <span class="inline-flex items-center gap-1">
+                            <span class="text-muted-foreground opacity-80">
+                              Updated:
+                            </span>
+                            <span
+                              class="font-medium text-foreground"
+                              title={formatAbsolute(run.updatedAt)}
+                            >
+                              {formatRelativeAge(run.updatedAt)} ago
+                            </span>
+                          </span>
+                          <Show when={run.completedAt}>
+                            {(completedAt) => (
+                              <span class="inline-flex items-center gap-1">
+                                <span class="text-muted-foreground opacity-80">
+                                  Completed:
+                                </span>
+                                <span
+                                  class="font-medium text-foreground"
+                                  title={formatAbsolute(completedAt())}
+                                >
+                                  {formatRelativeAge(completedAt())} ago
+                                </span>
+                              </span>
+                            )}
+                          </Show>
+                        </div>
                       </CardDescription>
                     </CardHeader>
                     <CardContent class="p-0">
                       <TaskDetailView
                         task={run}
                         detail={runDetails()[run.runId]}
+                        variant="compact"
                       />
                     </CardContent>
                   </Card>
