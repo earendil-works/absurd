@@ -1127,7 +1127,8 @@ def cmd_dump_task(args):
                 r.completed_at,
                 r.failed_at,
                 t.cancelled_at,
-                COALESCE(r.completed_at, r.failed_at, r.started_at, r.created_at) AS updated_at
+                COALESCE(r.completed_at, r.failed_at, r.started_at, r.created_at) AS updated_at,
+                r.claimed_by
             FROM absurd.t_{target_queue} t
             JOIN absurd.r_{target_queue} r ON r.task_id = t.task_id
             WHERE r.run_id = '{options.run_id}'
@@ -1152,7 +1153,8 @@ def cmd_dump_task(args):
                 r.completed_at,
                 r.failed_at,
                 t.cancelled_at,
-                COALESCE(r.completed_at, r.failed_at, r.started_at, r.created_at) AS updated_at
+                COALESCE(r.completed_at, r.failed_at, r.started_at, r.created_at) AS updated_at,
+                r.claimed_by
             FROM absurd.t_{target_queue} t
             JOIN absurd.r_{target_queue} r ON r.task_id = t.task_id
             WHERE t.task_id = '{task_id}'
@@ -1168,7 +1170,7 @@ def cmd_dump_task(args):
     # Parse runs
     runs = []
     for parts in runs_rows:
-        if len(parts) >= 17:
+        if len(parts) >= 18:
             runs.append(
                 {
                     "task_id": parts[0],
@@ -1188,6 +1190,7 @@ def cmd_dump_task(args):
                     "failed_at": parts[14],
                     "cancelled_at": parts[15],
                     "updated_at": parts[16],
+                    "worker_id": parts[17] if parts[17] else None,
                 }
             )
 
@@ -1282,6 +1285,8 @@ def cmd_dump_task(args):
         print(f"  Queue:             {target_queue}")
         print(f"  Task ID:           {run['task_id']}")
         print(f"  Run ID:            {run['run_id']}")
+        if run["worker_id"]:
+            print(f"  Worker ID:         {run['worker_id']}")
         print()
 
         print(f"TIMING")
