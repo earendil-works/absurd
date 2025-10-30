@@ -181,6 +181,22 @@ const payment = await ctx.step('process-payment', async () => {
 });
 ```
 
+## Living with Code Changes
+
+One of the fun perks of working with durable execution systems is that your
+tasks might keep running for... well, geological timescales.  The codebase
+evolves but that workflow you kicked off six months ago?  If you sleep long
+enough that is still ticking.  There's no magic fix for this, just awareness.
+
+In practice, it means that if you change what a step returns, some future code
+might suddenly receive old results from a bygone era.  That's part of the
+deal.  So what can you do? Two options:
+
+1. Rename the step (the old state is never going to be seen again)
+2. Handle the relics gracefully when they come crawling back.
+
+Both work. The first is cleaner, the second is braver.
+
 ## Working With Agents
 
 Absurd is built so that agents such as Claude Code can efficiently work with the
