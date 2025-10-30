@@ -31,7 +31,18 @@ func (s *Server) handleConfig(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/" {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		http.NotFound(w, r)
+		return
+	}
+
+	path := r.URL.Path
+	if path == "" {
+		path = "/"
+	}
+
+	// Keep API and internal prefixed routes on their dedicated mux handlers.
+	if strings.HasPrefix(path, "/api") || strings.HasPrefix(path, "/_") {
 		http.NotFound(w, r)
 		return
 	}
@@ -43,6 +54,9 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
+	if r.Method == http.MethodHead {
+		return
+	}
 	_, _ = w.Write(s.indexHTML)
 }
 
