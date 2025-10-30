@@ -197,6 +197,19 @@ deal.  So what can you do? Two options:
 
 Both work. The first is cleaner, the second is braver.
 
+## Cleanup
+
+By default data will live forever which is unlikely to be what you want.  Currently
+there is no support for time based partitioning.  To get rid of data you can run
+the cleanup functions (`absurd.cleanup_tasks` and `absurd.cleanup_events`)
+manually or use the `absurdctl cleanup` command which lets you define a queue name
+and a TTL in days.  For instance the following command deletes runs older than 7
+days on the default queue:
+
+```
+absurdctl cleanup default 7
+```
+
 ## Working With Agents
 
 Absurd is built so that agents such as Claude Code can efficiently work with the
