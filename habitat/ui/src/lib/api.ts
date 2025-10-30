@@ -80,6 +80,7 @@ export interface TaskSummary {
   createdAt: string;
   updatedAt: string;
   completedAt?: string | null;
+  workerId?: string;
 }
 
 export interface CheckpointState {

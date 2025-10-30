@@ -197,7 +197,8 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 				t.max_attempts,
 				r.created_at,
 				COALESCE(r.completed_at, r.failed_at, r.started_at, r.created_at) AS updated_at,
-				r.completed_at
+				r.completed_at,
+				r.claimed_by
 			FROM absurd.%s t
 			JOIN absurd.%s r ON r.task_id = t.task_id
 			ORDER BY r.created_at DESC
@@ -222,6 +223,7 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 				&record.CreatedAt,
 				&record.UpdatedAt,
 				&record.CompletedAt,
+				&record.ClaimedBy,
 			); err != nil {
 				log.Printf("handleTasks: failed to scan task in queue %s: %v", queueName, err)
 				rows.Close()
@@ -329,7 +331,8 @@ func (s *Server) handleTaskDetail(w http.ResponseWriter, r *http.Request) {
 			COALESCE(r.failure_reason, r.result) AS state,
 			r.created_at,
 			COALESCE(r.completed_at, r.failed_at, r.started_at, r.created_at) AS updated_at,
-			r.completed_at
+			r.completed_at,
+			r.claimed_by
 		FROM absurd.%s t
 		JOIN absurd.%s r ON r.task_id = t.task_id
 		WHERE r.run_id = $1
@@ -352,6 +355,7 @@ func (s *Server) handleTaskDetail(w http.ResponseWriter, r *http.Request) {
 		&task.CreatedAt,
 		&task.UpdatedAt,
 		&task.CompletedAt,
+		&task.ClaimedBy,
 	)
 	if err == sql.ErrNoRows {
 		http.Error(w, "task not found", http.StatusNotFound)
@@ -550,7 +554,8 @@ func (s *Server) handleQueueTasks(w http.ResponseWriter, r *http.Request, queueN
 			t.max_attempts,
 			r.created_at,
 			COALESCE(r.completed_at, r.failed_at, r.started_at, r.created_at) AS updated_at,
-			r.completed_at
+			r.completed_at,
+			r.claimed_by
 		FROM absurd.%s t
 		JOIN absurd.%s r ON r.task_id = t.task_id
 		ORDER BY r.created_at DESC
@@ -578,6 +583,7 @@ func (s *Server) handleQueueTasks(w http.ResponseWriter, r *http.Request, queueN
 			&task.CreatedAt,
 			&task.UpdatedAt,
 			&task.CompletedAt,
+			&task.ClaimedBy,
 		); err != nil {
 			http.Error(w, "failed to scan task", http.StatusInternalServerError)
 			return
@@ -805,6 +811,7 @@ type taskSummaryRecord struct {
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
 	CompletedAt sql.NullTime
+	ClaimedBy   sql.NullString
 }
 
 type taskDetailRecord struct {
@@ -849,6 +856,7 @@ type TaskSummary struct {
 	CreatedAt   time.Time  `json:"createdAt"`
 	UpdatedAt   time.Time  `json:"updatedAt"`
 	CompletedAt *time.Time `json:"completedAt,omitempty"`
+	WorkerID    *string    `json:"workerId,omitempty"`
 }
 
 // TaskDetail is the API representation for expanded task details
@@ -974,6 +982,7 @@ func (r taskSummaryRecord) AsAPI() TaskSummary {
 		CreatedAt:   r.CreatedAt,
 		UpdatedAt:   r.UpdatedAt,
 		CompletedAt: nullableTime(r.CompletedAt),
+		WorkerID:    nullableString(r.ClaimedBy),
 	}
 }
 

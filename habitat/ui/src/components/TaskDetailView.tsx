@@ -96,6 +96,14 @@ function DetailContent(props: { detail: TaskDetail; taskLink?: string }) {
                 <IdDisplay value={props.detail.runId} />
               </dd>
             </div>
+            <Show when={props.detail.workerId}>
+              <div class="flex gap-2">
+                <dt class="text-muted-foreground w-32">Worker:</dt>
+                <dd>
+                  <IdDisplay value={props.detail.workerId!} />
+                </dd>
+              </div>
+            </Show>
           </dl>
         </div>
 
