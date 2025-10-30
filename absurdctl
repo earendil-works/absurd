@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+import csv
+import io
 import json
 import os
 import subprocess
@@ -131,6 +133,7 @@ def run_psql(
     extra_args=None,
     input_data=None,
     error_message=None,
+    strip_output=True,
 ):
     """
     Execute a PostgreSQL command. Returns stripped stdout for queries and the
@@ -171,8 +174,24 @@ def run_psql(
         sys.exit(1)
 
     if query is not None:
-        return result.stdout.strip()
+        return result.stdout.strip() if strip_output else result.stdout
     return result
+
+
+def run_psql_csv(config, query):
+    """Execute a query and return rows parsed via CSV output."""
+    output = run_psql(
+        config,
+        query,
+        tuples_only=True,
+        extra_args=["--csv"],
+        strip_output=False,
+    )
+    if not output:
+        return []
+
+    reader = csv.reader(io.StringIO(output))
+    return [row for row in reader if row]
 
 
 def queue_exists(config, queue_name):
@@ -751,10 +770,10 @@ def cmd_spawn_task(args):
         );
     """
 
-    result = run_psql(config, query, tuples_only=True, no_align=True)
+    rows = run_psql_csv(config, query)
 
-    if result:
-        task_id, run_id, attempt = result.split("|")
+    if rows:
+        task_id, run_id, attempt = rows[0]
         print(f"Task spawned successfully:")
         print(f"  Task ID: {task_id}")
         print(f"  Run ID: {run_id}")
@@ -954,29 +973,22 @@ def cmd_list_tasks(args):
             LIMIT {options.limit}
         """
 
-        result = run_psql(
-            config,
-            query,
-            tuples_only=True,
-            no_align=True,
-        )
+        rows = run_psql_csv(config, query)
 
-        if result:
-            for line in result.strip().split("\n"):
-                parts = line.split("|")
-                if len(parts) >= 8:
-                    all_tasks.append(
-                        {
-                            "task_id": parts[0],
-                            "run_id": parts[1] if parts[1] else "—",
-                            "task_name": parts[2],
-                            "queue": parts[3],
-                            "status": parts[4],
-                            "attempt": parts[5],
-                            "max_attempts": parts[6] if parts[6] else "∞",
-                            "updated_at": parts[7],
-                        }
-                    )
+        for parts in rows:
+            if len(parts) >= 8:
+                all_tasks.append(
+                    {
+                        "task_id": parts[0],
+                        "run_id": parts[1] if parts[1] else "—",
+                        "task_name": parts[2],
+                        "queue": parts[3],
+                        "status": parts[4],
+                        "attempt": parts[5],
+                        "max_attempts": parts[6] if parts[6] else "∞",
+                        "updated_at": parts[7],
+                    }
+                )
 
     # Sort all tasks by updated_at descending
     all_tasks.sort(key=lambda x: x["updated_at"], reverse=True)
@@ -1147,42 +1159,37 @@ def cmd_dump_task(args):
             ORDER BY r.attempt
         """
 
-    runs_result = run_psql(
-        config,
-        runs_query,
-        tuples_only=True,
-        no_align=True,
-    )
+    runs_rows = run_psql_csv(config, runs_query)
 
-    if not runs_result:
+    if not runs_rows:
         print("No data found", file=sys.stderr)
         sys.exit(1)
 
     # Parse runs
     runs = []
-    for line in runs_result.strip().split("\n"):
-        parts = line.split("|")
+    for parts in runs_rows:
         if len(parts) >= 17:
-            run = {
-                "task_id": parts[0],
-                "run_id": parts[1],
-                "task_name": parts[2],
-                "task_state": parts[3],
-                "run_state": parts[4],
-                "attempt": parts[5],
-                "max_attempts": parts[6] if parts[6] else None,
-                "params": json.loads(parts[7]) if parts[7] else None,
-                "retry_strategy": json.loads(parts[8]) if parts[8] else None,
-                "headers": json.loads(parts[9]) if parts[9] else None,
-                "final_state": json.loads(parts[10]) if parts[10] else None,
-                "created_at": parts[11],
-                "started_at": parts[12],
-                "completed_at": parts[13],
-                "failed_at": parts[14],
-                "cancelled_at": parts[15],
-                "updated_at": parts[16],
-            }
-            runs.append(run)
+            runs.append(
+                {
+                    "task_id": parts[0],
+                    "run_id": parts[1],
+                    "task_name": parts[2],
+                    "task_state": parts[3],
+                    "run_state": parts[4],
+                    "attempt": parts[5],
+                    "max_attempts": parts[6] if parts[6] else None,
+                    "params": json.loads(parts[7]) if parts[7] else None,
+                    "retry_strategy": json.loads(parts[8]) if parts[8] else None,
+                    "headers": json.loads(parts[9]) if parts[9] else None,
+                    "final_state": json.loads(parts[10]) if parts[10] else None,
+                    "created_at": parts[11],
+                    "started_at": parts[12],
+                    "completed_at": parts[13],
+                    "failed_at": parts[14],
+                    "cancelled_at": parts[15],
+                    "updated_at": parts[16],
+                }
+            )
 
     # For each run, fetch checkpoints and waits
     for run in runs:
@@ -1199,27 +1206,20 @@ def cmd_dump_task(args):
             ORDER BY updated_at DESC
         """
 
-        checkpoints_result = run_psql(
-            config,
-            checkpoints_query,
-            tuples_only=True,
-            no_align=True,
-        )
+        checkpoint_rows = run_psql_csv(config, checkpoints_query)
 
         checkpoints = []
-        if checkpoints_result:
-            for line in checkpoints_result.strip().split("\n"):
-                parts = line.split("|")
-                if len(parts) >= 5:
-                    checkpoints.append(
-                        {
-                            "name": parts[0],
-                            "state": json.loads(parts[1]) if parts[1] else None,
-                            "status": parts[2],
-                            "owner_run_id": parts[3],
-                            "updated_at": parts[4],
-                        }
-                    )
+        for parts in checkpoint_rows:
+            if len(parts) >= 5:
+                checkpoints.append(
+                    {
+                        "name": parts[0],
+                        "state": json.loads(parts[1]) if parts[1] else None,
+                        "status": parts[2],
+                        "owner_run_id": parts[3],
+                        "updated_at": parts[4],
+                    }
+                )
 
         run["checkpoints"] = checkpoints
 
@@ -1244,30 +1244,23 @@ def cmd_dump_task(args):
             WHERE r.run_id = '{run['run_id']}' AND r.state = 'sleeping'
         """
 
-        waits_result = run_psql(
-            config,
-            waits_query,
-            tuples_only=True,
-            no_align=True,
-        )
+        waits_rows = run_psql_csv(config, waits_query)
 
         waits = []
-        if waits_result:
-            for line in waits_result.strip().split("\n"):
-                parts = line.split("|")
-                if len(parts) >= 8 and parts[0]:
-                    waits.append(
-                        {
-                            "wait_type": parts[0],
-                            "wake_at": parts[1],
-                            "wake_event": parts[2] if parts[2] else None,
-                            "step_name": parts[3] if parts[3] else None,
-                            "payload": json.loads(parts[4]) if parts[4] else None,
-                            "event_payload": json.loads(parts[5]) if parts[5] else None,
-                            "emitted_at": parts[6] if parts[6] else None,
-                            "updated_at": parts[7],
-                        }
-                    )
+        for parts in waits_rows:
+            if len(parts) >= 8 and parts[0]:
+                waits.append(
+                    {
+                        "wait_type": parts[0],
+                        "wake_at": parts[1],
+                        "wake_event": parts[2] if parts[2] else None,
+                        "step_name": parts[3] if parts[3] else None,
+                        "payload": json.loads(parts[4]) if parts[4] else None,
+                        "event_payload": json.loads(parts[5]) if parts[5] else None,
+                        "emitted_at": parts[6] if parts[6] else None,
+                        "updated_at": parts[7],
+                    }
+                )
 
         run["waits"] = waits
 
