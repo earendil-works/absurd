@@ -2,6 +2,7 @@
  * Absurd SDK for TypeScript and JavaScript
  */
 import * as pg from "pg";
+import * as os from "os";
 
 export type JsonValue =
   | string
@@ -551,7 +552,7 @@ export class Absurd {
    */
   async startWorker(options: WorkerOptions = {}): Promise<Worker> {
     const {
-      workerId = "worker",
+      workerId = `${os.hostname?.() || "host"}:${process.pid}`,
       claimTimeout = 120,
       concurrency = 1,
       batchSize,
