@@ -241,6 +241,12 @@ absurdctl agent-help >> AGENTS.md
 
 You might have to tweak the outputs afterwards to work best for your setup.
 
+## AI Use Disclaimer
+
+This codebase has been built with a lot of support of AI.  A combination of hand
+written code, Codex and Claude Code was used to create this repository.  To the
+extend to which it can be copyrighted, the Apache 2.0 license should be assumed.
+
 ## License and Links
 
 - [Examples](https://github.com/earendil-works/absurd/tree/main/sdks/typescript/examples)
