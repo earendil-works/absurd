@@ -103,9 +103,51 @@ success "Version updated to: $NEW_VERSION"
 # Go back to project root for git operations
 cd "$PROJECT_ROOT"
 
+# Check for pending migration (migration with -main.sql suffix)
+info "Checking for pending migrations..."
+if ls "$PROJECT_ROOT"/sql/migrations/*-main.sql 1> /dev/null 2>&1; then
+    error "Found pending migration(s) with -main.sql suffix:"
+    ls "$PROJECT_ROOT"/sql/migrations/*-main.sql
+    echo ""
+    error "Please rename the migration to associate it with a release version before releasing."
+    echo "  Example: mv sql/migrations/X.X.X-main.sql sql/migrations/$NEW_VERSION.sql"
+    exit 1
+fi
+
+# Check if CHANGELOG.md has a section for the new version
+info "Checking CHANGELOG.md..."
+if ! grep -q "^# $NEW_VERSION" "$PROJECT_ROOT/CHANGELOG.md"; then
+    error "CHANGELOG.md does not have a section for version $NEW_VERSION"
+    echo ""
+    echo "Please add a changelog section for this release:"
+    echo "  1. Move the 'Unreleased' changes to a new '# $NEW_VERSION' section"
+    echo "  2. Create a new empty 'Unreleased' section at the top"
+    exit 1
+fi
+
+# Check if there's a migration for this version
+info "Checking for migration..."
+MIGRATION_FILE="$PROJECT_ROOT/sql/migrations/$NEW_VERSION.sql"
+if [[ ! -f "$MIGRATION_FILE" ]]; then
+    echo ""
+    info "Warning: No migration file found at sql/migrations/$NEW_VERSION.sql"
+    read -p "Is this expected (no schema changes in this release)? (y/N) " -n 1 -r
+    echo
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        error "Release cancelled. Please create the migration or fix the version."
+        exit 1
+    fi
+fi
+
+# Update package-lock.json to reflect the new version
+info "Updating lockfile..."
+cd "$SDK_DIR"
+npm install --package-lock-only
+cd "$PROJECT_ROOT"
+
 # Commit the version change
 info "Creating git commit..."
-git add sdks/typescript/package.json
+git add sdks/typescript/package.json sdks/typescript/package-lock.json
 git commit -m "Release $NEW_VERSION"
 
 # Create git tag without 'v' prefix
