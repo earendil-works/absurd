@@ -434,7 +434,9 @@ export default function TaskRuns() {
                 </span>
               </div>
               <div class="flex items-center gap-1">
-                <span class="text-muted-foreground">{queueSummary().label}</span>
+                <span class="text-muted-foreground">
+                  {queueSummary().label}
+                </span>
                 <span class="font-medium text-foreground">
                   {queueSummary().value ?? "—"}
                 </span>
@@ -461,7 +463,9 @@ export default function TaskRuns() {
                     }
                     const latest = items.reduce((acc, run) => {
                       const updated = Date.parse(run.updatedAt);
-                      return Number.isNaN(updated) ? acc : Math.max(acc, updated);
+                      return Number.isNaN(updated)
+                        ? acc
+                        : Math.max(acc, updated);
                     }, Number.NEGATIVE_INFINITY);
                     if (!Number.isFinite(latest)) {
                       return "—";

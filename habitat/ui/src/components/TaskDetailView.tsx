@@ -15,9 +15,7 @@ interface TaskDetailViewProps {
 
 export function TaskDetailView(props: TaskDetailViewProps) {
   const containerClass =
-    props.variant === "compact"
-      ? "px-4 pb-4 pt-0 space-y-2"
-      : "p-6 space-y-4";
+    props.variant === "compact" ? "px-4 pb-4 pt-0 space-y-2" : "p-6 space-y-4";
 
   return (
     <div class={containerClass}>
