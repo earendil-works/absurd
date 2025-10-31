@@ -16,6 +16,11 @@ def test_cleanup_tasks_and_events(client):
     client.complete_run(queue, claim["run_id"], {"status": "done"})
     client.emit_event(queue, "cleanup-event", {"kind": "notify"})
 
+    run_row = client.get_run(queue, claim["run_id"])
+    assert run_row is not None
+    assert run_row["claimed_by"] == "worker"
+    assert run_row["claim_expires_at"] == base + timedelta(seconds=60)
+
     # Check that cleanup doesn't happen before TTL expires (TTL is 3600s = 1 hour)
     before_ttl = finish_time + timedelta(minutes=30)
     client.set_fake_now(before_ttl)

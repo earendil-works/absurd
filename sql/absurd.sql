@@ -307,6 +307,7 @@ declare
   v_qty integer := greatest(coalesce(p_qty, 1), 1);
   v_claim_until timestamptz := null;
   v_sql text;
+  v_expired_run record;
 begin
   if v_claim_timeout > 0 then
     v_claim_until := v_now + make_interval(secs => v_claim_timeout);
@@ -348,18 +349,34 @@ begin
     't_' || p_queue_name
   ) using v_now;
 
-  execute format(
-    'update absurd.%I r
-        set state = ''pending'',
-            claimed_by = null,
-            claim_expires_at = null,
-            available_at = greatest(available_at, $1),
-            started_at = null
-      where state = ''running''
-        and claim_expires_at is not null
-        and claim_expires_at <= $1',
-    'r_' || p_queue_name
-  ) using v_now;
+  for v_expired_run in
+    execute format(
+      'select run_id,
+              claimed_by,
+              claim_expires_at,
+              attempt
+         from absurd.%I
+        where state = ''running''
+          and claim_expires_at is not null
+          and claim_expires_at <= $1
+        for update skip locked',
+      'r_' || p_queue_name
+    )
+  using v_now
+  loop
+    perform absurd.fail_run(
+      p_queue_name,
+      v_expired_run.run_id,
+      jsonb_strip_nulls(jsonb_build_object(
+        'name', '$ClaimTimeout',
+        'message', 'worker did not finish task within claim interval',
+        'workerId', v_expired_run.claimed_by,
+        'claimExpiredAt', v_expired_run.claim_expires_at,
+        'attempt', v_expired_run.attempt
+      )),
+      null
+    );
+  end loop;
 
   execute format(
     'update absurd.%I r
@@ -449,27 +466,30 @@ create function absurd.complete_run (
 as $$
 declare
   v_task_id uuid;
+  v_state text;
   v_now timestamptz := absurd.current_time();
 begin
   execute format(
-    'select task_id
+    'select task_id, state
        from absurd.%I
       where run_id = $1
       for update',
     'r_' || p_queue_name
   )
-  into v_task_id
+  into v_task_id, v_state
   using p_run_id;
 
   if v_task_id is null then
     raise exception 'Run "%" not found in queue "%"', p_run_id, p_queue_name;
   end if;
 
+  if v_state <> 'running' then
+    raise exception 'Run "%" is not currently running in queue "%"', p_run_id, p_queue_name;
+  end if;
+
   execute format(
     'update absurd.%I
         set state = ''completed'',
-            claimed_by = null,
-            claim_expires_at = null,
             completed_at = $2,
             result = $3
       where run_id = $1',
@@ -599,8 +619,6 @@ begin
   execute format(
     'update absurd.%I
         set state = ''failed'',
-            claimed_by = null,
-            claim_expires_at = null,
             wake_event = null,
             failed_at = $2,
             failure_reason = $3
