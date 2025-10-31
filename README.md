@@ -37,6 +37,13 @@ for ensuring progress without double execution.  It's the promise of
 "exactly-once" semantics in distributed systems, but expressed as code you can
 read and reason about.
 
+## Installation
+
+Absurd just needs a single `.sql` file ([`absurd.sql`](sql/absurd.sql)) which
+needs to be applied to a database of your choice.  You can plug it into your
+favorite migration system of choice.  Additionally if that file changes, we
+also release [migrations](sql/migrations) which should make upgrading easy.
+
 ## Comparison
 
 Absurd wants to be absurdly simple.  There are many systems on the market you
@@ -54,6 +61,8 @@ might want to look at if you think you need more:
 * [Inngest](https://www.inngest.com/) is an event-driven workflow system.  It's
   self-hostable and can run locally, but it's licensed under a fair-source-inspired
   license.
+* [DBOS](https://docs.dbos.dev/) is also attempting to implement durable workflows
+  on top of Postgres.
 
 ## Push vs Pull
 
