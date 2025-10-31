@@ -53,6 +53,8 @@ def test_claim_timeout_releases_run_to_new_worker(client):
     assert running is not None
     assert running["state"] == "running"
     assert running["claimed_by"] == "worker-a"
+    expected_expiry = base + timedelta(seconds=30)
+    assert running["claim_expires_at"] == expected_expiry
 
     client.set_fake_now(base + timedelta(minutes=5))
 
@@ -62,14 +64,29 @@ def test_claim_timeout_releases_run_to_new_worker(client):
     assert still_running["claimed_by"] == "worker-a"
 
     second_claim = client.claim_tasks(queue, worker="worker-b", claim_timeout=45)[0]
-    assert second_claim["run_id"] == run_id
-    assert second_claim["attempt"] == 1
+    new_run_id = second_claim["run_id"]
+    assert new_run_id != run_id
+    assert second_claim["attempt"] == 2
 
-    run_after_reclaim = client.get_run(queue, run_id)
+    run_after_reclaim = client.get_run(queue, new_run_id)
     assert run_after_reclaim is not None
     assert run_after_reclaim["state"] == "running"
     assert run_after_reclaim["claimed_by"] == "worker-b"
+    assert run_after_reclaim["claim_expires_at"] == base + timedelta(
+        minutes=5, seconds=45
+    )
     assert run_after_reclaim["started_at"] == base + timedelta(minutes=5)
+
+    expired_run = client.get_run(queue, run_id)
+    assert expired_run is not None
+    assert expired_run["state"] == "failed"
+    assert expired_run["claimed_by"] == "worker-a"
+    assert expired_run["claim_expires_at"] == expected_expiry
+    assert expired_run["failure_reason"] is not None
+    assert expired_run["failure_reason"]["name"] == "$ClaimTimeout"
+    assert expired_run["failure_reason"]["workerId"] == "worker-a"
+    assert expired_run["failure_reason"]["attempt"] == 1
+    assert "claimExpiredAt" in expired_run["failure_reason"]
 
 
 def test_event_timeout_wakes_sleeping_run(client):
@@ -143,6 +160,8 @@ def test_fail_run_without_strategy_requeues_immediately(client):
     assert len(runs) == 2
     first_run, second_run = runs
     assert first_run["state"] == "failed"
+    assert first_run["claimed_by"] == "worker"
+    assert first_run["claim_expires_at"] == base + timedelta(seconds=60)
     assert second_run["state"] == "pending"
     assert second_run["attempt"] == 2
     assert second_run["available_at"] == base
@@ -170,6 +189,8 @@ def test_fail_run_respects_explicit_retry_at(client):
     assert len(runs) == 2
     first_run, second_run = runs
     assert first_run["state"] == "failed"
+    assert first_run["claimed_by"] == "worker"
+    assert first_run["claim_expires_at"] == base + timedelta(seconds=60)
     assert second_run["state"] == "sleeping"
     assert second_run["available_at"] == future
 
@@ -232,6 +253,12 @@ def test_fail_run_exponential_strategy_and_max_attempts(client):
 
     final_runs = client.get_runs(queue, spawn.task_id)
     assert len(final_runs) == 3
+    assert final_runs[0]["claimed_by"] == "worker"
+    assert final_runs[0]["claim_expires_at"] == base + timedelta(seconds=60)
+    assert final_runs[1]["claimed_by"] == "worker"
+    assert final_runs[1]["claim_expires_at"] == first_expected_available + timedelta(
+        seconds=60
+    )
     assert final_runs[-1]["state"] == "failed"
 
     task = client.get_task(queue, spawn.task_id)
@@ -243,6 +270,9 @@ def test_fail_run_exponential_strategy_and_max_attempts(client):
 def test_spawn_claim_complete_flow(client):
     queue = "lifecycle"
     client.create_queue(queue)
+
+    base = datetime(2024, 4, 7, 9, 0, tzinfo=timezone.utc)
+    client.set_fake_now(base)
 
     spawn = client.spawn_task(queue, "echo", {"message": "hi"})
 
@@ -264,3 +294,5 @@ def test_spawn_claim_complete_flow(client):
     assert run_row is not None
     assert run_row["state"] == "completed"
     assert run_row["result"] == {"status": "ok"}
+    assert run_row["claimed_by"] == "tester"
+    assert run_row["claim_expires_at"] == base + timedelta(seconds=120)
