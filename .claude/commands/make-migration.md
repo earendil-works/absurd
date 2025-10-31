@@ -25,13 +25,19 @@ Compare the base version (`/tmp/base-absurd.sql`) with the current version (`./s
 
 For example: `./sql/migrations/0.0.3-main.sql`
 
-**Important:** if that migration already exists, STOP and ask the user if you should override it.  If the user declines, abort, otherwise continue and replace the file after you are done.
+**Important:** if that migration already exists, STOP and ask the user how you should incorporate it.  The following three options should be given:
+
+* ABORT: the user wants you to stop and not continue
+* REPLACE: disregard what is already in the file
+* INCORPORATE: incorporate the changes from the already existing file (read it and then consider it!)
+
+When replacing or incorporating create a backup (`./sql/migrations/{OLD_TAG}-{NEW_TAG}.sql.bak`)
 
 ### 4. Validate the migration
-To validate that the migration actually works, use `./scripts/validate-psql.py`:
+To validate that the migration actually works, use `./scripts/validate-psql`:
 
 ```bash
-./scripts/validate-psql.py \
+./scripts/validate-psql \
     --base=/tmp/base-absurd.sql \
     --migration=./sql/migrations/{OLD_TAG}-{NEW_TAG}.sql \
     --current=./sql/absurd.sql \

@@ -10,6 +10,13 @@ All the SQL code goes into the [`sql/absurd.sql`](sql/absurd.sql) file.  The
 goal is that (other than for observability) SDKs never issues any SQL operations
 which are not just calling to.
 
+## Migrations
+
+During development the changes should just only land in `sql/absurd.sql`.  We
+use a Claude Code command (`/make-migrations`) which helps creating migrations.
+They should be made when a release is made unless the change is very gnarly,
+in which case the PR should already incorporate the migrations.
+
 ## Conventions
 
 These are some conventions that should be followed:
