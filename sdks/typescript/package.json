@@ -18,6 +18,7 @@
   ],
   "scripts": {
     "build": "tsc --project tsconfig.json && tsc --project tsconfig.cjs.json && echo '{\"type\":\"commonjs\"}' > dist/cjs/package.json",
+    "type-check": "tsc --noEmit",
     "prepare": "npm run build",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
