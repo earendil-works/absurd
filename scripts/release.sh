@@ -92,13 +92,19 @@ info "Current version: $CURRENT_VERSION"
 
 # Update version using npm version
 # --no-git-tag-version prevents npm from creating a git tag (we'll do it manually)
-info "Bumping version to $VERSION_TYPE..."
-NEW_VERSION=$(npm version "$VERSION_TYPE" --no-git-tag-version)
+# If the version is already set to the target, skip the npm version command
+if [[ "$VERSION_TYPE" == "$CURRENT_VERSION" ]]; then
+    info "Version is already set to $CURRENT_VERSION, skipping version bump"
+    NEW_VERSION="$CURRENT_VERSION"
+else
+    info "Bumping version to $VERSION_TYPE..."
+    NEW_VERSION=$(npm version "$VERSION_TYPE" --no-git-tag-version)
 
-# Remove 'v' prefix if npm added it
-NEW_VERSION="${NEW_VERSION#v}"
+    # Remove 'v' prefix if npm added it
+    NEW_VERSION="${NEW_VERSION#v}"
 
-success "Version updated to: $NEW_VERSION"
+    success "Version updated to: $NEW_VERSION"
+fi
 
 # Go back to project root for git operations
 cd "$PROJECT_ROOT"
