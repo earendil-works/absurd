@@ -37,14 +37,14 @@ Edit the `CHANGELOG.md` file:
 
 ### 5. Rename pending migrations
 
-If there are any migration files with `-main.sql` suffix in `sql/migrations/`, rename them to use the new version number:
+If there are any migration files with `-main.sql` suffix in `sql/migrations/`, rename them to use the new version number. Note that the format is `OLD-NEW.sql`:
 
 ```bash
 # Check for pending migrations
 ls sql/migrations/*-main.sql 2>/dev/null || echo "No pending migrations"
 
 # If found, rename them (example)
-# mv sql/migrations/0.0.4-main.sql sql/migrations/0.0.4.sql
+# mv sql/migrations/0.0.3-main.sql sql/migrations/0.0.3-0.0.4.sql
 ```
 
 ### 6. Run the release script
