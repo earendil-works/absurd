@@ -1,33 +1,40 @@
 Make a release of Absurd.
 
-Release type: "$ARGUMENTS"
+Version or release type: "$ARGUMENTS"
 
 ## Step-by-Step Process:
 
-### 1. Determine release type
+### 1. Determine the target version
 
-If no release type is provided via `$ARGUMENTS`, ask the user which type of release to make:
-- `patch` - Bug fixes and minor updates (0.0.3 -> 0.0.4)
-- `minor` - New features, backward compatible (0.0.3 -> 0.1.0)
-- `major` - Breaking changes (0.0.3 -> 1.0.0)
+The `$ARGUMENTS` can be either:
+- An explicit version number (e.g., `0.0.4`) - recommended for making a specific release
+- A release type: `patch`, `minor`, or `major` - which will bump from the current version
+
+If `$ARGUMENTS` is an explicit version (e.g., `0.0.4`):
+- Use that version directly as `$NEW_VERSION`
+- This is the recommended approach as it allows retrying failed releases
+
+If `$ARGUMENTS` is a release type (`patch`, `minor`, or `major`):
+- Determine what the new version will be by running:
+  ```bash
+  cd sdks/typescript
+  CURRENT_VERSION=$(node -p "require('./package.json').version")
+  NEW_VERSION=$(npm version $ARGUMENTS --no-git-tag-version | sed 's/^v//')
+  git checkout package.json package-lock.json  # Revert the changes
+  cd ../..
+  echo "Will release version: $NEW_VERSION"
+  ```
+- Then use this `$NEW_VERSION` for the rest of the process
+
+If no argument is provided, ask the user which version or type to use.
 
 ### 2. Update the changelog
 
 Run the `/update-changelog` command to ensure the changelog is up to date with recent changes.
 
-### 3. Get the new version number
+### 3. Verify the version number
 
-Before making changes, determine what the new version will be by running:
-
-```bash
-cd sdks/typescript
-NEW_VERSION=$(npm version $RELEASE_TYPE --no-git-tag-version | sed 's/^v//')
-git checkout package.json package-lock.json  # Revert the changes
-cd ../..
-echo $NEW_VERSION
-```
-
-This shows what the new version will be without actually making changes yet.
+Double-check that `$NEW_VERSION` is correct before proceeding.
 
 ### 4. Update CHANGELOG.md
 
@@ -49,14 +56,16 @@ ls sql/migrations/*-main.sql 2>/dev/null || echo "No pending migrations"
 
 ### 6. Run the release script
 
-Execute the release script with the determined release type:
+Execute the release script with the explicit version number (NOT the release type):
 
 ```bash
-./scripts/release.sh $RELEASE_TYPE
+./scripts/release.sh $NEW_VERSION
 ```
 
+**Important:** Always pass the explicit version number (e.g., `0.0.4`) to the release script, not the release type (e.g., `patch`). This ensures that aborted releases can be retried without incrementing the version.
+
 This script will:
-- Update the version in `sdks/typescript/package.json`
+- Update the version in `sdks/typescript/package.json` (or skip if already set)
 - Update `package-lock.json`
 - Create a commit with message "Release $NEW_VERSION"
 - Create a git tag with the version number
