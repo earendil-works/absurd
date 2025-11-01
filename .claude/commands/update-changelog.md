@@ -16,16 +16,7 @@ Use the following commands to gather commit information:
 git describe --tags --abbrev=0
 
 # Get all commits since the baseline version
-git log <baseline-version>..HEAD --oneline
-
-# Get more detailed commit messages if needed
-git log <baseline-version>..HEAD --pretty=format:"%h %s" --reverse
-```
-
-Also check for merged pull requests:
-```bash
-# Find merged PRs since the baseline
-git log <baseline-version>..HEAD --merges --oneline --grep="Merge pull request"
+git log <baseline-version>..HEAD
 ```
 
 ### 3. Update the changelog
