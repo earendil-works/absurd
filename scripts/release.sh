@@ -32,8 +32,8 @@ if ! git rev-parse --git-dir > /dev/null 2>&1; then
     exit 1
 fi
 
-# Check if working directory is clean
-if [[ -n $(git status -s) ]]; then
+# Check if working directory is clean (ignore untracked files)
+if [[ -n $(git diff --stat) ]] || [[ -n $(git diff --cached --stat) ]]; then
     error "Working directory is not clean. Please commit or stash your changes."
     exit 1
 fi
