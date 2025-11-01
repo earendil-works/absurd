@@ -103,15 +103,19 @@ success "Version updated to: $NEW_VERSION"
 # Go back to project root for git operations
 cd "$PROJECT_ROOT"
 
-# Check for pending migration (migration with -main.sql suffix)
+# Check for pending migration (migration with -main.sql suffix) and rename automatically
 info "Checking for pending migrations..."
 if ls "$PROJECT_ROOT"/sql/migrations/*-main.sql 1> /dev/null 2>&1; then
-    error "Found pending migration(s) with -main.sql suffix:"
-    ls "$PROJECT_ROOT"/sql/migrations/*-main.sql
-    echo ""
-    error "Please rename the migration to associate it with a release version before releasing."
-    echo "  Example: mv sql/migrations/X.X.X-main.sql sql/migrations/$NEW_VERSION.sql"
-    exit 1
+    info "Found pending migration(s) with -main.sql suffix, renaming to $NEW_VERSION.sql..."
+    for migration in "$PROJECT_ROOT"/sql/migrations/*-main.sql; do
+        new_name="${migration%-main.sql}.sql"
+        # Extract just the filename for the new version-based name
+        dir_name=$(dirname "$migration")
+        new_versioned="$dir_name/$NEW_VERSION.sql"
+        info "Renaming: $(basename "$migration") -> $(basename "$new_versioned")"
+        mv "$migration" "$new_versioned"
+    done
+    success "Migrations renamed successfully"
 fi
 
 # Check if CHANGELOG.md has a section for the new version
@@ -157,24 +161,10 @@ git tag "$NEW_VERSION"
 success "Successfully created release $NEW_VERSION"
 echo ""
 info "Next steps:"
-echo "  To push the changes and trigger the release:"
+echo "  Review the commit and tag, then push with:"
 echo "    git push origin main && git push origin $NEW_VERSION"
 echo ""
-
-# Ask if user wants to push
-read -p "Do you want to push the changes and tag now? (y/N) " -n 1 -r
-echo
-if [[ $REPLY =~ ^[Yy]$ ]]; then
-    info "Pushing changes and tag..."
-    git push origin main
-    git push origin "$NEW_VERSION"
-    success "Release pushed successfully!"
-    echo ""
-    info "The CI will now:"
-    echo "  - Build habitat binaries for multiple platforms"
-    echo "  - Create a GitHub release with the binaries"
-    echo "  - Publish the npm package to the registry"
-else
-    info "Skipping push. You can push manually later with:"
-    echo "  git push origin main && git push origin $NEW_VERSION"
-fi
+info "After pushing, the CI will:"
+echo "  - Build habitat binaries for multiple platforms"
+echo "  - Create a GitHub release with the binaries"
+echo "  - Publish the npm package to the registry"
