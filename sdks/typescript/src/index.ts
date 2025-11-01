@@ -53,6 +53,7 @@ export interface WorkerOptions {
   concurrency?: number;
   pollInterval?: number;
   onError?: (error: Error) => void;
+  fatalOnLeaseTimeout?: boolean;
 }
 
 export interface Worker {
@@ -419,7 +420,6 @@ export class Absurd {
   async listQueues(): Promise<Array<string>> {
     const result = await this.pool.query(`SELECT * FROM absurd.list_queues()`);
     const rv = [];
-    console.log(result);
     for (const row of result.rows) {
       rv.push(row.queue_name);
     }
@@ -557,11 +557,36 @@ export class Absurd {
       concurrency = 1,
       batchSize,
       pollInterval = 0.25,
-      onError = (err) => console.error("Worker error:", err),
+      onError = (err) => console.error("[absurd] Worker error:", err),
+      fatalOnLeaseTimeout = true,
     } = options;
     const effectiveBatchSize = batchSize ?? concurrency;
     let running = true;
     let workerLoopPromise: Promise<void>;
+    const executing = new Set<Promise<void>>();
+    let availabilityPromise: Promise<void> | null = null;
+    let availabilityResolve: (() => void) | null = null;
+
+    const notifyAvailability = () => {
+      if (availabilityResolve) {
+        availabilityResolve();
+        availabilityResolve = null;
+        availabilityPromise = null;
+      }
+    };
+
+    const waitForAvailability = async () => {
+      if (executing.size === 0) {
+        await sleep(pollInterval);
+        return;
+      }
+      if (!availabilityPromise) {
+        availabilityPromise = new Promise<void>((resolve) => {
+          availabilityResolve = resolve;
+        });
+      }
+      await Promise.race([availabilityPromise, sleep(pollInterval)]);
+    };
 
     const worker: Worker = {
       close: async () => {
@@ -574,33 +599,47 @@ export class Absurd {
     workerLoopPromise = (async () => {
       while (running) {
         try {
+          if (executing.size >= concurrency) {
+            await waitForAvailability();
+            continue;
+          }
+
+          const availableCapacity = Math.max(concurrency - executing.size, 0);
+          const toClaim = Math.min(effectiveBatchSize, availableCapacity);
+
+          if (toClaim <= 0) {
+            await waitForAvailability();
+            continue;
+          }
+
           const messages = await this.claimTasks({
-            batchSize: effectiveBatchSize,
+            batchSize: toClaim,
             claimTimeout: claimTimeout,
             workerId,
           });
 
           if (messages.length === 0) {
-            await sleep(pollInterval);
+            await waitForAvailability();
             continue;
           }
 
-          const executing = new Set<Promise<void>>();
           for (const task of messages) {
-            const promise = this.executeTask(task, claimTimeout)
+            const promise = this.executeTask(task, claimTimeout, {
+              fatalOnLeaseTimeout,
+            })
               .catch((err) => onError(err as Error))
-              .finally(() => executing.delete(promise));
+              .finally(() => {
+                executing.delete(promise);
+                notifyAvailability();
+              });
             executing.add(promise);
-            if (executing.size >= concurrency) {
-              await Promise.race(executing);
-            }
           }
-          await Promise.all(executing);
         } catch (err) {
           onError(err as Error);
-          await sleep(pollInterval);
+          await waitForAvailability();
         }
       }
+      await Promise.allSettled(executing);
     })();
 
     return worker;
@@ -619,7 +658,11 @@ export class Absurd {
   private async executeTask(
     task: ClaimedTask,
     claimTimeout: number,
+    options?: { fatalOnLeaseTimeout?: boolean },
   ): Promise<void> {
+    let warnTimer: any;
+    let fatalTimer: any;
+
     const registration = this.registry.get(task.task_name);
     const ctx = await TaskContext.create({
       taskID: task.task_id,
@@ -630,6 +673,23 @@ export class Absurd {
     });
 
     try {
+      if (claimTimeout > 0) {
+        const taskLabel = `${task.task_name} (${task.task_id})`;
+        warnTimer = setTimeout(() => {
+          console.warn(
+            `[absurd] task ${taskLabel} exceeded claim timeout of ${claimTimeout}s`,
+          );
+        }, claimTimeout * 1000);
+        if (options?.fatalOnLeaseTimeout) {
+          fatalTimer = setTimeout(() => {
+            console.error(
+              `[absurd] task ${taskLabel} exceeded claim timeout of ${claimTimeout}s by more than 100%; terminating process`,
+            );
+            process.exit(1);
+          }, claimTimeout * 1000 * 2);
+        }
+      }
+
       if (!registration) {
         throw new Error("Unknown task");
       } else if (registration.queue !== this.queueName) {
@@ -643,6 +703,13 @@ export class Absurd {
         return;
       }
       await ctx.fail(err);
+    } finally {
+      if (warnTimer) {
+        clearTimeout(warnTimer);
+      }
+      if (fatalTimer) {
+        clearTimeout(fatalTimer);
+      }
     }
   }
 }
