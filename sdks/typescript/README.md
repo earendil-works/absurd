@@ -2,9 +2,9 @@
 
 TypeScript SDK for [Absurd](https://github.com/earendil-works/absurd): a PostgreSQL-based durable task execution system.
 
-Absurd is the simplest durable execution workflow system you can think of.  It's entirely based on Postgres and nothing else.  It's almost as easy to use as a queue, but it handles scheduling and retries, and it does all of that without needing any other services to run in addition to Postgres.
+Absurd is the simplest durable execution workflow system you can think of. It's entirely based on Postgres and nothing else. It's almost as easy to use as a queue, but it handles scheduling and retries, and it does all of that without needing any other services to run in addition to Postgres.
 
-**Warning:** *this is an early experiment and should not be used in production.*
+**Warning:** _this is an early experiment and should not be used in production._
 
 ## What is Durable Execution?
 
@@ -29,28 +29,28 @@ absurdctl create-queue -d your-database-name default
 ## Quick Start
 
 ```typescript
-import { Absurd } from 'absurd-sdk';
+import { Absurd } from "absurd-sdk";
 
 const app = new Absurd({
-  connectionString: 'postgresql://localhost/mydb'
+  connectionString: "postgresql://localhost/mydb",
 });
 
 // Register a task
-app.registerTask({ name: 'order-fulfillment' }, async (params, ctx) => {
+app.registerTask({ name: "order-fulfillment" }, async (params, ctx) => {
   // Each step is checkpointed, so if the process crashes, we resume
   // from the last completed step
-  const payment = await ctx.step('process-payment', async () => {
+  const payment = await ctx.step("process-payment", async () => {
     return await processPayment(params.amount);
   });
 
-  const inventory = await ctx.step('reserve-inventory', async () => {
+  const inventory = await ctx.step("reserve-inventory", async () => {
     return await reserveItems(params.items);
   });
 
   // Wait for an event - the task suspends until the event arrives
   const shipment = await ctx.awaitEvent(`shipment.packed:${params.orderId}`);
 
-  await ctx.step('send-notification', async () => {
+  await ctx.step("send-notification", async () => {
     return await sendEmail(params.email, shipment);
   });
 
@@ -65,11 +65,11 @@ await app.startWorker();
 
 ```typescript
 // Spawn a task - it will be executed durably with automatic retries
-await app.spawn('order-fulfillment', {
-  orderId: '42',
+await app.spawn("order-fulfillment", {
+  orderId: "42",
   amount: 9999,
-  items: ['widget-1', 'gadget-2'],
-  email: 'customer@example.com'
+  items: ["widget-1", "gadget-2"],
+  email: "customer@example.com",
 });
 ```
 
@@ -77,8 +77,8 @@ await app.spawn('order-fulfillment', {
 
 ```typescript
 // Emit an event that a suspended task might be waiting for
-await app.emitEvent('shipment.packed:42', {
-  trackingNumber: 'TRACK123'
+await app.emitEvent("shipment.packed:42", {
+  trackingNumber: "TRACK123",
 });
 ```
 
@@ -87,7 +87,7 @@ await app.emitEvent('shipment.packed:42', {
 Use the task ID to derive idempotency keys for external APIs:
 
 ```typescript
-const payment = await ctx.step('process-payment', async () => {
+const payment = await ctx.step("process-payment", async () => {
   const idempotencyKey = `${ctx.taskID}:payment`;
   return await stripe.charges.create({
     amount: params.amount,
