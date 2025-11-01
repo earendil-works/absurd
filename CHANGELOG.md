@@ -4,6 +4,8 @@ This contains the changes between releases.
 
 # Unreleased
 
+# 0.0.4
+
 * Terminate stuck workers and improve concurrency handling.  #18
 * Properly retry tasks which had their claim expire.  #17
 * Improved migration command with better error handling and validation.
