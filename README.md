@@ -76,9 +76,9 @@ consumes messages and makes HTTP requests.
 ## High-Level Operations
 
 Absurd's goal is to move the complexity of SDKs into the underlying stored
-functions.  The goal of the SDKs is that they make the system convenient by
-abstracting the low-level operations in a way that leverages the ergonomics
-of the language you are working with.
+functions.  The SDKs then try to make the system convenient by abstracting the
+low-level operations in a way that leverages the ergonomics of the language you
+are working with.
 
 A *task* dispatches onto a given *queue* from where a *worker* picks it up
 to work on.  Tasks are subdivided into *steps*, which are executed in sequence
