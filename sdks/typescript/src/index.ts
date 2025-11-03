@@ -107,6 +107,20 @@ export interface TaskRegistrationOptions {
   defaultCancellation?: CancellationPolicy;
 }
 
+interface Log {
+  log(...args: any[]): void;
+  info(...args: any[]): void;
+  warn(...args: any[]): void;
+  error(...args: any[]): void;
+}
+
+export interface AbsurdOptions {
+  db?: pg.Pool | string;
+  queueName?: string;
+  defaultMaxAttempts?: number;
+  log?: Log;
+}
+
 interface RegisteredTask {
   name: string;
   queue: string;
@@ -119,6 +133,7 @@ export class TaskContext {
   private stepNameCounter: Map<string, number> = new Map();
 
   private constructor(
+    private readonly log: Log,
     readonly taskID: string,
     private readonly pool: pg.Pool,
     private readonly queueName: string,
@@ -128,13 +143,14 @@ export class TaskContext {
   ) {}
 
   static async create(args: {
+    log: Log;
     taskID: string;
     pool: pg.Pool;
     queueName: string;
     task: ClaimedTask;
     claimTimeout: number;
   }): Promise<TaskContext> {
-    const { taskID, pool, queueName, task, claimTimeout } = args;
+    const { log, taskID, pool, queueName, task, claimTimeout } = args;
     const result = await pool.query<CheckpointRow>(
       `SELECT checkpoint_name, state, status, owner_run_id, updated_at
        FROM absurd.get_task_checkpoint_states($1, $2, $3)`,
@@ -144,7 +160,15 @@ export class TaskContext {
     for (const row of result.rows) {
       cache.set(row.checkpoint_name, row.state);
     }
-    return new TaskContext(taskID, pool, queueName, task, cache, claimTimeout);
+    return new TaskContext(
+      log,
+      taskID,
+      pool,
+      queueName,
+      task,
+      cache,
+      claimTimeout,
+    );
   }
 
   /**
@@ -335,7 +359,7 @@ export class TaskContext {
   }
 
   async fail(err: unknown): Promise<void> {
-    console.error("[absurd] task execution failed:", err);
+    this.log.error("[absurd] task execution failed:", err);
     await this.pool.query(`SELECT absurd.fail_run($1, $2, $3, $4)`, [
       this.queueName,
       this.task.run_id,
@@ -345,19 +369,22 @@ export class TaskContext {
   }
 }
 
+/**
+ * The Absurd SDK Client.
+ *
+ * Instanciate this class and keep it around to interact with Absurd.
+ */
 export class Absurd {
   private readonly pool: pg.Pool;
   private readonly ownedPool: boolean;
   private readonly queueName: string;
   private readonly defaultMaxAttempts: number;
   private readonly registry = new Map<string, RegisteredTask>();
+  private readonly log: Log;
   private worker: Worker | null = null;
 
-  constructor(
-    poolOrUrl?: pg.Pool | string | null,
-    queueName: string = "default",
-    defaultMaxAttempts: number = 5,
-  ) {
+  constructor(options: AbsurdOptions = {}) {
+    let poolOrUrl = options.db;
     if (!poolOrUrl) {
       poolOrUrl =
         process.env.ABSURD_DATABASE_URL || "postgresql://localhost/absurd";
@@ -369,8 +396,9 @@ export class Absurd {
       this.pool = poolOrUrl;
       this.ownedPool = false;
     }
-    this.queueName = queueName;
-    this.defaultMaxAttempts = defaultMaxAttempts;
+    this.queueName = options?.queueName ?? "default";
+    this.defaultMaxAttempts = options?.defaultMaxAttempts ?? 5;
+    this.log = options?.log ?? console;
   }
 
   /**
@@ -557,7 +585,7 @@ export class Absurd {
       concurrency = 1,
       batchSize,
       pollInterval = 0.25,
-      onError = (err) => console.error("[absurd] Worker error:", err),
+      onError = (err) => console.error("Worker error:", err),
       fatalOnLeaseTimeout = true,
     } = options;
     const effectiveBatchSize = batchSize ?? concurrency;
@@ -566,8 +594,13 @@ export class Absurd {
     const executing = new Set<Promise<void>>();
     let availabilityPromise: Promise<void> | null = null;
     let availabilityResolve: (() => void) | null = null;
+    let sleepTimer: NodeJS.Timeout | null = null;
 
     const notifyAvailability = () => {
+      if (sleepTimer) {
+        clearTimeout(sleepTimer);
+        sleepTimer = null;
+      }
       if (availabilityResolve) {
         availabilityResolve();
         availabilityResolve = null;
@@ -576,16 +609,18 @@ export class Absurd {
     };
 
     const waitForAvailability = async () => {
-      if (executing.size === 0) {
-        await sleep(pollInterval);
-        return;
-      }
       if (!availabilityPromise) {
         availabilityPromise = new Promise<void>((resolve) => {
           availabilityResolve = resolve;
+          sleepTimer = setTimeout(() => {
+            sleepTimer = null;
+            availabilityResolve = null;
+            availabilityPromise = null;
+            resolve();
+          }, pollInterval * 1000);
         });
       }
-      await Promise.race([availabilityPromise, sleep(pollInterval)]);
+      await availabilityPromise;
     };
 
     const worker: Worker = {
@@ -665,6 +700,7 @@ export class Absurd {
 
     const registration = this.registry.get(task.task_name);
     const ctx = await TaskContext.create({
+      log: this.log,
       taskID: task.task_id,
       pool: this.pool,
       queueName: registration?.queue ?? "unknown",
@@ -676,15 +712,15 @@ export class Absurd {
       if (claimTimeout > 0) {
         const taskLabel = `${task.task_name} (${task.task_id})`;
         warnTimer = setTimeout(() => {
-          console.warn(
-            `[absurd] task ${taskLabel} exceeded claim timeout of ${claimTimeout}s`,
+          this.log.warn(
+            `task ${taskLabel} exceeded claim timeout of ${claimTimeout}s`,
           );
         }, claimTimeout * 1000);
         if (options?.fatalOnLeaseTimeout) {
           fatalTimer = setTimeout(
             () => {
-              console.error(
-                `[absurd] task ${taskLabel} exceeded claim timeout of ${claimTimeout}s by more than 100%; terminating process`,
+              this.log.error(
+                `task ${taskLabel} exceeded claim timeout of ${claimTimeout}s by more than 100%; terminating process`,
               );
               process.exit(1);
             },
@@ -776,8 +812,4 @@ function normalizeCancellation(
     normalized.max_delay = policy.maxDelay;
   }
   return Object.keys(normalized).length > 0 ? normalized : undefined;
-}
-
-async function sleep(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms * 1000));
 }

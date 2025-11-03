@@ -31,7 +31,7 @@ absurdctl create-queue -d your-database-name default
 ```typescript
 import { Absurd } from "absurd-sdk";
 
-const app = new Absurd("postgresql://localhost/mydb");
+const app = new Absurd({ db: "postgresql://localhost/mydb" });
 
 // Register a task
 app.registerTask({ name: "order-fulfillment" }, async (params, ctx) => {
