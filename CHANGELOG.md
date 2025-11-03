@@ -4,6 +4,11 @@ This contains the changes between releases.
 
 # Unreleased
 
+* Changed Absurd constructor to accept a config object.  #23
+* Fixed small temporary resource leak in TypeScript SDK related to waiting.  #23
+* Added support for connection strings in `absurdctl`.  #19
+* Changed TypeScript SDK dependencies: made `pg` a peer dependency and moved `typescript` to dev dependencies.  #20
+
 # 0.0.4
 
 * Terminate stuck workers and improve concurrency handling.  #18
