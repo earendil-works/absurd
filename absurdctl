@@ -9,6 +9,7 @@ import shutil
 import textwrap
 from urllib.request import urlopen
 from urllib.error import URLError
+from urllib.parse import urlparse
 from optparse import OptionParser, IndentedHelpFormatter
 
 
@@ -64,8 +65,10 @@ class CleanHelpFormatter(IndentedHelpFormatter):
         return "".join(result)
 
 
-def build_database_config(host=None, port=None, user=None, database=None):
+def build_database_config(host=None, port=None, user=None, database=None, uri=None):
     """Build a dict with database configuration."""
+    if uri:
+        return {"uri": uri}
     return {
         "host": host or os.getenv("PGHOST", "localhost"),
         "port": port or os.getenv("PGPORT", "5432"),
@@ -76,6 +79,13 @@ def build_database_config(host=None, port=None, user=None, database=None):
 
 def config_from_options(options):
     """Shortcut to construct a database config from parsed options."""
+    # Does it look like a uri ?
+    database = options.database or os.getenv("PGDATABASE")
+    if database:
+        parsed = urlparse(database)
+        if parsed.scheme and "postgres" in parsed.scheme:
+            return build_database_config(uri=database)
+
     return build_database_config(
         options.host,
         options.port,
@@ -86,18 +96,23 @@ def config_from_options(options):
 
 def build_psql_command(config, extra_args=None):
     """Construct the base psql command with optional additional arguments."""
-    cmd = [
-        "psql",
-        "-X",
-        "-h",
-        config["host"],
-        "-p",
-        config["port"],
-        "-U",
-        config["user"],
-        "-d",
-        config["database"],
-    ]
+    cmd = ["psql", "-X"]
+
+    if "uri" in config:
+        cmd.extend(["-d", config["uri"]])
+    else:
+        cmd.extend(
+            [
+                "-h",
+                config["host"],
+                "-p",
+                config["port"],
+                "-U",
+                config["user"],
+                "-d",
+                config["database"],
+            ]
+        )
 
     if extra_args:
         cmd.extend(extra_args)
@@ -105,8 +120,19 @@ def build_psql_command(config, extra_args=None):
     return cmd
 
 
+def sanitize_uri(uri):
+    """Remove password from URI for safe display in verbose output."""
+    parsed = urlparse(uri)
+    if parsed.password:
+        return uri.replace(f"{parsed.password}@", f"****@", 1)
+    return uri
+
+
 def get_common_db_details(config):
     """Return standard database connection details for verbose output."""
+    if "uri" in config:
+        sanitized_uri = sanitize_uri(config["uri"])
+        return [("URI", sanitized_uri)]
     return [
         ("Host", config["host"]),
         ("Port", config["port"]),
@@ -275,7 +301,11 @@ def add_db_options(parser):
     parser.add_option("-p", "--port", dest="port", metavar="PORT", help="Database port")
     parser.add_option("-U", "--user", dest="user", metavar="USER", help="Database user")
     parser.add_option(
-        "-d", "--database", dest="database", metavar="DB", help="Database name"
+        "-d",
+        "--database",
+        dest="database",
+        metavar="DB",
+        help="Database name or PostgreSQL connection URI",
     )
     parser.add_option(
         "-v",
@@ -1391,6 +1421,7 @@ def cmd_agent_help(args):
         debugged with the `absurdctl` command-line tool.
 
         Connection: set PGHOST, PGPORT, PGUSER, PGDATABASE, and PGPASSWORD just like for psql.
+        Alternatively, PGDATABASE (or --database) can be a full PostgreSQL connection URI.
 
         Core commands to explore:
         - list-queues: discover available queues (`absurdctl list-queues`)
@@ -1431,10 +1462,11 @@ Environment Variables:
   PGHOST          Database host
   PGPORT          Database port
   PGUSER          Database user
-  PGDATABASE      Database name
+  PGDATABASE      Database name or full PostgreSQL connection URI
   PGPASSWORD      Database password (recommended over command line)
 
 Examples:
+  export PGDATABASE="postgresql://user:pass@localhost:5432/mydb"
   absurdctl init
   absurdctl cleanup myqueue 30
   absurdctl create-queue myqueue
