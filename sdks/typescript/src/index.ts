@@ -681,12 +681,15 @@ export class Absurd {
           );
         }, claimTimeout * 1000);
         if (options?.fatalOnLeaseTimeout) {
-          fatalTimer = setTimeout(() => {
-            console.error(
-              `[absurd] task ${taskLabel} exceeded claim timeout of ${claimTimeout}s by more than 100%; terminating process`,
-            );
-            process.exit(1);
-          }, claimTimeout * 1000 * 2);
+          fatalTimer = setTimeout(
+            () => {
+              console.error(
+                `[absurd] task ${taskLabel} exceeded claim timeout of ${claimTimeout}s by more than 100%; terminating process`,
+              );
+              process.exit(1);
+            },
+            claimTimeout * 1000 * 2,
+          );
         }
       }
 
