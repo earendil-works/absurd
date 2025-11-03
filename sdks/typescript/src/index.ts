@@ -383,7 +383,10 @@ export class Absurd {
   private readonly log: Log;
   private worker: Worker | null = null;
 
-  constructor(options: AbsurdOptions = {}) {
+  constructor(options: AbsurdOptions | string | pg.Pool = {}) {
+    if (typeof options === "string" || options instanceof pg.Pool) {
+      options = { db: options };
+    }
     let poolOrUrl = options.db;
     if (!poolOrUrl) {
       poolOrUrl =
