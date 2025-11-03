@@ -9,6 +9,7 @@ import shutil
 import textwrap
 from urllib.request import urlopen
 from urllib.error import URLError
+from urllib.parse import urlparse
 from optparse import OptionParser, IndentedHelpFormatter
 
 
@@ -81,9 +82,7 @@ def config_from_options(options):
     # Does it look like a uri ?
     database = options.database or os.getenv("PGDATABASE")
     if database:
-        import urllib.parse
-
-        parsed = urllib.parse.urlparse(database)
+        parsed = urlparse(database)
         if parsed.scheme and "postgres" in parsed.scheme:
             return build_database_config(uri=database)
 
@@ -123,12 +122,9 @@ def build_psql_command(config, extra_args=None):
 
 def sanitize_uri(uri):
     """Remove password from URI for safe display in verbose output."""
-    import urllib.parse
-
-    parsed = urllib.parse.urlparse(uri)
+    parsed = urlparse(uri)
     if parsed.password:
         return uri.replace(f"{parsed.password}@", f"****@", 1)
-
     return uri
 
 
