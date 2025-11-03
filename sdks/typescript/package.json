@@ -36,13 +36,13 @@
   },
   "author": "",
   "license": "Apache-2.0",
-  "dependencies": {
-    "pg": "^8.13.1",
-    "typescript": "^5.9.3"
+  "peerDependencies": {
+    "pg": "^8.0.0"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
-    "@types/pg": "^8.11.10"
+    "@types/pg": "^8.11.10",
+    "typescript": "^5.9.3"
   },
   "engines": {
     "node": ">=18.0.0"

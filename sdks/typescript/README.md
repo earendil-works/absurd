@@ -13,7 +13,7 @@ Durable execution (or durable workflows) is a way to run long-lived, reliable fu
 ## Installation
 
 ```bash
-npm install absurd-sdk
+npm install absurd-sdk pg
 ```
 
 ## Prerequisites
@@ -31,9 +31,9 @@ absurdctl create-queue -d your-database-name default
 ```typescript
 import { Absurd } from "absurd-sdk";
 
-const app = new Absurd({
-  connectionString: "postgresql://localhost/mydb",
-});
+const app = new Absurd(
+  "postgresql://localhost/mydb",
+);
 
 // Register a task
 app.registerTask({ name: "order-fulfillment" }, async (params, ctx) => {
