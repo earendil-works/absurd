@@ -693,7 +693,7 @@ export class Absurd {
     }
   }
 
-  private async executeTask(
+  async executeTask(
     task: ClaimedTask,
     claimTimeout: number,
     options?: { fatalOnLeaseTimeout?: boolean },
