@@ -793,10 +793,7 @@ def cmd_spawn_task(args):
             '{queue}',
             '{task_name}',
             '{params_json}'::jsonb,
-            {headers_json},
-            {options.max_attempts or "NULL"},
-            {retry_json},
-            {cancellation_json}
+            {headers_json}
         );
     """
 
