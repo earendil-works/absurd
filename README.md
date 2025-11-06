@@ -218,8 +218,8 @@ as checkpoints. Retries therefore happen at the task level. When a worker starts
 on a task it "claims" it, reserving the task for a configured duration. Each time
 the task stores a checkpoint, the claim is extended. If the worker crashes or does
 not make progress before the claim times out, the task resets and is handed to
-another worker. This overlap can lead to two workers running the same task, so
-write tasks so they always make observable progress well inside the claim timeout,
+another worker. This overlap can lead to two workers running the same task. Write 
+tasks so that they always make observable progress well inside the claim timeout,
 with ample headroom.
 
 ## Cleanup
