@@ -116,7 +116,7 @@ function registerTasks(Absurd $absurd): void
                 'timedOutAt' => $timedOutAt,
             ]);
 
-            return [
+            return (object)[
                 'customerId' => $customer->id,
                 'status' => 'activation-timeout',
                 'timedOutAt' => $timedOutAt,
