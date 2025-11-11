@@ -13,6 +13,14 @@ export type JsonValue =
   | { [key: string]: JsonValue };
 export type JsonObject = { [key: string]: JsonValue };
 
+export type DbConnection =
+  | Pick<pg.Client, "query">
+  | Pick<pg.PoolClient, "query">;
+
+export interface DbOptions {
+  con?: DbConnection;
+}
+
 export interface RetryStrategy {
   kind: "fixed" | "exponential" | "none";
   baseSeconds?: number;
@@ -25,12 +33,22 @@ export interface CancellationPolicy {
   maxDelay?: number;
 }
 
-export interface SpawnOptions {
+export interface SpawnOptions extends DbOptions {
   maxAttempts?: number;
   retryStrategy?: RetryStrategy;
   headers?: JsonObject;
   queue?: string;
   cancellation?: CancellationPolicy;
+}
+
+export interface EmitEventOptions extends DbOptions {
+  queueName?: string;
+}
+
+export interface ClaimTasksOptions extends DbOptions {
+  batchSize?: number;
+  claimTimeout?: number;
+  workerId?: string;
 }
 
 export interface ClaimedTask {
@@ -171,21 +189,29 @@ export class TaskContext {
     );
   }
 
+  private getConnection(opts?: DbOptions): DbConnection {
+    return opts?.con ?? this.pool;
+  }
+
   /**
    * Defines a step in the task execution.  Steps are idempotent in
    * that they are executed exactly once (unless they fail) and their
    * results are cached.  As a result the return value of this function
    * must support `JSON.stringify`.
    */
-  async step<T>(name: string, fn: () => Promise<T>): Promise<T> {
+  async step<T>(
+    name: string,
+    fn: () => Promise<T>,
+    options?: DbOptions,
+  ): Promise<T> {
     const checkpointName = this.getCheckpointName(name);
-    const state = await this.lookupCheckpoint(checkpointName);
+    const state = await this.lookupCheckpoint(checkpointName, options);
     if (state !== undefined) {
       return state as T;
     }
 
     const rv = await fn();
-    await this.persistCheckpoint(checkpointName, rv as JsonValue);
+    await this.persistCheckpoint(checkpointName, rv as JsonValue, options);
     return rv;
   }
 
@@ -194,10 +220,15 @@ export class TaskContext {
    * *always* suspends the task, even if you only wait for a very
    * short period of time.
    */
-  async sleepFor(stepName: string, duration: number): Promise<void> {
+  async sleepFor(
+    stepName: string,
+    duration: number,
+    options?: DbOptions,
+  ): Promise<void> {
     return await this.sleepUntil(
       stepName,
       new Date(Date.now() + duration * 1000),
+      options,
     );
   }
 
@@ -205,16 +236,24 @@ export class TaskContext {
    * Like `sleepFor` but with an absolute time when the task should be
    * awoken again.
    */
-  async sleepUntil(stepName: string, wakeAt: Date): Promise<void> {
+  async sleepUntil(
+    stepName: string,
+    wakeAt: Date,
+    options?: DbOptions,
+  ): Promise<void> {
     const checkpointName = this.getCheckpointName(stepName);
-    const state = await this.lookupCheckpoint(checkpointName);
+    const state = await this.lookupCheckpoint(checkpointName, options);
     let actualWakeAt = typeof state === "string" ? new Date(state) : wakeAt;
     if (!state) {
-      await this.persistCheckpoint(checkpointName, wakeAt.toISOString());
+      await this.persistCheckpoint(
+        checkpointName,
+        wakeAt.toISOString(),
+        options,
+      );
     }
 
     if (Date.now() < actualWakeAt.getTime()) {
-      await this.scheduleRun(actualWakeAt);
+      await this.scheduleRun(actualWakeAt, options);
       throw new SuspendTask();
     }
   }
@@ -228,13 +267,15 @@ export class TaskContext {
 
   private async lookupCheckpoint(
     checkpointName: string,
+    opts?: DbOptions,
   ): Promise<JsonValue | undefined> {
     const cached = this.checkpointCache.get(checkpointName);
     if (cached !== undefined) {
       return cached;
     }
 
-    const result = await this.pool.query<CheckpointRow>(
+    const db = this.getConnection(opts);
+    const result = await db.query<CheckpointRow>(
       `SELECT checkpoint_name, state, status, owner_run_id, updated_at
        FROM absurd.get_task_checkpoint_state($1, $2, $3)`,
       [this.queueName, this.task.task_id, checkpointName],
@@ -250,8 +291,10 @@ export class TaskContext {
   private async persistCheckpoint(
     checkpointName: string,
     value: JsonValue,
+    opts?: DbOptions,
   ): Promise<void> {
-    await this.pool.query(
+    const db = this.getConnection(opts);
+    await db.query(
       `SELECT absurd.set_task_checkpoint_state($1, $2, $3, $4, $5, $6)`,
       [
         this.queueName,
@@ -265,8 +308,9 @@ export class TaskContext {
     this.checkpointCache.set(checkpointName, value);
   }
 
-  private async scheduleRun(wakeAt: Date): Promise<void> {
-    await this.pool.query(`SELECT absurd.schedule_run($1, $2, $3)`, [
+  private async scheduleRun(wakeAt: Date, opts?: DbOptions): Promise<void> {
+    const db = this.getConnection(opts);
+    await db.query(`SELECT absurd.schedule_run($1, $2, $3)`, [
       this.queueName,
       this.task.run_id,
       wakeAt,
@@ -279,7 +323,7 @@ export class TaskContext {
    */
   async awaitEvent(
     eventName: string,
-    options?: { stepName?: string; timeout?: number },
+    options?: { stepName?: string; timeout?: number } & DbOptions,
   ): Promise<JsonValue> {
     // the default step name is derived from the event name.
     const stepName = options?.stepName || `$awaitEvent:${eventName}`;
@@ -292,7 +336,7 @@ export class TaskContext {
       timeout = Math.floor(options?.timeout);
     }
     const checkpointName = this.getCheckpointName(stepName);
-    const cached = await this.lookupCheckpoint(checkpointName);
+    const cached = await this.lookupCheckpoint(checkpointName, options);
     if (cached !== undefined) {
       return cached as JsonValue;
     }
@@ -305,7 +349,8 @@ export class TaskContext {
       this.task.event_payload = null;
       throw new TimeoutError(`Timed out waiting for event "${eventName}"`);
     }
-    const result = await this.pool.query<{
+    const db = this.getConnection(options);
+    const result = await db.query<{
       should_suspend: boolean;
       payload: JsonValue;
     }>(
@@ -339,28 +384,35 @@ export class TaskContext {
   /**
    * Emits an event that can be awaited.
    */
-  async emitEvent(eventName: string, payload?: JsonValue): Promise<void> {
+  async emitEvent(
+    eventName: string,
+    payload?: JsonValue,
+    options?: DbOptions,
+  ): Promise<void> {
     if (!eventName) {
       throw new Error("eventName must be a non-empty string");
     }
-    await this.pool.query(`SELECT absurd.emit_event($1, $2, $3)`, [
+    const db = this.getConnection(options);
+    await db.query(`SELECT absurd.emit_event($1, $2, $3)`, [
       this.queueName,
       eventName,
       JSON.stringify(payload ?? null),
     ]);
   }
 
-  async complete(result?: any): Promise<void> {
-    await this.pool.query(`SELECT absurd.complete_run($1, $2, $3)`, [
+  async complete(result?: any, options?: DbOptions): Promise<void> {
+    const db = this.getConnection(options);
+    await db.query(`SELECT absurd.complete_run($1, $2, $3)`, [
       this.queueName,
       this.task.run_id,
       JSON.stringify(result ?? null),
     ]);
   }
 
-  async fail(err: unknown): Promise<void> {
+  async fail(err: unknown, options?: DbOptions): Promise<void> {
     this.log.error("[absurd] task execution failed:", err);
-    await this.pool.query(`SELECT absurd.fail_run($1, $2, $3, $4)`, [
+    const db = this.getConnection(options);
+    await db.query(`SELECT absurd.fail_run($1, $2, $3, $4)`, [
       this.queueName,
       this.task.run_id,
       JSON.stringify(serializeError(err)),
@@ -404,6 +456,10 @@ export class Absurd {
     this.log = options?.log ?? console;
   }
 
+  private getRunner(opts?: DbOptions): DbConnection {
+    return opts?.con ?? this.pool;
+  }
+
   /**
    * This registers a given function as task.
    */
@@ -438,18 +494,21 @@ export class Absurd {
     });
   }
 
-  async createQueue(queueName?: string): Promise<void> {
+  async createQueue(queueName?: string, options?: DbOptions): Promise<void> {
     const queue = queueName ?? this.queueName;
-    await this.pool.query(`SELECT absurd.create_queue($1)`, [queue]);
+    const db = this.getRunner(options);
+    await db.query(`SELECT absurd.create_queue($1)`, [queue]);
   }
 
-  async dropQueue(queueName?: string): Promise<void> {
+  async dropQueue(queueName?: string, options?: DbOptions): Promise<void> {
     const queue = queueName ?? this.queueName;
-    await this.pool.query(`SELECT absurd.drop_queue($1)`, [queue]);
+    const db = this.getRunner(options);
+    await db.query(`SELECT absurd.drop_queue($1)`, [queue]);
   }
 
-  async listQueues(): Promise<Array<string>> {
-    const result = await this.pool.query(`SELECT * FROM absurd.list_queues()`);
+  async listQueues(options?: DbOptions): Promise<Array<string>> {
+    const db = this.getRunner(options);
+    const result = await db.query(`SELECT * FROM absurd.list_queues()`);
     const rv = [];
     for (const row of result.rows) {
       rv.push(row.queue_name);
@@ -495,7 +554,8 @@ export class Absurd {
       cancellation: effectiveCancellation,
     });
 
-    const result = await this.pool.query<{
+    const db = this.getRunner(options);
+    const result = await db.query<{
       task_id: string;
       run_id: string;
       attempt: number;
@@ -528,30 +588,34 @@ export class Absurd {
   async emitEvent(
     eventName: string,
     payload?: JsonValue,
-    queueName?: string,
+    queueOrOptions?: string | EmitEventOptions,
   ): Promise<void> {
     if (!eventName) {
       throw new Error("eventName must be a non-empty string");
     }
-    await this.pool.query(`SELECT absurd.emit_event($1, $2, $3)`, [
-      queueName || this.queueName,
+    const queueName =
+      typeof queueOrOptions === "string"
+        ? queueOrOptions
+        : (queueOrOptions?.queueName ?? this.queueName);
+    const db = this.getRunner(
+      typeof queueOrOptions === "object" ? queueOrOptions : undefined,
+    );
+    await db.query(`SELECT absurd.emit_event($1, $2, $3)`, [
+      queueName,
       eventName,
       JSON.stringify(payload ?? null),
     ]);
   }
 
-  async claimTasks(options?: {
-    batchSize?: number;
-    claimTimeout?: number;
-    workerId?: string;
-  }): Promise<ClaimedTask[]> {
+  async claimTasks(options?: ClaimTasksOptions): Promise<ClaimedTask[]> {
     const {
       batchSize: count = 1,
       claimTimeout = 120,
       workerId = "worker",
     } = options ?? {};
 
-    const result = await this.pool.query<ClaimedTask>(
+    const db = this.getRunner(options);
+    const result = await db.query<ClaimedTask>(
       `SELECT run_id, task_id, attempt, task_name, params, retry_strategy, max_attempts,
               headers, wake_event, event_payload
        FROM absurd.claim_task($1, $2, $3, $4)`,
