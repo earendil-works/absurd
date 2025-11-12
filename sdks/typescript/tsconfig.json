@@ -13,7 +13,7 @@
     "declarationMap": true,
     "sourceMap": true,
     "outDir": "./dist",
-    "types": ["node", "vitest/globals"]
+    "types": ["node"]
   },
   "include": ["src/**/*.ts", "test/**/*.ts"],
   "exclude": ["node_modules", "dist"]
