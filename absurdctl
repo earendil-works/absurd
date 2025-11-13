@@ -793,10 +793,7 @@ def cmd_spawn_task(args):
             '{queue}',
             '{task_name}',
             '{params_json}'::jsonb,
-            {headers_json},
-            {options.max_attempts or "NULL"},
-            {retry_json},
-            {cancellation_json}
+            {headers_json}
         );
     """
 
@@ -1045,6 +1042,44 @@ def cmd_list_tasks(args):
 
     print()
     print(f"Total: {len(all_tasks)} task(s)")
+
+
+def cmd_cancel_task(args):
+    """Cancel a running or pending task."""
+    usage = "usage: %prog cancel-task [options] TASK_ID"
+    parser = build_command_parser(usage)
+    parser.add_option(
+        "-q",
+        "--queue",
+        dest="queue",
+        metavar="NAME",
+        help="Queue name (default: default)",
+    )
+
+    examples = [
+        "absurdctl cancel-task 019a32d3-8425-7ae2-a5af-2f17a6707666",
+        "absurdctl cancel-task -q myqueue 019a32d3-8425-7ae2-a5af-2f17a6707666",
+    ]
+
+    options, args = parse_args_with_help(parser, args, examples)
+
+    if len(args) != 1:
+        print("Error: Missing required argument TASK_ID", file=sys.stderr)
+        parser.print_help()
+        sys.exit(1)
+
+    task_id = args[0]
+    queue = options.queue or "default"
+    config = config_from_options(options)
+
+    sql = f"SELECT absurd.cancel_task('{queue}', '{task_id}');"
+
+    try:
+        run_psql(config, sql)
+        print(f"Task {task_id} cancelled in queue '{queue}'")
+    except subprocess.CalledProcessError as e:
+        print(f"Error cancelling task: {e}", file=sys.stderr)
+        sys.exit(1)
 
 
 def cmd_dump_task(args):
@@ -1452,6 +1487,7 @@ Commands:
   list-queues     List all existing queues
   spawn-task      Spawn a new task
   list-tasks      List tasks with optional filtering
+  cancel-task     Cancel a running or pending task
   dump-task       Dump task or run details including checkpoints
   agent-help      Print quick guidance tailored for coding agents
   help            Show this help message
@@ -1474,6 +1510,7 @@ Examples:
   absurdctl list-queues
   absurdctl spawn-task my-task -P foo=bar -P count:=42
   absurdctl list-tasks --queue=default --status=failed
+  absurdctl cancel-task 019a32d3-8425-7ae2-a5af-2f17a6707666
   absurdctl dump-task --task-id=019a32d3-8425-7ae2-a5af-2f17a6707666
   absurdctl agent-help >> AGENTS.md
 """
@@ -1502,6 +1539,8 @@ def main():
         cmd_spawn_task(args)
     elif command == "list-tasks":
         cmd_list_tasks(args)
+    elif command == "cancel-task":
+        cmd_cancel_task(args)
     elif command == "dump-task":
         cmd_dump_task(args)
     elif command == "agent-help":
