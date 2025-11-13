@@ -803,10 +803,6 @@ begin
     'r_' || p_queue_name
   )
   using p_run_id, v_now, p_extend_by;
-  get diagnostics v_rows_updated = row_count;
-  if v_rows_updated = 0 then
-    raise exception 'Run "%" not found to extend claim', p_run_id;
-  end if;
 end;
 $$;
 
