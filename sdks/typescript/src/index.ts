@@ -4,6 +4,8 @@
 import * as pg from "pg";
 import * as os from "os";
 
+export type Queryable = Pick<pg.Client, "query"> | Pick<pg.PoolClient, "query">;
+
 export type JsonValue =
   | string
   | number
@@ -135,7 +137,7 @@ export class TaskContext {
   private constructor(
     private readonly log: Log,
     readonly taskID: string,
-    private readonly pool: pg.Pool,
+    private readonly con: Queryable,
     private readonly queueName: string,
     private readonly task: ClaimedTask,
     private readonly checkpointCache: Map<string, JsonValue>,
@@ -145,13 +147,13 @@ export class TaskContext {
   static async create(args: {
     log: Log;
     taskID: string;
-    pool: pg.Pool;
+    con: Queryable;
     queueName: string;
     task: ClaimedTask;
     claimTimeout: number;
   }): Promise<TaskContext> {
-    const { log, taskID, pool, queueName, task, claimTimeout } = args;
-    const result = await pool.query<CheckpointRow>(
+    const { log, taskID, con, queueName, task, claimTimeout } = args;
+    const result = await con.query<CheckpointRow>(
       `SELECT checkpoint_name, state, status, owner_run_id, updated_at
        FROM absurd.get_task_checkpoint_states($1, $2, $3)`,
       [queueName, task.task_id, task.run_id],
@@ -163,7 +165,7 @@ export class TaskContext {
     return new TaskContext(
       log,
       taskID,
-      pool,
+      con,
       queueName,
       task,
       cache,
@@ -234,7 +236,7 @@ export class TaskContext {
       return cached;
     }
 
-    const result = await this.pool.query<CheckpointRow>(
+    const result = await this.con.query<CheckpointRow>(
       `SELECT checkpoint_name, state, status, owner_run_id, updated_at
        FROM absurd.get_task_checkpoint_state($1, $2, $3)`,
       [this.queueName, this.task.task_id, checkpointName],
@@ -251,7 +253,7 @@ export class TaskContext {
     checkpointName: string,
     value: JsonValue,
   ): Promise<void> {
-    await this.pool.query(
+    await this.con.query(
       `SELECT absurd.set_task_checkpoint_state($1, $2, $3, $4, $5, $6)`,
       [
         this.queueName,
@@ -266,7 +268,7 @@ export class TaskContext {
   }
 
   private async scheduleRun(wakeAt: Date): Promise<void> {
-    await this.pool.query(`SELECT absurd.schedule_run($1, $2, $3)`, [
+    await this.con.query(`SELECT absurd.schedule_run($1, $2, $3)`, [
       this.queueName,
       this.task.run_id,
       wakeAt,
@@ -305,7 +307,7 @@ export class TaskContext {
       this.task.event_payload = null;
       throw new TimeoutError(`Timed out waiting for event "${eventName}"`);
     }
-    const result = await this.pool.query<{
+    const result = await this.con.query<{
       should_suspend: boolean;
       payload: JsonValue;
     }>(
@@ -343,7 +345,7 @@ export class TaskContext {
     if (!eventName) {
       throw new Error("eventName must be a non-empty string");
     }
-    await this.pool.query(`SELECT absurd.emit_event($1, $2, $3)`, [
+    await this.con.query(`SELECT absurd.emit_event($1, $2, $3)`, [
       this.queueName,
       eventName,
       JSON.stringify(payload ?? null),
@@ -351,7 +353,7 @@ export class TaskContext {
   }
 
   async complete(result?: any): Promise<void> {
-    await this.pool.query(`SELECT absurd.complete_run($1, $2, $3)`, [
+    await this.con.query(`SELECT absurd.complete_run($1, $2, $3)`, [
       this.queueName,
       this.task.run_id,
       JSON.stringify(result ?? null),
@@ -360,7 +362,7 @@ export class TaskContext {
 
   async fail(err: unknown): Promise<void> {
     this.log.error("[absurd] task execution failed:", err);
-    await this.pool.query(`SELECT absurd.fail_run($1, $2, $3, $4)`, [
+    await this.con.query(`SELECT absurd.fail_run($1, $2, $3, $4)`, [
       this.queueName,
       this.task.run_id,
       JSON.stringify(serializeError(err)),
@@ -375,33 +377,60 @@ export class TaskContext {
  * Instanciate this class and keep it around to interact with Absurd.
  */
 export class Absurd {
-  private readonly pool: pg.Pool;
-  private readonly ownedPool: boolean;
+  private readonly con: Queryable;
+  private ownedPool: boolean;
   private readonly queueName: string;
   private readonly defaultMaxAttempts: number;
-  private readonly registry = new Map<string, RegisteredTask>();
+  private registry = new Map<string, RegisteredTask>();
   private readonly log: Log;
   private worker: Worker | null = null;
 
   constructor(options: AbsurdOptions | string | pg.Pool = {}) {
-    if (typeof options === "string" || options instanceof pg.Pool) {
+    if (typeof options === "string" || isQueryable(options)) {
       options = { db: options };
     }
-    let poolOrUrl = options.db;
-    if (!poolOrUrl) {
-      poolOrUrl =
+    let connectionOrUrl = options.db;
+    if (!connectionOrUrl) {
+      connectionOrUrl =
         process.env.ABSURD_DATABASE_URL || "postgresql://localhost/absurd";
     }
-    if (typeof poolOrUrl === "string") {
-      this.pool = new pg.Pool({ connectionString: poolOrUrl });
+    if (typeof connectionOrUrl === "string") {
+      this.con = new pg.Pool({ connectionString: connectionOrUrl });
       this.ownedPool = true;
     } else {
-      this.pool = poolOrUrl;
+      this.con = connectionOrUrl;
       this.ownedPool = false;
     }
     this.queueName = options?.queueName ?? "default";
     this.defaultMaxAttempts = options?.defaultMaxAttempts ?? 5;
     this.log = options?.log ?? console;
+  }
+
+  /**
+   * Returns a new Absurd client that reuses this instance's configuration
+   * but routes all queries through the provided connection.
+   *
+   * This is useful if that connection already has a transaction open.  The
+   * second parameter controls wether the connection should be closed when
+   * Absurd is closed.
+   *
+   * **Important:** Task execution contexts cache checkpoint state in memory.
+   * If you roll back a transaction after checkpoints have been written, the
+   * in-memory cache will not be automatically invalidated.  This is generally
+   * not an issue during normal worker execution (where each task gets a fresh
+   * context), but be aware if you're manually managing transactions and reusing
+   * context instances across transaction boundaries.
+   */
+  bindToConnection(con: Queryable, owned: boolean = false): Absurd {
+    const bound = new Absurd({
+      db: con as any,  // this is okay because we ensure the invariant later
+      queueName: this.queueName,
+      defaultMaxAttempts: this.defaultMaxAttempts,
+      log: this.log,
+    });
+    bound.registry = this.registry;
+    bound.ownedPool = owned;
+    return bound;
   }
 
   /**
@@ -440,16 +469,18 @@ export class Absurd {
 
   async createQueue(queueName?: string): Promise<void> {
     const queue = queueName ?? this.queueName;
-    await this.pool.query(`SELECT absurd.create_queue($1)`, [queue]);
+    await this.con.query(`SELECT absurd.create_queue($1)`, [queue]);
   }
 
   async dropQueue(queueName?: string): Promise<void> {
     const queue = queueName ?? this.queueName;
-    await this.pool.query(`SELECT absurd.drop_queue($1)`, [queue]);
+    await this.con.query(`SELECT absurd.drop_queue($1)`, [queue]);
   }
 
   async listQueues(): Promise<Array<string>> {
-    const result = await this.pool.query(`SELECT * FROM absurd.list_queues()`);
+    const result = await this.con.query(
+      `SELECT * FROM absurd.list_queues()`,
+    );
     const rv = [];
     for (const row of result.rows) {
       rv.push(row.queue_name);
@@ -495,7 +526,7 @@ export class Absurd {
       cancellation: effectiveCancellation,
     });
 
-    const result = await this.pool.query<{
+    const result = await this.con.query<{
       task_id: string;
       run_id: string;
       attempt: number;
@@ -533,7 +564,7 @@ export class Absurd {
     if (!eventName) {
       throw new Error("eventName must be a non-empty string");
     }
-    await this.pool.query(`SELECT absurd.emit_event($1, $2, $3)`, [
+    await this.con.query(`SELECT absurd.emit_event($1, $2, $3)`, [
       queueName || this.queueName,
       eventName,
       JSON.stringify(payload ?? null),
@@ -551,7 +582,7 @@ export class Absurd {
       workerId = "worker",
     } = options ?? {};
 
-    const result = await this.pool.query<ClaimedTask>(
+    const result = await this.con.query<ClaimedTask>(
       `SELECT run_id, task_id, attempt, task_name, params, retry_strategy, max_attempts,
               headers, wake_event, event_payload
        FROM absurd.claim_task($1, $2, $3, $4)`,
@@ -689,7 +720,7 @@ export class Absurd {
     }
 
     if (this.ownedPool) {
-      await this.pool.end();
+      await (this.con as pg.Pool).end();
     }
   }
 
@@ -705,7 +736,7 @@ export class Absurd {
     const ctx = await TaskContext.create({
       log: this.log,
       taskID: task.task_id,
-      pool: this.pool,
+      con: this.con,
       queueName: registration?.queue ?? "unknown",
       task: task,
       claimTimeout,
@@ -754,6 +785,14 @@ export class Absurd {
       }
     }
   }
+}
+
+function isQueryable(value: unknown): value is Queryable {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    typeof (value as Queryable).query === "function"
+  );
 }
 
 function serializeError(err: unknown): JsonValue {
