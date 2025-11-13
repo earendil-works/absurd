@@ -117,7 +117,7 @@ interface Log {
 }
 
 export interface AbsurdOptions {
-  db?: Queryable | string;
+  db?: pg.Pool | string;
   queueName?: string;
   defaultMaxAttempts?: number;
   log?: Log;
@@ -385,7 +385,7 @@ export class Absurd {
   private readonly log: Log;
   private worker: Worker | null = null;
 
-  constructor(options: AbsurdOptions | string | Queryable = {}) {
+  constructor(options: AbsurdOptions | string | pg.Pool = {}) {
     if (typeof options === "string" || isQueryable(options)) {
       options = { db: options };
     }
@@ -423,7 +423,7 @@ export class Absurd {
    */
   bindToConnection(con: Queryable, owned: boolean = false): Absurd {
     const bound = new Absurd({
-      db: con,
+      db: con as any,  // this is okay because we ensure the invariant later
       queueName: this.queueName,
       defaultMaxAttempts: this.defaultMaxAttempts,
       log: this.log,
