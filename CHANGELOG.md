@@ -4,6 +4,8 @@ This contains the changes between releases.
 
 # Unreleased
 
+* Added `bindToConnection` method to TypeScript SDK.  #37
+* Fixed `absurdctl spawn-task` command.  #24
 * Changed Absurd constructor to accept a config object.  #23
 * Fixed small temporary resource leak in TypeScript SDK related to waiting.  #23
 * Added support for connection strings in `absurdctl`.  #19
