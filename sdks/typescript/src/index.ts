@@ -339,6 +339,19 @@ export class TaskContext {
   }
 
   /**
+   * Extends the claim on the current task run which is useful for long-running
+   * operations that don't checkpoint frequently.  When no duration is provided,
+   * extends by the original claim timeout.
+   */
+  async heartbeat(seconds?: number): Promise<void> {
+    await this.con.query(`SELECT absurd.extend_claim($1, $2, $3)`, [
+      this.queueName,
+      this.task.run_id,
+      seconds ?? this.claimTimeout,
+    ]);
+  }
+
+  /**
    * Emits an event that can be awaited.
    */
   async emitEvent(eventName: string, payload?: JsonValue): Promise<void> {
@@ -423,7 +436,7 @@ export class Absurd {
    */
   bindToConnection(con: Queryable, owned: boolean = false): Absurd {
     const bound = new Absurd({
-      db: con as any,  // this is okay because we ensure the invariant later
+      db: con as any, // this is okay because we ensure the invariant later
       queueName: this.queueName,
       defaultMaxAttempts: this.defaultMaxAttempts,
       log: this.log,
@@ -478,9 +491,7 @@ export class Absurd {
   }
 
   async listQueues(): Promise<Array<string>> {
-    const result = await this.con.query(
-      `SELECT * FROM absurd.list_queues()`,
-    );
+    const result = await this.con.query(`SELECT * FROM absurd.list_queues()`);
     const rv = [];
     for (const row of result.rows) {
       rv.push(row.queue_name);
