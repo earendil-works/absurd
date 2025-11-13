@@ -76,7 +76,10 @@ def db_connection(db_dsn):
         try:
             yield conn
         finally:
-            conn.execute("set absurd.fake_now = default")
+            try:
+                conn.execute("set absurd.fake_now = default")
+            except psycopg.errors.InFailedSqlTransaction:
+                pass
             conn.rollback()
 
 
@@ -225,6 +228,26 @@ class AbsurdTestClient:
             (queue, event_name, Jsonb(payload)),
         )
 
+    def cancel_task(self, queue, task_id):
+        self.conn.execute(
+            "select absurd.cancel_task(%s, %s)",
+            (queue, task_id),
+        )
+
+    def set_task_checkpoint_state(
+        self, queue, task_id, step_name, state, owner_run, extend_claim_by=None
+    ):
+        self.conn.execute(
+            "select absurd.set_task_checkpoint_state(%s, %s, %s, %s, %s, %s)",
+            (queue, task_id, step_name, Jsonb(state), owner_run, extend_claim_by),
+        )
+
+    def extend_claim(self, queue, run_id, extend_by):
+        self.conn.execute(
+            "select absurd.extend_claim(%s, %s, %s)",
+            (queue, run_id, extend_by),
+        )
+
     def cleanup_tasks(self, queue, ttl_seconds, limit=1000):
         result = self.conn.execute(
             "select absurd.cleanup_tasks(%s, %s, %s)",
@@ -322,7 +345,10 @@ class AbsurdTestClient:
         self.conn.execute(sql.SQL("set absurd.fake_now = {}").format(sql.Literal(when)))
 
     def clear_fake_now(self):
-        self.conn.execute("set absurd.fake_now = default")
+        try:
+            self.conn.execute("set absurd.fake_now = default")
+        except psycopg.errors.InFailedSqlTransaction:
+            pass
 
     def get_table(self, prefix, queue):
         return sql.Identifier(f"{prefix}_{queue}")
