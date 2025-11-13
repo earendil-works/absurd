@@ -347,7 +347,7 @@ export class TaskContext {
     await this.con.query(`SELECT absurd.extend_claim($1, $2, $3)`, [
       this.queueName,
       this.task.run_id,
-      seconds ?? null,
+      seconds ?? this.claimTimeout,
     ]);
   }
 
