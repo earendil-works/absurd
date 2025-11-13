@@ -147,13 +147,13 @@ export class TaskContext {
   static async create(args: {
     log: Log;
     taskID: string;
-    connection: Queryable;
+    con: Queryable;
     queueName: string;
     task: ClaimedTask;
     claimTimeout: number;
   }): Promise<TaskContext> {
-    const { log, taskID, connection, queueName, task, claimTimeout } = args;
-    const result = await connection.query<CheckpointRow>(
+    const { log, taskID, con, queueName, task, claimTimeout } = args;
+    const result = await con.query<CheckpointRow>(
       `SELECT checkpoint_name, state, status, owner_run_id, updated_at
        FROM absurd.get_task_checkpoint_states($1, $2, $3)`,
       [queueName, task.task_id, task.run_id],
@@ -165,7 +165,7 @@ export class TaskContext {
     return new TaskContext(
       log,
       taskID,
-      connection,
+      con,
       queueName,
       task,
       cache,
@@ -377,7 +377,7 @@ export class TaskContext {
  * Instanciate this class and keep it around to interact with Absurd.
  */
 export class Absurd {
-  private readonly connection: Queryable;
+  private readonly con: Queryable;
   private ownedPool: boolean;
   private readonly queueName: string;
   private readonly defaultMaxAttempts: number;
@@ -395,10 +395,10 @@ export class Absurd {
         process.env.ABSURD_DATABASE_URL || "postgresql://localhost/absurd";
     }
     if (typeof connectionOrUrl === "string") {
-      this.connection = new pg.Pool({ connectionString: connectionOrUrl });
+      this.con = new pg.Pool({ connectionString: connectionOrUrl });
       this.ownedPool = true;
     } else {
-      this.connection = connectionOrUrl;
+      this.con = connectionOrUrl;
       this.ownedPool = false;
     }
     this.queueName = options?.queueName ?? "default";
@@ -421,9 +421,9 @@ export class Absurd {
    * context), but be aware if you're manually managing transactions and reusing
    * context instances across transaction boundaries.
    */
-  bindToConnection(connection: Queryable, owned: boolean = false): Absurd {
+  bindToConnection(con: Queryable, owned: boolean = false): Absurd {
     const bound = new Absurd({
-      db: connection,
+      db: con,
       queueName: this.queueName,
       defaultMaxAttempts: this.defaultMaxAttempts,
       log: this.log,
@@ -469,16 +469,16 @@ export class Absurd {
 
   async createQueue(queueName?: string): Promise<void> {
     const queue = queueName ?? this.queueName;
-    await this.connection.query(`SELECT absurd.create_queue($1)`, [queue]);
+    await this.con.query(`SELECT absurd.create_queue($1)`, [queue]);
   }
 
   async dropQueue(queueName?: string): Promise<void> {
     const queue = queueName ?? this.queueName;
-    await this.connection.query(`SELECT absurd.drop_queue($1)`, [queue]);
+    await this.con.query(`SELECT absurd.drop_queue($1)`, [queue]);
   }
 
   async listQueues(): Promise<Array<string>> {
-    const result = await this.connection.query(
+    const result = await this.con.query(
       `SELECT * FROM absurd.list_queues()`,
     );
     const rv = [];
@@ -526,7 +526,7 @@ export class Absurd {
       cancellation: effectiveCancellation,
     });
 
-    const result = await this.connection.query<{
+    const result = await this.con.query<{
       task_id: string;
       run_id: string;
       attempt: number;
@@ -564,7 +564,7 @@ export class Absurd {
     if (!eventName) {
       throw new Error("eventName must be a non-empty string");
     }
-    await this.connection.query(`SELECT absurd.emit_event($1, $2, $3)`, [
+    await this.con.query(`SELECT absurd.emit_event($1, $2, $3)`, [
       queueName || this.queueName,
       eventName,
       JSON.stringify(payload ?? null),
@@ -582,7 +582,7 @@ export class Absurd {
       workerId = "worker",
     } = options ?? {};
 
-    const result = await this.connection.query<ClaimedTask>(
+    const result = await this.con.query<ClaimedTask>(
       `SELECT run_id, task_id, attempt, task_name, params, retry_strategy, max_attempts,
               headers, wake_event, event_payload
        FROM absurd.claim_task($1, $2, $3, $4)`,
@@ -720,7 +720,7 @@ export class Absurd {
     }
 
     if (this.ownedPool) {
-      await (this.connection as pg.Pool).end();
+      await (this.con as pg.Pool).end();
     }
   }
 
@@ -736,7 +736,7 @@ export class Absurd {
     const ctx = await TaskContext.create({
       log: this.log,
       taskID: task.task_id,
-      connection: this.connection,
+      con: this.con,
       queueName: registration?.queue ?? "unknown",
       task: task,
       claimTimeout,
