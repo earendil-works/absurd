@@ -93,6 +93,17 @@ export class SuspendTask extends Error {
 }
 
 /**
+ * Internal exception that is thrown to cancel a run.  As a user
+ * you should never see this exception.
+ */
+export class CancelledTask extends Error {
+  constructor() {
+    super("Task cancelled");
+    this.name = "CancelledTask";
+  }
+}
+
+/**
  * This error is thrown when awaiting an event ran into a timeout.
  */
 export class TimeoutError extends Error {
@@ -171,6 +182,17 @@ export class TaskContext {
       cache,
       claimTimeout,
     );
+  }
+
+  private async queryWithCancelCheck(sql: string, params: any[]): Promise<any> {
+    try {
+      return await this.con.query(sql, params);
+    } catch (err: any) {
+      if (err?.code === "AB001") {
+        throw new CancelledTask();
+      }
+      throw err;
+    }
   }
 
   /**
@@ -253,7 +275,7 @@ export class TaskContext {
     checkpointName: string,
     value: JsonValue,
   ): Promise<void> {
-    await this.con.query(
+    await this.queryWithCancelCheck(
       `SELECT absurd.set_task_checkpoint_state($1, $2, $3, $4, $5, $6)`,
       [
         this.queueName,
@@ -307,12 +329,10 @@ export class TaskContext {
       this.task.event_payload = null;
       throw new TimeoutError(`Timed out waiting for event "${eventName}"`);
     }
-    const result = await this.con.query<{
-      should_suspend: boolean;
-      payload: JsonValue;
-    }>(
+
+    const result = await this.queryWithCancelCheck(
       `SELECT should_suspend, payload
-       FROM absurd.await_event($1, $2, $3, $4, $5, $6)`,
+        FROM absurd.await_event($1, $2, $3, $4, $5, $6)`,
       [
         this.queueName,
         this.task.task_id,
@@ -344,7 +364,7 @@ export class TaskContext {
    * extends by the original claim timeout.
    */
   async heartbeat(seconds?: number): Promise<void> {
-    await this.con.query(`SELECT absurd.extend_claim($1, $2, $3)`, [
+    await this.queryWithCancelCheck(`SELECT absurd.extend_claim($1, $2, $3)`, [
       this.queueName,
       this.task.run_id,
       seconds ?? this.claimTimeout,
@@ -582,6 +602,18 @@ export class Absurd {
     ]);
   }
 
+  /**
+   * Cancels a task by its task_id.
+   * The task state will be set to 'cancelled' and no future runs will be scheduled.
+   * If the task is currently running, it will be cancelled at the next checkpoint or heartbeat.
+   */
+  async cancelTask(taskID: string, queueName?: string): Promise<void> {
+    await this.con.query(`SELECT absurd.cancel_task($1, $2)`, [
+      queueName || this.queueName,
+      taskID,
+    ]);
+  }
+
   async claimTasks(options?: {
     batchSize?: number;
     claimTimeout?: number;
@@ -782,8 +814,8 @@ export class Absurd {
       const result = await registration.handler(task.params, ctx);
       await ctx.complete(result);
     } catch (err) {
-      if (err instanceof SuspendTask) {
-        // Task suspended (sleep or await), don't complete or fail
+      if (err instanceof SuspendTask || err instanceof CancelledTask) {
+        // Task suspended or cancelled (sleep or await), don't complete or fail
         return;
       }
       await ctx.fail(err);
