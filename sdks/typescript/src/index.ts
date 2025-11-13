@@ -137,7 +137,7 @@ export class TaskContext {
   private constructor(
     private readonly log: Log,
     readonly taskID: string,
-    private readonly conn: Queryable,
+    private readonly con: Queryable,
     private readonly queueName: string,
     private readonly task: ClaimedTask,
     private readonly checkpointCache: Map<string, JsonValue>,
@@ -236,7 +236,7 @@ export class TaskContext {
       return cached;
     }
 
-    const result = await this.conn.query<CheckpointRow>(
+    const result = await this.con.query<CheckpointRow>(
       `SELECT checkpoint_name, state, status, owner_run_id, updated_at
        FROM absurd.get_task_checkpoint_state($1, $2, $3)`,
       [this.queueName, this.task.task_id, checkpointName],
@@ -253,7 +253,7 @@ export class TaskContext {
     checkpointName: string,
     value: JsonValue,
   ): Promise<void> {
-    await this.conn.query(
+    await this.con.query(
       `SELECT absurd.set_task_checkpoint_state($1, $2, $3, $4, $5, $6)`,
       [
         this.queueName,
@@ -268,7 +268,7 @@ export class TaskContext {
   }
 
   private async scheduleRun(wakeAt: Date): Promise<void> {
-    await this.conn.query(`SELECT absurd.schedule_run($1, $2, $3)`, [
+    await this.con.query(`SELECT absurd.schedule_run($1, $2, $3)`, [
       this.queueName,
       this.task.run_id,
       wakeAt,
@@ -307,7 +307,7 @@ export class TaskContext {
       this.task.event_payload = null;
       throw new TimeoutError(`Timed out waiting for event "${eventName}"`);
     }
-    const result = await this.conn.query<{
+    const result = await this.con.query<{
       should_suspend: boolean;
       payload: JsonValue;
     }>(
@@ -345,7 +345,7 @@ export class TaskContext {
     if (!eventName) {
       throw new Error("eventName must be a non-empty string");
     }
-    await this.conn.query(`SELECT absurd.emit_event($1, $2, $3)`, [
+    await this.con.query(`SELECT absurd.emit_event($1, $2, $3)`, [
       this.queueName,
       eventName,
       JSON.stringify(payload ?? null),
@@ -353,7 +353,7 @@ export class TaskContext {
   }
 
   async complete(result?: any): Promise<void> {
-    await this.conn.query(`SELECT absurd.complete_run($1, $2, $3)`, [
+    await this.con.query(`SELECT absurd.complete_run($1, $2, $3)`, [
       this.queueName,
       this.task.run_id,
       JSON.stringify(result ?? null),
@@ -362,7 +362,7 @@ export class TaskContext {
 
   async fail(err: unknown): Promise<void> {
     this.log.error("[absurd] task execution failed:", err);
-    await this.conn.query(`SELECT absurd.fail_run($1, $2, $3, $4)`, [
+    await this.con.query(`SELECT absurd.fail_run($1, $2, $3, $4)`, [
       this.queueName,
       this.task.run_id,
       JSON.stringify(serializeError(err)),
