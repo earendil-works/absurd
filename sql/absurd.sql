@@ -780,6 +780,48 @@ begin
 end;
 $$;
 
+create function absurd.extend_claim (
+  p_queue_name text,
+  p_run_id uuid,
+  p_extend_by integer default null
+)
+  returns void
+  language plpgsql
+as $$
+declare
+  v_now timestamptz := absurd.current_time();
+  v_extend_by integer;
+  v_claim_timeout integer;
+  v_rows_updated integer;
+begin
+  if p_extend_by is null then
+    execute format(
+      'select claim_timeout from absurd.%I where run_id = $1',
+      'r_' || p_queue_name
+    )
+    into v_claim_timeout
+    using p_run_id;
+    v_extend_by := coalesce(v_claim_timeout, 0);
+  else
+    v_extend_by := p_extend_by;
+  end if;
+
+  execute format(
+    'update absurd.%I
+        set claim_expires_at = $2 + make_interval(secs => $3)
+      where run_id = $1
+        and state = ''running''
+        and claim_expires_at is not null',
+    'r_' || p_queue_name
+  )
+  using p_run_id, v_now, v_extend_by;
+  get diagnostics v_rows_updated = row_count;
+  if v_rows_updated = 0 then
+    raise exception 'Run "%" not found to extend claim', p_run_id;
+  end if;
+end;
+$$;
+
 create function absurd.get_task_checkpoint_state (
   p_queue_name text,
   p_task_id uuid,
