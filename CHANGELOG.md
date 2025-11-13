@@ -10,6 +10,7 @@ This contains the changes between releases.
 * Fixed small temporary resource leak in TypeScript SDK related to waiting.  #23
 * Added support for connection strings in `absurdctl`.  #19
 * Changed TypeScript SDK dependencies: made `pg` a peer dependency and moved `typescript` to dev dependencies.  #20
+* Added `heartbeat` to extend a claim between checkpoints.  #39
 
 # 0.0.4
 
