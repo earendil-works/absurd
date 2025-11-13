@@ -413,6 +413,13 @@ export class Absurd {
    * This is useful if that connection already has a transaction open.  The
    * second parameter controls wether the connection should be closed when
    * Absurd is closed.
+   *
+   * **Important:** Task execution contexts cache checkpoint state in memory.
+   * If you roll back a transaction after checkpoints have been written, the
+   * in-memory cache will not be automatically invalidated.  This is generally
+   * not an issue during normal worker execution (where each task gets a fresh
+   * context), but be aware if you're manually managing transactions and reusing
+   * context instances across transaction boundaries.
    */
   bindToConnection(connection: Queryable, owned: boolean = false): Absurd {
     const bound = new Absurd({
