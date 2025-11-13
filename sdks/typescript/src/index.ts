@@ -196,10 +196,9 @@ export class TaskContext {
   }
 
   /**
-   * Defines a step in the task execution.  Steps are idempotent in
-   * that they are executed exactly once (unless they fail) and their
-   * results are cached.  As a result the return value of this function
-   * must support `JSON.stringify`.
+   * Runs an idempotent step identified by name; caches and reuses its result across retries.
+   * @param name Unique checkpoint name for this step.
+   * @param fn Async function computing the step result (must be JSON-serializable).
    */
   async step<T>(name: string, fn: () => Promise<T>): Promise<T> {
     const checkpointName = this.getCheckpointName(name);
@@ -214,9 +213,9 @@ export class TaskContext {
   }
 
   /**
-   * Sleeps for a given number of seconds.  Note that this
-   * *always* suspends the task, even if you only wait for a very
-   * short period of time.
+   * Suspends the task until the given duration (seconds) elapses.
+   * @param stepName Checkpoint name for this wait.
+   * @param duration Duration to wait in seconds.
    */
   async sleepFor(stepName: string, duration: number): Promise<void> {
     return await this.sleepUntil(
@@ -226,8 +225,9 @@ export class TaskContext {
   }
 
   /**
-   * Like `sleepFor` but with an absolute time when the task should be
-   * awoken again.
+   * Suspends the task until the specified time.
+   * @param stepName Checkpoint name for this wait.
+   * @param wakeAt Absolute time when the task should resume.
    */
   async sleepUntil(stepName: string, wakeAt: Date): Promise<void> {
     const checkpointName = this.getCheckpointName(stepName);
@@ -298,8 +298,11 @@ export class TaskContext {
   }
 
   /**
-   * Awaits the arrival of an event.  Events need to be uniquely
-   * named so fold in the necessary parameters into the name (eg: customer id).
+   * Waits for an event by name and returns its payload; optionally sets a custom step name and timeout (seconds).
+   * @param eventName Event identifier to wait for.
+   * @param options.stepName Optional checkpoint name (defaults to $awaitEvent:<eventName>).
+   * @param options.timeout Optional timeout in seconds.
+   * @throws TimeoutError If the event is not received before the timeout.
    */
   async awaitEvent(
     eventName: string,
@@ -359,9 +362,8 @@ export class TaskContext {
   }
 
   /**
-   * Extends the claim on the current task run which is useful for long-running
-   * operations that don't checkpoint frequently.  When no duration is provided,
-   * extends by the original claim timeout.
+   * Extends the current run's lease by the given seconds (defaults to the original claim timeout).
+   * @param seconds Lease extension in seconds.
    */
   async heartbeat(seconds?: number): Promise<void> {
     await this.queryWithCancelCheck(`SELECT absurd.extend_claim($1, $2, $3)`, [
@@ -372,7 +374,9 @@ export class TaskContext {
   }
 
   /**
-   * Emits an event that can be awaited.
+   * Emits an event to this task's queue with an optional payload.
+   * @param eventName Non-empty event name.
+   * @param payload Optional JSON-serializable payload.
    */
   async emitEvent(eventName: string, payload?: JsonValue): Promise<void> {
     if (!eventName) {
@@ -440,19 +444,9 @@ export class Absurd {
   }
 
   /**
-   * Returns a new Absurd client that reuses this instance's configuration
-   * but routes all queries through the provided connection.
-   *
-   * This is useful if that connection already has a transaction open.  The
-   * second parameter controls wether the connection should be closed when
-   * Absurd is closed.
-   *
-   * **Important:** Task execution contexts cache checkpoint state in memory.
-   * If you roll back a transaction after checkpoints have been written, the
-   * in-memory cache will not be automatically invalidated.  This is generally
-   * not an issue during normal worker execution (where each task gets a fresh
-   * context), but be aware if you're manually managing transactions and reusing
-   * context instances across transaction boundaries.
+   * Returns a new client that uses the provided connection for queries; set owned=true to close it with close().
+   * @param con Connection to bind to.
+   * @param owned If true, the bound client will close this connection on close().
    */
   bindToConnection(con: Queryable, owned: boolean = false): Absurd {
     const bound = new Absurd({
@@ -467,7 +461,12 @@ export class Absurd {
   }
 
   /**
-   * This registers a given function as task.
+   * Registers a task handler by name (optionally specifying queue, defaultMaxAttempts, and defaultCancellation).
+   * @param options.name Task name.
+   * @param options.queue Optional queue name (defaults to client queue).
+   * @param options.defaultMaxAttempts Optional default max attempts.
+   * @param options.defaultCancellation Optional default cancellation policy.
+   * @param handler Async task handler.
    */
   registerTask<P = any, R = any>(
     options: TaskRegistrationOptions,
@@ -500,16 +499,28 @@ export class Absurd {
     });
   }
 
+  /**
+   * Creates a queue (defaults to this client's queue).
+   * @param queueName Queue name to create.
+   */
   async createQueue(queueName?: string): Promise<void> {
     const queue = queueName ?? this.queueName;
     await this.con.query(`SELECT absurd.create_queue($1)`, [queue]);
   }
 
+  /**
+   * Drops a queue (defaults to this client's queue).
+   * @param queueName Queue name to drop.
+   */
   async dropQueue(queueName?: string): Promise<void> {
     const queue = queueName ?? this.queueName;
     await this.con.query(`SELECT absurd.drop_queue($1)`, [queue]);
   }
 
+  /**
+   * Lists all queue names.
+   * @returns Array of queue names.
+   */
   async listQueues(): Promise<Array<string>> {
     const result = await this.con.query(`SELECT * FROM absurd.list_queues()`);
     const rv = [];
@@ -520,7 +531,17 @@ export class Absurd {
   }
 
   /**
-   * Spawns a specific task.
+   * Spawns a task execution by enqueueing it for processing. The task will be picked up by a worker
+   * and executed with the provided parameters. Returns identifiers that can be used to track or cancel the task.
+   *
+   * For registered tasks, the queue and defaults are inferred from registration. For unregistered tasks,
+   * you must provide options.queue.
+   *
+   * @param taskName Name of the task to spawn (must be registered or provide options.queue).
+   * @param params JSON-serializable parameters passed to the task handler.
+   * @param options Configure queue, maxAttempts, retryStrategy, headers, and cancellation policies.
+   * @returns Object containing taskID (unique task identifier), runID (current attempt identifier), and attempt number.
+   * @throws Error If the task is unregistered without a queue, or if the queue mismatches registration.
    */
   async spawn<P = any>(
     taskName: string,
@@ -585,7 +606,10 @@ export class Absurd {
   }
 
   /**
-   * Emits an event from outside of a task.
+   * Emits an event with an optional payload on the specified or default queue.
+   * @param eventName Non-empty event name.
+   * @param payload Optional JSON-serializable payload.
+   * @param queueName Queue to emit to (defaults to this client's queue).
    */
   async emitEvent(
     eventName: string,
@@ -603,9 +627,9 @@ export class Absurd {
   }
 
   /**
-   * Cancels a task by its task_id.
-   * The task state will be set to 'cancelled' and no future runs will be scheduled.
-   * If the task is currently running, it will be cancelled at the next checkpoint or heartbeat.
+   * Cancels a task by ID on the specified or default queue; running tasks stop at the next checkpoint/heartbeat.
+   * @param taskID Task identifier to cancel.
+   * @param queueName Queue name (defaults to this client's queue).
    */
   async cancelTask(taskID: string, queueName?: string): Promise<void> {
     await this.con.query(`SELECT absurd.cancel_task($1, $2)`, [
@@ -636,8 +660,11 @@ export class Absurd {
   }
 
   /**
-   * Polls and processes a batch of messages sequentially.
-   * For parallel processing, use startWorker with concurrency option.
+   * Claims up to batchSize tasks and processes them sequentially using the given workerId and claimTimeout.
+   * @param workerId Worker identifier.
+   * @param claimTimeout Lease duration in seconds.
+   * @param batchSize Maximum number of tasks to process.
+   * Note: For parallel processing, use startWorker().
    */
   async workBatch(
     workerId: string = "worker",
@@ -652,8 +679,22 @@ export class Absurd {
   }
 
   /**
-   * Starts a worker that continuously polls for tasks and processes them.
-   * Returns a Worker instance with a close() method for graceful shutdown.
+   * Starts a background worker that continuously polls for and processes tasks from the queue.
+   * The worker will claim tasks up to the configured concurrency limit and process them in parallel.
+   *
+   * Tasks are claimed with a lease (claimTimeout) that prevents other workers from processing them.
+   * The lease is automatically extended when tasks write checkpoints or call heartbeat(). If a worker
+   * crashes or stops making progress, the lease expires and another worker can claim the task.
+   *
+   * @param options Configure worker behavior:
+   *   - concurrency: Max parallel tasks (default: 1)
+   *   - claimTimeout: Task lease duration in seconds (default: 120)
+   *   - batchSize: Tasks to claim per poll (default: concurrency)
+   *   - pollInterval: Seconds between polls when idle (default: 0.25)
+   *   - workerId: Worker identifier for tracking (default: hostname:pid)
+   *   - onError: Error handler called for execution failures
+   *   - fatalOnLeaseTimeout: Terminate process if task exceeds 2x claimTimeout (default: true)
+   * @returns Worker instance with close() method for graceful shutdown.
    */
   async startWorker(options: WorkerOptions = {}): Promise<Worker> {
     const {
@@ -757,6 +798,9 @@ export class Absurd {
     return worker;
   }
 
+  /**
+   * Stops any running worker and closes the underlying pool if owned.
+   */
   async close(): Promise<void> {
     if (this.worker) {
       await this.worker.close();
