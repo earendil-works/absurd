@@ -1,4 +1,6 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+
+from psycopg import sql
 
 
 def test_await_and_emit_event_flow(client):
@@ -54,3 +56,62 @@ def test_await_and_emit_event_flow(client):
     checkpoint = client.get_checkpoint(queue, spawn.task_id, "wait")
     assert checkpoint is not None
     assert checkpoint["state"] == payload
+
+
+def test_await_event_timeout_does_not_recreate_wait(client):
+    """
+    When a timeout expires and the run resumes, await_event() should detect
+    the expired timeout and return immediately without creating a new wait
+    registration (which would cause an infinite loop).
+    """
+    queue = "timeout-no-loop"
+    client.create_queue(queue)
+
+    base = datetime(2024, 5, 1, 10, 0, tzinfo=timezone.utc)
+    client.set_fake_now(base)
+
+    # Spawn and claim
+    spawn = client.spawn_task(queue, "waiter", {"step": 1})
+    claim = client.claim_tasks(queue)[0]
+    run_id = claim["run_id"]
+
+    event = "foo"
+    # First await registers a wait with a 10s timeout and suspends
+    resp1 = client.await_event(queue, spawn.task_id, run_id, "wait", event, 10)
+    assert resp1["should_suspend"] is True
+    assert resp1["payload"] is None
+
+    # Wait table has one row
+    wtbl = client.get_table("w", queue)
+    wait_count1 = client.conn.execute(
+        sql.SQL("select count(*) from absurd.{t}").format(t=wtbl)
+    ).fetchone()[0]
+    assert wait_count1 == 1
+
+    # Advance time past timeout and resume
+    client.set_fake_now(base + timedelta(seconds=15))
+    resumed = client.claim_tasks(queue)[0]
+    assert resumed["run_id"] == run_id
+
+    # After resume, the expired wait should be cleaned up
+    wait_count_after_resume = client.conn.execute(
+        sql.SQL("select count(*) from absurd.{t}").format(t=wtbl)
+    ).fetchone()[0]
+    assert wait_count_after_resume == 0
+
+    # Calling await_event again MUST NOT create a new wait; it should
+    # return immediately as a timeout (no suspend).
+    resp2 = client.await_event(queue, spawn.task_id, run_id, "wait", event, 10)
+    assert resp2["should_suspend"] is False
+    assert resp2["payload"] is None
+
+    # Verify the run remains running; no re-sleep occurred
+    run = client.get_run(queue, run_id)
+    assert run is not None
+    assert run["state"] == "running"
+
+    # And the wait table remains empty (no new registration)
+    wait_count_final = client.conn.execute(
+        sql.SQL("select count(*) from absurd.{t}").format(t=wtbl)
+    ).fetchone()[0]
+    assert wait_count_final == 0
