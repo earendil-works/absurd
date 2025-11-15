@@ -12,6 +12,7 @@ This contains the changes between releases.
 * Changed TypeScript SDK dependencies: made `pg` a peer dependency and moved `typescript` to dev dependencies.  #20
 * Added `heartbeat` to extend a claim between checkpoints.  #39
 * Added explicit task cancellations.  #40
+* Ensure that timeouts on events do not re-trigger the event awaiting.  #45
 
 # 0.0.4
 
