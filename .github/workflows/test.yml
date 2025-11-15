@@ -25,6 +25,15 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v5
 
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install TypeScript dependencies
+        working-directory: sdks/typescript
+        run: npm ci
+
       - name: Run tests
         run: make test-python
 
