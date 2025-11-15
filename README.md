@@ -65,6 +65,13 @@ might want to look at if you think you need more:
 * [DBOS](https://docs.dbos.dev/) is also attempting to implement durable workflows
   on top of Postgres.
 
+## Client SDKs
+
+Currently SDKs exist for the following languages:
+
+* [TypeScript](sdks/typescript) (and JavaScript)
+* [Python](sdks/python) (unpublished)
+
 ## Push vs Pull
 
 Absurd is a pull-based system, which means that your code pulls tasks from

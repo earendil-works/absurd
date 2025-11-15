@@ -4,6 +4,8 @@ This contains the changes between releases.
 
 # Unreleased
 
+* Added Python SDK.  #26
+
 # 0.0.5
 
 * Added `bindToConnection` method to TypeScript SDK.  #37
