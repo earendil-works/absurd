@@ -100,6 +100,7 @@ export interface TestContext {
   cleanupTasks(): Promise<void>;
   getTask(taskID: string): Promise<TaskRow | null>;
   getRun(runID: string): Promise<RunRow | null>;
+  getRuns(taskID: string): Promise<RunRow[]>;
   setFakeNow(ts: Date | null): Promise<void>;
 }
 
@@ -124,6 +125,7 @@ export async function createTestAbsurd(
     cleanupTasks: () => cleanupTasks(queueName),
     getTask: (taskID: string) => getTask(taskID, queueName),
     getRun: (runID: string) => getRun(runID, queueName),
+    getRuns: (taskID: string) => getRuns(taskID, queueName),
     setFakeNow: (ts: Date | null) => setFakeNow(ts),
   };
 }
@@ -165,4 +167,12 @@ async function getRun(runID: string, queue: string): Promise<RunRow | null> {
     [runID],
   );
   return rows.length > 0 ? rows[0] : null;
+}
+
+async function getRuns(taskID: string, queue: string): Promise<RunRow[]> {
+  const { rows } = await pool.query<RunRow>(
+    `SELECT * FROM absurd.r_${queue} WHERE task_id = $1 ORDER BY attempt`,
+    [taskID],
+  );
+  return rows;
 }

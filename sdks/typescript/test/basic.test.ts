@@ -1,4 +1,4 @@
-import { describe, test, assert, expect, beforeAll } from "vitest";
+import { describe, test, assert, expect, beforeAll, afterEach } from "vitest";
 import { createTestAbsurd, randomName, type TestContext } from "./setup.js";
 import type { Absurd } from "../src/index.js";
 
@@ -9,6 +9,11 @@ describe("Basic SDK Operations", () => {
   beforeAll(async () => {
     thelper = await createTestAbsurd(randomName("test_queue"));
     absurd = thelper.absurd;
+  });
+
+  afterEach(async () => {
+    await thelper.cleanupTasks();
+    await thelper.setFakeNow(null);
   });
 
   describe("Queue management", () => {
@@ -136,6 +141,184 @@ describe("Basic SDK Operations", () => {
           workerId: "test-worker-empty",
         }),
       ).toEqual([]);
+    });
+  });
+
+  describe("State transitions", () => {
+    test("scheduleRun moves run between running and sleeping", async () => {
+      await thelper.cleanupTasks();
+      const baseTime = new Date("2024-04-01T10:00:00Z");
+      await thelper.setFakeNow(baseTime);
+
+      absurd.registerTask<{ step: string }>(
+        { name: "schedule-task" },
+        async () => {
+          return { done: true };
+        },
+      );
+
+      const { runID } = await absurd.spawn("schedule-task", { step: "start" });
+      const [claim] = await absurd.claimTasks({
+        workerId: "worker-1",
+        claimTimeout: 120,
+      });
+      expect(claim.run_id).toBe(runID);
+
+      const wakeAt = new Date(baseTime.getTime() + 5 * 60 * 1000);
+      await thelper.pool.query(`SELECT absurd.schedule_run($1, $2, $3)`, [
+        thelper.queueName,
+        runID,
+        wakeAt,
+      ]);
+
+      const scheduledRun = await thelper.getRun(runID);
+      expect(scheduledRun).toMatchObject({
+        state: "sleeping",
+        available_at: wakeAt,
+        wake_event: null,
+      });
+
+      const scheduledTask = await thelper.getTask(claim.task_id);
+      expect(scheduledTask?.state).toBe("sleeping");
+
+      await thelper.setFakeNow(wakeAt);
+      const [resumed] = await absurd.claimTasks({
+        workerId: "worker-1",
+        claimTimeout: 120,
+      });
+      expect(resumed.run_id).toBe(runID);
+      expect(resumed.attempt).toBe(1);
+
+      const resumedRun = await thelper.getRun(runID);
+      expect(resumedRun).toMatchObject({
+        state: "running",
+        started_at: wakeAt,
+      });
+    });
+
+    test("claim timeout releases run to a new worker", async () => {
+      await thelper.cleanupTasks();
+      const baseTime = new Date("2024-04-02T09:00:00Z");
+      await thelper.setFakeNow(baseTime);
+
+      absurd.registerTask<{ step: string }>(
+        { name: "lease-task" },
+        async () => {
+          return { ok: true };
+        },
+      );
+
+      const { taskID } = await absurd.spawn("lease-task", { step: "attempt" });
+      const [claim] = await absurd.claimTasks({
+        workerId: "worker-a",
+        claimTimeout: 30,
+      });
+      expect(claim.task_id).toBe(taskID);
+
+      const running = await thelper.getRun(claim.run_id);
+      expect(running).toMatchObject({
+        state: "running",
+        claimed_by: "worker-a",
+        claim_expires_at: new Date(baseTime.getTime() + 30 * 1000),
+      });
+
+      await thelper.setFakeNow(new Date(baseTime.getTime() + 5 * 60 * 1000));
+      const [reclaim] = await absurd.claimTasks({
+        workerId: "worker-b",
+        claimTimeout: 45,
+      });
+      expect(reclaim.run_id).not.toBe(claim.run_id);
+      expect(reclaim.attempt).toBe(2);
+
+      const expiredRun = await thelper.getRun(claim.run_id);
+      expect(expiredRun?.state).toBe("failed");
+      expect(expiredRun?.failure_reason).toMatchObject({
+        name: "$ClaimTimeout",
+        workerId: "worker-a",
+        attempt: 1,
+      });
+
+      const newRun = await thelper.getRun(reclaim.run_id);
+      expect(newRun).toMatchObject({
+        state: "running",
+        claimed_by: "worker-b",
+      });
+
+      const taskRow = await thelper.getTask(taskID);
+      expect(taskRow).toMatchObject({
+        state: "running",
+        attempts: 2,
+      });
+    });
+  });
+
+  describe("Cleanup maintenance", () => {
+    test("cleanup tasks and events respect TTLs", async () => {
+      await thelper.cleanupTasks();
+      const base = new Date("2024-03-01T08:00:00Z");
+      await thelper.setFakeNow(base);
+
+      absurd.registerTask<{ step: string }>({ name: "cleanup" }, async () => {
+        return { status: "done" };
+      });
+
+      const { runID } = await absurd.spawn("cleanup", { step: "start" });
+      const [claim] = await absurd.claimTasks({
+        workerId: "worker-clean",
+        claimTimeout: 60,
+      });
+      expect(claim.run_id).toBe(runID);
+
+      const finishTime = new Date(base.getTime() + 10 * 60 * 1000);
+      await thelper.setFakeNow(finishTime);
+      await thelper.pool.query(`SELECT absurd.complete_run($1, $2, $3)`, [
+        thelper.queueName,
+        runID,
+        JSON.stringify({ status: "done" }),
+      ]);
+
+      await absurd.emitEvent("cleanup-event", { kind: "notify" });
+
+      const runRow = await thelper.getRun(runID);
+      expect(runRow).toMatchObject({
+        claimed_by: "worker-clean",
+        claim_expires_at: new Date(base.getTime() + 60 * 1000),
+      });
+
+      const beforeTTL = new Date(finishTime.getTime() + 30 * 60 * 1000);
+      await thelper.setFakeNow(beforeTTL);
+      const beforeTasks = await thelper.pool.query<{ count: string }>(
+        `SELECT absurd.cleanup_tasks($1, $2, $3) AS count`,
+        [thelper.queueName, 3600, 10],
+      );
+      expect(Number(beforeTasks.rows[0].count)).toBe(0);
+      const beforeEvents = await thelper.pool.query<{ count: string }>(
+        `SELECT absurd.cleanup_events($1, $2, $3) AS count`,
+        [thelper.queueName, 3600, 10],
+      );
+      expect(Number(beforeEvents.rows[0].count)).toBe(0);
+
+      const later = new Date(finishTime.getTime() + 26 * 60 * 60 * 1000);
+      await thelper.setFakeNow(later);
+      const deletedTasks = await thelper.pool.query<{ count: string }>(
+        `SELECT absurd.cleanup_tasks($1, $2, $3) AS count`,
+        [thelper.queueName, 3600, 10],
+      );
+      expect(Number(deletedTasks.rows[0].count)).toBe(1);
+      const deletedEvents = await thelper.pool.query<{ count: string }>(
+        `SELECT absurd.cleanup_events($1, $2, $3) AS count`,
+        [thelper.queueName, 3600, 10],
+      );
+      expect(Number(deletedEvents.rows[0].count)).toBe(1);
+
+      const remainingTasks = await thelper.pool.query<{ count: string }>(
+        `SELECT COUNT(*)::text AS count FROM absurd.t_${thelper.queueName}`,
+      );
+      expect(Number(remainingTasks.rows[0].count)).toBe(0);
+      const remainingEvents = await thelper.pool.query<{ count: string }>(
+        `SELECT COUNT(*)::text AS count FROM absurd.e_${thelper.queueName}`,
+      );
+      expect(Number(remainingEvents.rows[0].count)).toBe(0);
     });
   });
 

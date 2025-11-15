@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeAll, afterEach } from "vitest";
+import { describe, test, expect, beforeAll, afterEach, vi } from "vitest";
 import { createTestAbsurd, randomName, type TestContext } from "./setup.js";
 import type { Absurd } from "../src/index.js";
 
@@ -13,6 +13,8 @@ describe("Step functionality", () => {
 
   afterEach(async () => {
     await thelper.cleanupTasks();
+    await thelper.setFakeNow(null);
+    vi.useRealTimers();
   });
 
   test("step executes and returns value", async () => {
@@ -181,5 +183,84 @@ describe("Step functionality", () => {
       completed_payload: { result: "success" },
       attempts: 2,
     });
+  });
+
+  test("sleepFor suspends until duration elapses", async () => {
+    vi.useFakeTimers();
+    const base = new Date("2024-05-05T10:00:00Z");
+    vi.setSystemTime(base);
+    await thelper.setFakeNow(base);
+
+    const durationSeconds = 60;
+    absurd.registerTask({ name: "sleep-for" }, async (_params, ctx) => {
+      await ctx.sleepFor("wait-for", durationSeconds);
+      return { resumed: true };
+    });
+
+    const { taskID, runID } = await absurd.spawn("sleep-for", undefined);
+    await absurd.workBatch("worker-sleep", 120, 1);
+
+    const sleepingRun = await thelper.getRun(runID);
+    expect(sleepingRun).toMatchObject({
+      state: "sleeping",
+    });
+    const wakeTime = new Date(base.getTime() + durationSeconds * 1000);
+    expect(sleepingRun?.available_at?.getTime()).toBe(wakeTime.getTime());
+
+    const resumeTime = new Date(wakeTime.getTime() + 5 * 1000);
+    vi.setSystemTime(resumeTime);
+    await thelper.setFakeNow(resumeTime);
+    await absurd.workBatch("worker-sleep", 120, 1);
+
+    expect(await thelper.getTask(taskID)).toMatchObject({
+      state: "completed",
+      completed_payload: { resumed: true },
+    });
+  });
+
+  test("sleepUntil checkpoint prevents re-scheduling when wake time passed", async () => {
+    vi.useFakeTimers();
+    const base = new Date("2024-05-06T09:00:00Z");
+    vi.setSystemTime(base);
+    await thelper.setFakeNow(base);
+
+    const wakeTime = new Date(base.getTime() + 5 * 60 * 1000);
+    let executions = 0;
+
+    absurd.registerTask({ name: "sleep-until" }, async (_params, ctx) => {
+      executions++;
+      await ctx.sleepUntil("sleep-step", wakeTime);
+      return { executions };
+    });
+
+    const { taskID, runID } = await absurd.spawn("sleep-until", undefined);
+    await absurd.workBatch("worker-sleep", 120, 1);
+
+    const checkpointRow = await thelper.pool.query<{
+      checkpoint_name: string;
+      state: string;
+      owner_run_id: string;
+    }>(
+      `SELECT checkpoint_name, state, owner_run_id FROM absurd.c_${thelper.queueName} WHERE task_id = $1`,
+      [taskID],
+    );
+    expect(checkpointRow.rows[0]).toMatchObject({
+      checkpoint_name: "sleep-step",
+      owner_run_id: runID,
+      state: wakeTime.toISOString(),
+    });
+
+    const sleepingRun = await thelper.getRun(runID);
+    expect(sleepingRun?.state).toBe("sleeping");
+
+    vi.setSystemTime(wakeTime);
+    await thelper.setFakeNow(wakeTime);
+    await absurd.workBatch("worker-sleep", 120, 1);
+
+    expect(await thelper.getTask(taskID)).toMatchObject({
+      state: "completed",
+      completed_payload: { executions: 2 },
+    });
+    expect(executions).toBe(2);
   });
 });

@@ -13,6 +13,7 @@ describe("Retry and cancellation", () => {
 
   afterEach(async () => {
     await thelper.cleanupTasks();
+    await thelper.setFakeNow(null);
   });
 
   test("fail run without strategy requeues immediately", async () => {
@@ -149,43 +150,35 @@ describe("Retry and cancellation", () => {
     });
   });
 
-  test.skip("cancellation by max duration", async () => {
-    // Skipped: Cancellation during retry flow needs SDK investigation
+  test("cancellation by max duration", async () => {
     const baseTime = new Date("2024-05-01T09:00:00Z");
     await thelper.setFakeNow(baseTime);
 
-    let attempts = 0;
-
     absurd.registerTask({ name: "duration-cancel" }, async () => {
-      attempts++;
       throw new Error("always fails");
     });
 
     const { taskID } = await absurd.spawn("duration-cancel", undefined, {
       maxAttempts: 4,
       retryStrategy: { kind: "fixed", baseSeconds: 30 },
-      cancellation: { maxDuration: 90 }, // 90 seconds total duration max
+      cancellation: { maxDuration: 90 },
     });
 
-    // First attempt - fails at baseTime
     await absurd.workBatch("worker1", 60, 1);
 
-    // Advance to second attempt (30s later)
-    await thelper.setFakeNow(new Date(baseTime.getTime() + 30 * 1000));
-    await absurd.workBatch("worker1", 60, 1);
-
-    // Advance to after max_duration (91 seconds from start)
-    // Third attempt would be at 60s, but we advance to 91s and fail the second run
     await thelper.setFakeNow(new Date(baseTime.getTime() + 91 * 1000));
+    await absurd.workBatch("worker1", 60, 1);
 
-    // Task should be cancelled due to max_duration
     const task = await thelper.getTask(taskID);
     expect(task?.state).toBe("cancelled");
     expect(task?.cancelled_at).not.toBeNull();
+
+    const runs = await thelper.getRuns(taskID);
+    expect(runs.length).toBe(2);
+    expect(runs[1].state).toBe("cancelled");
   });
 
-  test.skip("cancellation by max delay", async () => {
-    // Skipped: Max delay cancellation needs SDK investigation
+  test("cancellation by max delay", async () => {
     const baseTime = new Date("2024-05-01T08:00:00Z");
     await thelper.setFakeNow(baseTime);
 
@@ -194,18 +187,213 @@ describe("Retry and cancellation", () => {
     });
 
     const { taskID } = await absurd.spawn("delay-cancel", undefined, {
-      cancellation: { maxDelay: 60 }, // 60 seconds from enqueue to first start
+      cancellation: { maxDelay: 60 },
     });
 
-    // Task is enqueued at baseTime
-    // Advance time past maxDelay (60 seconds + 1) before claiming
     await thelper.setFakeNow(new Date(baseTime.getTime() + 61 * 1000));
-
-    // Try to claim - should be cancelled immediately due to maxDelay
     await absurd.workBatch("worker1", 60, 1);
 
-    expect(await thelper.getTask(taskID)).toMatchObject({
-      state: "cancelled",
+    const task = await thelper.getTask(taskID);
+    expect(task?.state).toBe("cancelled");
+    expect(task?.cancelled_at).not.toBeNull();
+  });
+
+  test("manual cancel pending task", async () => {
+    absurd.registerTask({ name: "pending-cancel" }, async () => {
+      return { ok: true };
     });
+
+    const { taskID } = await absurd.spawn("pending-cancel", { data: 1 });
+    expect((await thelper.getTask(taskID))?.state).toBe("pending");
+
+    await absurd.cancelTask(taskID);
+
+    const task = await thelper.getTask(taskID);
+    expect(task?.state).toBe("cancelled");
+    expect(task?.cancelled_at).not.toBeNull();
+
+    const claims = await absurd.claimTasks({
+      workerId: "worker-1",
+      claimTimeout: 60,
+    });
+    expect(claims).toHaveLength(0);
+  });
+
+  test("manual cancel running task", async () => {
+    absurd.registerTask({ name: "running-cancel" }, async () => {
+      return { ok: true };
+    });
+
+    const { taskID } = await absurd.spawn("running-cancel", { data: 1 });
+    const [claim] = await absurd.claimTasks({
+      workerId: "worker-1",
+      claimTimeout: 60,
+    });
+    expect(claim.task_id).toBe(taskID);
+
+    await absurd.cancelTask(taskID);
+
+    const task = await thelper.getTask(taskID);
+    expect(task?.state).toBe("cancelled");
+    expect(task?.cancelled_at).not.toBeNull();
+  });
+
+  test("cancel blocks checkpoint writes", async () => {
+    absurd.registerTask({ name: "checkpoint-cancel" }, async () => {
+      return { ok: true };
+    });
+
+    const { taskID } = await absurd.spawn("checkpoint-cancel", { data: 1 });
+    const [claim] = await absurd.claimTasks({
+      workerId: "worker-1",
+      claimTimeout: 60,
+    });
+
+    await absurd.cancelTask(taskID);
+
+    await expect(
+      thelper.pool.query(
+        `SELECT absurd.set_task_checkpoint_state($1, $2, $3, $4, $5, $6)`,
+        [
+          thelper.queueName,
+          taskID,
+          "step-1",
+          JSON.stringify({ result: "value" }),
+          claim.run_id,
+          60,
+        ],
+      ),
+    ).rejects.toHaveProperty("code", "AB001");
+  });
+
+  test("cancel blocks awaitEvent registrations", async () => {
+    absurd.registerTask({ name: "await-cancel" }, async () => {
+      return { ok: true };
+    });
+
+    const { taskID } = await absurd.spawn("await-cancel", { data: 1 });
+    const [claim] = await absurd.claimTasks({
+      workerId: "worker-1",
+      claimTimeout: 60,
+    });
+
+    await absurd.cancelTask(taskID);
+
+    await expect(
+      thelper.pool.query(`SELECT absurd.await_event($1, $2, $3, $4, $5, $6)`, [
+        thelper.queueName,
+        taskID,
+        claim.run_id,
+        "wait-step",
+        "some-event",
+        null,
+      ]),
+    ).rejects.toHaveProperty("code", "AB001");
+  });
+
+  test("cancel blocks extendClaim", async () => {
+    absurd.registerTask({ name: "extend-cancel" }, async () => {
+      return { ok: true };
+    });
+
+    const { taskID } = await absurd.spawn("extend-cancel", { data: 1 });
+    const [claim] = await absurd.claimTasks({
+      workerId: "worker-1",
+      claimTimeout: 60,
+    });
+
+    await absurd.cancelTask(taskID);
+
+    await expect(
+      thelper.pool.query(`SELECT absurd.extend_claim($1, $2, $3)`, [
+        thelper.queueName,
+        claim.run_id,
+        30,
+      ]),
+    ).rejects.toHaveProperty("code", "AB001");
+  });
+
+  test("cancel is idempotent", async () => {
+    absurd.registerTask({ name: "idempotent-cancel" }, async () => {
+      return { ok: true };
+    });
+
+    const { taskID } = await absurd.spawn("idempotent-cancel", { data: 1 });
+    await absurd.cancelTask(taskID);
+    const first = await thelper.getTask(taskID);
+    expect(first?.cancelled_at).not.toBeNull();
+
+    await absurd.cancelTask(taskID);
+    const second = await thelper.getTask(taskID);
+    expect(second?.cancelled_at?.getTime()).toBe(
+      first?.cancelled_at?.getTime(),
+    );
+  });
+
+  test("cancelling completed task is a no-op", async () => {
+    absurd.registerTask({ name: "complete-cancel" }, async () => {
+      return { status: "done" };
+    });
+
+    const { taskID } = await absurd.spawn("complete-cancel", { data: 1 });
+    await absurd.workBatch("worker-1", 60, 1);
+
+    await absurd.cancelTask(taskID);
+
+    const task = await thelper.getTask(taskID);
+    expect(task?.state).toBe("completed");
+    expect(task?.cancelled_at).toBeNull();
+  });
+
+  test("cancelling failed task is a no-op", async () => {
+    absurd.registerTask(
+      { name: "failed-cancel", defaultMaxAttempts: 1 },
+      async () => {
+        throw new Error("boom");
+      },
+    );
+
+    const { taskID } = await absurd.spawn("failed-cancel", { data: 1 });
+    await absurd.workBatch("worker-1", 60, 1);
+
+    await absurd.cancelTask(taskID);
+
+    const task = await thelper.getTask(taskID);
+    expect(task?.state).toBe("failed");
+    expect(task?.cancelled_at).toBeNull();
+  });
+
+  test("cancel sleeping task transitions run to cancelled", async () => {
+    const eventName = randomName("sleep-event");
+    absurd.registerTask({ name: "sleep-cancel" }, async () => {
+      return { ok: true };
+    });
+
+    const { taskID } = await absurd.spawn("sleep-cancel", { data: 1 });
+    const [claim] = await absurd.claimTasks({
+      workerId: "worker-1",
+      claimTimeout: 60,
+    });
+
+    await thelper.pool.query(
+      `SELECT absurd.await_event($1, $2, $3, $4, $5, $6)`,
+      [thelper.queueName, taskID, claim.run_id, "wait-step", eventName, 300],
+    );
+
+    const sleepingTask = await thelper.getTask(taskID);
+    expect(sleepingTask?.state).toBe("sleeping");
+
+    await absurd.cancelTask(taskID);
+
+    const cancelledTask = await thelper.getTask(taskID);
+    expect(cancelledTask?.state).toBe("cancelled");
+    const run = await thelper.getRun(claim.run_id);
+    expect(run?.state).toBe("cancelled");
+  });
+
+  test("cancel non-existent task errors", async () => {
+    await expect(
+      absurd.cancelTask("019a32d3-8425-7ae2-a5af-2f17a6707666"),
+    ).rejects.toThrow(/not found/i);
   });
 });
