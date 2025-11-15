@@ -23,6 +23,7 @@ from typing import (
     TypedDict,
     TypeVar,
     Union,
+    overload,
 )
 
 from psycopg import AsyncConnection, Connection
@@ -185,7 +186,9 @@ def _serialize_retry_strategy(strategy: RetryStrategy) -> JsonObject:
     return serialized
 
 
-def _normalize_cancellation(policy: Optional[CancellationPolicy]) -> Optional[JsonObject]:
+def _normalize_cancellation(
+    policy: Optional[CancellationPolicy],
+) -> Optional[JsonObject]:
     """Normalize cancellation policy to JSON"""
     if not policy:
         return None
@@ -254,14 +257,52 @@ class TaskContext:
         self._persist_checkpoint(checkpoint_name, rv)
         return rv
 
+    @overload
+    def run_step(self, name: Optional[str] = None) -> Callable[[Callable[[], R]], R]:
+        """Decorator to run a function as a step and replace it with the return value"""
+        ...
+
+    @overload
+    def run_step(self, fn: Callable[[], R]) -> R:
+        """Decorator to run a function as a step and replace it with the return value"""
+        ...
+
+    def run_step(
+        self, name_or_fn: Optional[Union[str, Callable[[], R]]] = None
+    ) -> Union[R, Callable[[Callable[[], R]], R]]:
+        """Decorator to run a function as a step and replace it with the return value.
+
+        Usage:
+            @ctx.run_step()
+            def step_name():
+                return 42
+            # step_name is now 42
+
+            @ctx.run_step("custom_name")
+            def step_name():
+                return 42
+            # step_name is now 42, stored as "custom_name"
+        """
+        # Case 1: @ctx.run_step (no arguments, no parentheses)
+        if callable(name_or_fn):
+            fn = name_or_fn
+            return self.step(fn.__name__, fn)
+
+        # Case 2: @ctx.run_step() or @ctx.run_step("custom_name")
+        custom_name = name_or_fn if isinstance(name_or_fn, str) else None
+
+        def decorator(fn: Callable[[], R]) -> R:
+            step_name = custom_name if custom_name is not None else fn.__name__
+            return self.step(step_name, fn)
+
+        return decorator
+
     def sleep_for(self, step_name: str, duration: float) -> None:
         """Suspend the task for the given duration in seconds"""
         wake_at = _get_current_time() + timedelta(seconds=duration)
         return self.sleep_until(step_name, wake_at)
 
-    def sleep_until(
-        self, step_name: str, wake_at: Union[datetime, int, float]
-    ) -> None:
+    def sleep_until(self, step_name: str, wake_at: Union[datetime, int, float]) -> None:
         """Suspend the task until the specified time"""
         if isinstance(wake_at, (int, float)):
             wake_at = datetime.fromtimestamp(wake_at, timezone.utc)
@@ -351,7 +392,11 @@ class TaskContext:
         try:
             cursor.execute(
                 "SELECT absurd.extend_claim(%s, %s, %s)",
-                (self._queue_name, self._task["run_id"], seconds or self._claim_timeout),
+                (
+                    self._queue_name,
+                    self._task["run_id"],
+                    seconds or self._claim_timeout,
+                ),
             )
         except Exception as e:
             if hasattr(e, "pgcode") and e.pgcode == "AB001":  # type: ignore
@@ -486,6 +531,48 @@ class AsyncTaskContext:
         await self._persist_checkpoint(checkpoint_name, rv)
         return rv
 
+    @overload
+    def run_step(
+        self, name: Optional[str] = None
+    ) -> Callable[[Callable[[], Awaitable[R]]], Awaitable[R]]:
+        """Decorator to run an async function as a step and replace it with the return value"""
+        ...
+
+    @overload
+    def run_step(self, fn: Callable[[], Awaitable[R]]) -> Awaitable[R]:
+        """Decorator to run an async function as a step and replace it with the return value"""
+        ...
+
+    def run_step(
+        self, name_or_fn: Optional[Union[str, Callable[[], Awaitable[R]]]] = None
+    ) -> Union[Awaitable[R], Callable[[Callable[[], Awaitable[R]]], Awaitable[R]]]:
+        """Decorator to run an async function as a step and replace it with the return value.
+
+        Usage:
+            @ctx.run_step()
+            async def step_name():
+                return 42
+            # step_name is now an awaitable that returns 42
+
+            @ctx.run_step("custom_name")
+            async def step_name():
+                return 42
+            # step_name is now an awaitable that returns 42, stored as "custom_name"
+        """
+        # Case 1: @ctx.run_step (no arguments, no parentheses)
+        if callable(name_or_fn):
+            fn = name_or_fn
+            return self.step(fn.__name__, fn)
+
+        # Case 2: @ctx.run_step() or @ctx.run_step("custom_name")
+        custom_name = name_or_fn if isinstance(name_or_fn, str) else None
+
+        def decorator(fn: Callable[[], Awaitable[R]]) -> Awaitable[R]:
+            step_name = custom_name if custom_name is not None else fn.__name__
+            return self.step(step_name, fn)
+
+        return decorator
+
     async def sleep_for(self, step_name: str, duration: float) -> None:
         """Suspend the task for the given duration in seconds"""
         wake_at = _get_current_time() + timedelta(seconds=duration)
@@ -585,7 +672,11 @@ class AsyncTaskContext:
         try:
             await cursor.execute(
                 "SELECT absurd.extend_claim(%s, %s, %s)",
-                (self._queue_name, self._task["run_id"], seconds or self._claim_timeout),
+                (
+                    self._queue_name,
+                    self._task["run_id"],
+                    seconds or self._claim_timeout,
+                ),
             )
         except Exception as e:
             if hasattr(e, "pgcode") and e.pgcode == "AB001":  # type: ignore
@@ -1072,9 +1163,7 @@ class AsyncAbsurd(_AbsurdBase):
             (queue_name or self._queue_name, event_name, json.dumps(payload)),
         )
 
-    async def cancel_task(
-        self, task_id: str, queue_name: Optional[str] = None
-    ) -> None:
+    async def cancel_task(self, task_id: str, queue_name: Optional[str] = None) -> None:
         """Cancel a task by ID on the specified or default queue"""
         await self._ensure_connected()
         assert self._conn is not None

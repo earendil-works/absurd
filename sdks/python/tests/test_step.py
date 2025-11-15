@@ -271,3 +271,115 @@ def test_sleep_until_checkpoint_prevents_rescheduling(conn, queue_name):
     assert task["state"] == "completed"
     assert task["completed_payload"] == {"executions": 2}
     assert len(executions) == 2
+
+
+def test_run_step_decorator_with_default_name(conn, queue_name):
+    """Test run_step decorator uses function name as step name"""
+    queue = queue_name("run_step_default")
+    client = Absurd(conn, queue_name=queue)
+    client.create_queue()
+
+    @client.register_task("run-step-default")
+    def run_step_task(params, ctx):
+        @ctx.run_step()
+        def calculate_value():
+            return params["x"] * 2
+
+        return {"result": calculate_value}
+
+    spawned = client.spawn("run-step-default", {"x": 21})
+    client.work_batch("worker", 60, 1)
+
+    task = _get_task(conn, queue, spawned["task_id"])
+    assert task["state"] == "completed"
+    assert task["completed_payload"] == {"result": 42}
+
+
+def test_run_step_decorator_with_custom_name(conn, queue_name):
+    """Test run_step decorator with custom step name"""
+    queue = queue_name("run_step_custom")
+    client = Absurd(conn, queue_name=queue)
+    client.create_queue()
+
+    @client.register_task("run-step-custom")
+    def run_step_task(params, ctx):
+        @ctx.run_step("custom_step_name")
+        def calculate_value():
+            return params["x"] + params["y"]
+
+        return {"result": calculate_value}
+
+    spawned = client.spawn("run-step-custom", {"x": 10, "y": 32})
+    client.work_batch("worker", 60, 1)
+
+    task = _get_task(conn, queue, spawned["task_id"])
+    assert task["state"] == "completed"
+    assert task["completed_payload"] == {"result": 42}
+
+    # Verify the checkpoint was saved with custom name
+    checkpoint_query = sql.SQL(
+        "SELECT checkpoint_name, state FROM absurd.{table} WHERE task_id = %s"
+    ).format(table=sql.Identifier(f"c_{queue}"))
+    checkpoint = conn.execute(checkpoint_query, (spawned["task_id"],)).fetchone()
+    assert checkpoint[0] == "custom_step_name"
+    assert checkpoint[1] == 42
+
+
+def test_run_step_decorator_caches_result(conn, queue_name):
+    """Test run_step decorator caches result on retry"""
+    queue = queue_name("run_step_cache")
+    client = Absurd(conn, queue_name=queue)
+    client.create_queue()
+
+    execution_count = []
+    attempt_count = []
+
+    @client.register_task("run-step-cache", default_max_attempts=2)
+    def run_step_task(params, ctx):
+        attempt_count.append(len(attempt_count) + 1)
+
+        @ctx.run_step()
+        def expensive_calculation():
+            execution_count.append(len(execution_count) + 1)
+            return 100
+
+        if len(attempt_count) == 1:
+            raise Exception("Intentional failure")
+
+        return {"value": expensive_calculation, "executions": len(execution_count)}
+
+    spawned = client.spawn("run-step-cache", None)
+
+    client.work_batch("worker", 60, 1)
+    assert len(execution_count) == 1
+
+    client.work_batch("worker", 60, 1)
+    assert len(execution_count) == 1  # Not re-executed
+    assert len(attempt_count) == 2
+
+    task = _get_task(conn, queue, spawned["task_id"])
+    assert task["state"] == "completed"
+    assert task["completed_payload"]["value"] == 100
+    assert task["completed_payload"]["executions"] == 1
+
+
+def test_run_step_decorator_without_parentheses(conn, queue_name):
+    """Test run_step decorator works without parentheses"""
+    queue = queue_name("run_step_no_parens")
+    client = Absurd(conn, queue_name=queue)
+    client.create_queue()
+
+    @client.register_task("run-step-no-parens")
+    def run_step_task(params, ctx):
+        @ctx.run_step
+        def my_step():
+            return "success"
+
+        return {"result": my_step}
+
+    spawned = client.spawn("run-step-no-parens", None)
+    client.work_batch("worker", 60, 1)
+
+    task = _get_task(conn, queue, spawned["task_id"])
+    assert task["state"] == "completed"
+    assert task["completed_payload"] == {"result": "success"}
