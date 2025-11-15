@@ -1,9 +1,10 @@
-from datetime import datetime, timedelta, timezone
+import json
+from datetime import datetime, timezone
 
 import pytest
 from psycopg import sql
 
-from absurd_sdk import Absurd, SuspendTask, TaskContext
+from absurd_sdk import Absurd, SuspendTask, _create_task_context
 
 
 def _fetch_checkpoint(conn, queue, task_id, checkpoint_name):
@@ -30,7 +31,7 @@ def test_step_persists_and_reuses_checkpoints(conn, queue_name):
     client.spawn("profile-step", {"user_id": 7}, queue=queue)
     task = client.claim_tasks(worker_id="worker")[0]
 
-    ctx = TaskContext.create(task["task_id"], conn, queue, task, claim_timeout=120)
+    ctx = _create_task_context(task["task_id"], conn, queue, task, claim_timeout=120)
 
     calls = []
 
@@ -41,14 +42,21 @@ def test_step_persists_and_reuses_checkpoints(conn, queue_name):
     first = ctx.step("load-profile", compute)
     assert first == {"user_id": 7}
     assert calls == ["called"]
-    assert _fetch_checkpoint(conn, queue, task["task_id"], "load-profile") == {"user_id": 7}
+    assert _fetch_checkpoint(conn, queue, task["task_id"], "load-profile") == {
+        "user_id": 7
+    }
 
     # A brand new context observes the persisted checkpoint instead of recomputing.
-    resumed = TaskContext.create(task["task_id"], conn, queue, task, claim_timeout=120)
+    resumed = _create_task_context(
+        task["task_id"], conn, queue, task, claim_timeout=120
+    )
     assert resumed.step("load-profile", compute) == {"user_id": 7}
     assert calls == ["called"]
 
-    ctx.complete({"status": "done"})
+    conn.execute(
+        "SELECT absurd.complete_run(%s, %s, %s)",
+        (queue, task["run_id"], json.dumps({"status": "done"})),
+    )
 
 
 def test_sleep_for_schedules_future_run(conn, queue_name):
@@ -58,7 +66,7 @@ def test_sleep_for_schedules_future_run(conn, queue_name):
 
     client.spawn("snoozer", {}, queue=queue)
     task = client.claim_tasks(worker_id="worker")[0]
-    ctx = TaskContext.create(task["task_id"], conn, queue, task, claim_timeout=90)
+    ctx = _create_task_context(task["task_id"], conn, queue, task, claim_timeout=90)
 
     before = datetime.now(timezone.utc)
     with pytest.raises(SuspendTask):
@@ -83,7 +91,7 @@ def test_await_event_flow(conn, queue_name):
 
     client.spawn("waiter", {}, queue=queue)
     task = client.claim_tasks(worker_id="worker")[0]
-    ctx = TaskContext.create(task["task_id"], conn, queue, task, claim_timeout=120)
+    ctx = _create_task_context(task["task_id"], conn, queue, task, claim_timeout=120)
 
     event_name = "user.ready"
 
@@ -99,7 +107,7 @@ def test_await_event_flow(conn, queue_name):
     client.emit_event(event_name, payload, queue_name=queue)
 
     replay = client.claim_tasks(worker_id="worker")[0]
-    resumed_ctx = TaskContext.create(
+    resumed_ctx = _create_task_context(
         replay["task_id"], conn, queue, replay, claim_timeout=120
     )
 
@@ -107,4 +115,7 @@ def test_await_event_flow(conn, queue_name):
     assert delivered == payload
     assert _fetch_checkpoint(conn, queue, replay["task_id"], "wait") == payload
 
-    resumed_ctx.complete({"status": "done"})
+    conn.execute(
+        "SELECT absurd.complete_run(%s, %s, %s)",
+        (queue, replay["run_id"], json.dumps({"status": "done"})),
+    )

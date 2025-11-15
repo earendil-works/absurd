@@ -11,7 +11,6 @@ import time
 import traceback
 from datetime import datetime, timedelta, timezone
 from typing import (
-    TYPE_CHECKING,
     Any,
     Awaitable,
     Callable,
@@ -19,19 +18,15 @@ from typing import (
     List,
     Literal,
     Optional,
-    Protocol,
     TypedDict,
     TypeVar,
     Union,
+    cast,
     overload,
 )
 
 from psycopg import AsyncConnection, Connection
 from psycopg.rows import dict_row
-
-if TYPE_CHECKING:
-    from psycopg import Cursor
-    from psycopg.abc import Query
 
 __all__ = [
     "Absurd",
@@ -112,25 +107,13 @@ AsyncTaskHandler = Callable[[Any, "AsyncTaskContext"], Awaitable[Any]]
 class SuspendTask(Exception):
     """Internal exception thrown to suspend a run."""
 
-    pass
-
 
 class CancelledTask(Exception):
     """Internal exception thrown when a task is cancelled."""
 
-    pass
-
 
 class TimeoutError(Exception):
     """Error thrown when awaiting an event times out."""
-
-    pass
-
-
-class Queryable(Protocol):
-    """Protocol for database connection or cursor"""
-
-    def query(self, query: Query, params: Any = None) -> Any: ...
 
 
 def _serialize_error(err: Any) -> JsonObject:
@@ -149,13 +132,72 @@ def _serialize_error(err: Any) -> JsonObject:
     return {"message": str(err)}
 
 
+def _complete_task_run(
+    conn: Connection[Any],
+    queue_name: str,
+    run_id: str,
+    result: Optional[JsonValue],
+) -> None:
+    conn.cursor().execute(
+        "SELECT absurd.complete_run(%s, %s, %s)",
+        (queue_name, run_id, json.dumps(result)),
+    )
+
+
+def _fail_task_run(
+    conn: Connection[Any],
+    queue_name: str,
+    run_id: str,
+    err: Any,
+    fatal_error: Optional[str] = None,
+) -> None:
+    conn.cursor().execute(
+        "SELECT absurd.fail_run(%s, %s, %s, %s)",
+        (
+            queue_name,
+            run_id,
+            json.dumps(_serialize_error(err)),
+            fatal_error,
+        ),
+    )
+
+
+async def _complete_task_run_async(
+    conn,
+    queue_name,
+    run_id,
+    result,
+) -> None:
+    await conn.cursor().execute(
+        "SELECT absurd.complete_run(%s, %s, %s)",
+        (queue_name, run_id, json.dumps(result)),
+    )
+
+
+async def _fail_task_run_async(
+    conn: AsyncConnection[Any],
+    queue_name: str,
+    run_id: str,
+    err: Any,
+    fatal_error: Optional[str] = None,
+) -> None:
+    await conn.cursor().execute(
+        "SELECT absurd.fail_run(%s, %s, %s, %s)",
+        (
+            queue_name,
+            run_id,
+            json.dumps(_serialize_error(err)),
+            fatal_error,
+        ),
+    )
+
+
 def _normalize_spawn_options(
     max_attempts: Optional[int] = None,
     retry_strategy: Optional[RetryStrategy] = None,
     headers: Optional[JsonObject] = None,
     cancellation: Optional[CancellationPolicy] = None,
 ) -> JsonObject:
-    """Normalize spawn options to JSON"""
     normalized: JsonObject = {}
 
     if headers is not None:
@@ -173,7 +215,6 @@ def _normalize_spawn_options(
 
 
 def _serialize_retry_strategy(strategy: RetryStrategy) -> JsonObject:
-    """Serialize retry strategy to JSON"""
     serialized: JsonObject = {"kind": strategy["kind"]}
 
     if "base_seconds" in strategy:
@@ -189,7 +230,6 @@ def _serialize_retry_strategy(strategy: RetryStrategy) -> JsonObject:
 def _normalize_cancellation(
     policy: Optional[CancellationPolicy],
 ) -> Optional[JsonObject]:
-    """Normalize cancellation policy to JSON"""
     if not policy:
         return None
 
@@ -207,44 +247,77 @@ def _get_current_time() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _get_callable_name(fn: Callable[..., Any]) -> str:
+    """Best-effort name for a callable, falls back to repr."""
+    return getattr(fn, "__name__", repr(fn))
+
+
+def _create_task_context(
+    task_id: str,
+    conn: Connection[Any],
+    queue_name: str,
+    task: ClaimedTask,
+    claim_timeout: int,
+) -> TaskContext:
+    """Create a new task context by loading checkpoints"""
+    cursor = conn.cursor(row_factory=dict_row)
+    cursor.execute(
+        """SELECT checkpoint_name, state, status, owner_run_id, updated_at
+            FROM absurd.get_task_checkpoint_states(%s, %s, %s)""",
+        (queue_name, task["task_id"], task["run_id"]),
+    )
+    cache = {row["checkpoint_name"]: row["state"] for row in cursor.fetchall()}
+    ctx = object.__new__(TaskContext)
+    ctx.task_id = task_id
+    ctx._conn = conn
+    ctx._queue_name = queue_name
+    ctx._task = task
+    ctx._checkpoint_cache = cache
+    ctx._claim_timeout = claim_timeout
+    ctx._step_name_counter = {}
+    return ctx
+
+
+async def _create_async_task_context(
+    task_id: str,
+    conn: AsyncConnection[Any],
+    queue_name: str,
+    task: ClaimedTask,
+    claim_timeout: int,
+) -> AsyncTaskContext:
+    """Create a new async task context by loading checkpoints"""
+    cursor = conn.cursor(row_factory=dict_row)
+    await cursor.execute(
+        """SELECT checkpoint_name, state, status, owner_run_id, updated_at
+            FROM absurd.get_task_checkpoint_states(%s, %s, %s)""",
+        (queue_name, task["task_id"], task["run_id"]),
+    )
+    rows = await cursor.fetchall()
+    cache = {row["checkpoint_name"]: row["state"] for row in rows}
+    ctx = object.__new__(AsyncTaskContext)
+    ctx.task_id = task_id
+    ctx._conn = conn
+    ctx._queue_name = queue_name
+    ctx._task = task
+    ctx._checkpoint_cache = cache
+    ctx._claim_timeout = claim_timeout
+    ctx._step_name_counter = {}
+    return ctx
+
+
 class TaskContext:
     """Synchronous task execution context"""
 
-    def __init__(
-        self,
-        task_id: str,
-        conn: Connection[Any],
-        queue_name: str,
-        task: ClaimedTask,
-        checkpoint_cache: Dict[str, JsonValue],
-        claim_timeout: int,
-    ) -> None:
-        self.task_id = task_id
-        self._conn = conn
-        self._queue_name = queue_name
-        self._task = task
-        self._checkpoint_cache = checkpoint_cache
-        self._claim_timeout = claim_timeout
-        self._step_name_counter: Dict[str, int] = {}
+    task_id: str
+    _conn: Connection[Any]
+    _queue_name: str
+    _task: ClaimedTask
+    _checkpoint_cache: Dict[str, JsonValue]
+    _claim_timeout: int
+    _step_name_counter: Dict[str, int]
 
-    @classmethod
-    def create(
-        cls,
-        task_id: str,
-        conn: Connection[Any],
-        queue_name: str,
-        task: ClaimedTask,
-        claim_timeout: int,
-    ) -> TaskContext:
-        """Create a new task context by loading checkpoints"""
-        cursor = conn.cursor(row_factory=dict_row)
-        cursor.execute(
-            """SELECT checkpoint_name, state, status, owner_run_id, updated_at
-               FROM absurd.get_task_checkpoint_states(%s, %s, %s)""",
-            (queue_name, task["task_id"], task["run_id"]),
-        )
-        cache = {row["checkpoint_name"]: row["state"] for row in cursor.fetchall()}
-        return cls(task_id, conn, queue_name, task, cache, claim_timeout)
+    def __init__(self):
+        raise TypeError("Cannot create TaskContext instances")
 
     def step(self, name: str, fn: Callable[[], R]) -> R:
         """Execute an idempotent step identified by name"""
@@ -285,14 +358,16 @@ class TaskContext:
         """
         # Case 1: @ctx.run_step (no arguments, no parentheses)
         if callable(name_or_fn):
-            fn = name_or_fn
-            return self.step(fn.__name__, fn)
+            fn = cast(Callable[[], R], name_or_fn)
+            return self.step(_get_callable_name(fn), fn)
 
         # Case 2: @ctx.run_step() or @ctx.run_step("custom_name")
         custom_name = name_or_fn if isinstance(name_or_fn, str) else None
 
         def decorator(fn: Callable[[], R]) -> R:
-            step_name = custom_name if custom_name is not None else fn.__name__
+            step_name = (
+                custom_name if custom_name is not None else _get_callable_name(fn)
+            )
             return self.step(step_name, fn)
 
         return decorator
@@ -403,27 +478,6 @@ class TaskContext:
                 raise CancelledTask() from e
             raise
 
-    def complete(self, result: Optional[JsonValue] = None) -> None:
-        """Mark the task run as completed"""
-        cursor = self._conn.cursor()
-        cursor.execute(
-            "SELECT absurd.complete_run(%s, %s, %s)",
-            (self._queue_name, self._task["run_id"], json.dumps(result)),
-        )
-
-    def fail(self, err: Any) -> None:
-        """Mark the task run as failed"""
-        cursor = self._conn.cursor()
-        cursor.execute(
-            "SELECT absurd.fail_run(%s, %s, %s, %s)",
-            (
-                self._queue_name,
-                self._task["run_id"],
-                json.dumps(_serialize_error(err)),
-                None,
-            ),
-        )
-
     def _get_checkpoint_name(self, name: str) -> str:
         """Get unique checkpoint name handling duplicates"""
         count = self._step_name_counter.get(name, 0) + 1
@@ -483,42 +537,16 @@ class TaskContext:
 class AsyncTaskContext:
     """Asynchronous task execution context"""
 
-    def __init__(
-        self,
-        task_id: str,
-        conn: AsyncConnection[Any],
-        queue_name: str,
-        task: ClaimedTask,
-        checkpoint_cache: Dict[str, JsonValue],
-        claim_timeout: int,
-    ) -> None:
-        self.task_id = task_id
-        self._conn = conn
-        self._queue_name = queue_name
-        self._task = task
-        self._checkpoint_cache = checkpoint_cache
-        self._claim_timeout = claim_timeout
-        self._step_name_counter: Dict[str, int] = {}
+    task_id: str
+    _conn: AsyncConnection[Any]
+    _queue_name: str
+    _task: ClaimedTask
+    _checkpoint_cache: Dict[str, JsonValue]
+    _claim_timeout: int
+    _step_name_counter: Dict[str, int]
 
-    @classmethod
-    async def create(
-        cls,
-        task_id: str,
-        conn: AsyncConnection[Any],
-        queue_name: str,
-        task: ClaimedTask,
-        claim_timeout: int,
-    ) -> AsyncTaskContext:
-        """Create a new async task context by loading checkpoints"""
-        cursor = conn.cursor(row_factory=dict_row)
-        await cursor.execute(
-            """SELECT checkpoint_name, state, status, owner_run_id, updated_at
-               FROM absurd.get_task_checkpoint_states(%s, %s, %s)""",
-            (queue_name, task["task_id"], task["run_id"]),
-        )
-        rows = await cursor.fetchall()
-        cache = {row["checkpoint_name"]: row["state"] for row in rows}
-        return cls(task_id, conn, queue_name, task, cache, claim_timeout)
+    def __init__(self):
+        raise TypeError("Cannot create AsyncTaskContext instances")
 
     async def step(self, name: str, fn: Callable[[], Awaitable[R]]) -> R:
         """Execute an idempotent step identified by name"""
@@ -561,14 +589,16 @@ class AsyncTaskContext:
         """
         # Case 1: @ctx.run_step (no arguments, no parentheses)
         if callable(name_or_fn):
-            fn = name_or_fn
-            return self.step(fn.__name__, fn)
+            fn = cast(Callable[[], Awaitable[R]], name_or_fn)
+            return self.step(_get_callable_name(fn), fn)
 
         # Case 2: @ctx.run_step() or @ctx.run_step("custom_name")
         custom_name = name_or_fn if isinstance(name_or_fn, str) else None
 
         def decorator(fn: Callable[[], Awaitable[R]]) -> Awaitable[R]:
-            step_name = custom_name if custom_name is not None else fn.__name__
+            step_name = (
+                custom_name if custom_name is not None else _get_callable_name(fn)
+            )
             return self.step(step_name, fn)
 
         return decorator
@@ -682,27 +712,6 @@ class AsyncTaskContext:
             if hasattr(e, "pgcode") and e.pgcode == "AB001":  # type: ignore
                 raise CancelledTask() from e
             raise
-
-    async def complete(self, result: Optional[JsonValue] = None) -> None:
-        """Mark the task run as completed"""
-        cursor = self._conn.cursor()
-        await cursor.execute(
-            "SELECT absurd.complete_run(%s, %s, %s)",
-            (self._queue_name, self._task["run_id"], json.dumps(result)),
-        )
-
-    async def fail(self, err: Any) -> None:
-        """Mark the task run as failed"""
-        cursor = self._conn.cursor()
-        await cursor.execute(
-            "SELECT absurd.fail_run(%s, %s, %s, %s)",
-            (
-                self._queue_name,
-                self._task["run_id"],
-                json.dumps(_serialize_error(err)),
-                None,
-            ),
-        )
 
     def _get_checkpoint_name(self, name: str) -> str:
         """Get unique checkpoint name handling duplicates"""
@@ -1027,30 +1036,36 @@ class Absurd(_AbsurdBase):
         registration = self._registry.get(task["task_name"])
 
         if not registration:
-            ctx = TaskContext.create(
-                task["task_id"], self._conn, "unknown", task, claim_timeout
+            _fail_task_run(
+                self._conn,
+                self._queue_name,
+                task["run_id"],
+                Exception("Unknown task"),
             )
-            ctx.fail(Exception("Unknown task"))
             return
 
-        if registration["queue"] != self._queue_name:
-            ctx = TaskContext.create(
-                task["task_id"], self._conn, registration["queue"], task, claim_timeout
+        queue_name = registration["queue"]
+
+        if queue_name != self._queue_name:
+            _fail_task_run(
+                self._conn,
+                self._queue_name,
+                task["run_id"],
+                Exception("Misconfigured task (queue mismatch)"),
             )
-            ctx.fail(Exception("Misconfigured task (queue mismatch)"))
             return
 
-        ctx = TaskContext.create(
-            task["task_id"], self._conn, registration["queue"], task, claim_timeout
+        ctx = _create_task_context(
+            task["task_id"], self._conn, queue_name, task, claim_timeout
         )
 
         try:
             result = registration["handler"](task["params"], ctx)
-            ctx.complete(result)
+            _complete_task_run(self._conn, queue_name, task["run_id"], result)
         except (SuspendTask, CancelledTask):
             pass
         except Exception as err:
-            ctx.fail(err)
+            _fail_task_run(self._conn, queue_name, task["run_id"], err)
 
 
 class AsyncAbsurd(_AbsurdBase):
@@ -1264,27 +1279,40 @@ class AsyncAbsurd(_AbsurdBase):
         registration = self._registry.get(task["task_name"])
 
         if not registration:
-            ctx = await AsyncTaskContext.create(
-                task["task_id"], self._conn, "unknown", task, claim_timeout
+            await _fail_task_run_async(
+                self._conn,
+                self._queue_name,
+                task["run_id"],
+                Exception("Unknown task"),
             )
-            await ctx.fail(Exception("Unknown task"))
             return
 
-        if registration["queue"] != self._queue_name:
-            ctx = await AsyncTaskContext.create(
-                task["task_id"], self._conn, registration["queue"], task, claim_timeout
+        queue_name = registration["queue"]
+
+        if queue_name != self._queue_name:
+            await _fail_task_run_async(
+                self._conn,
+                self._queue_name,
+                task["run_id"],
+                Exception("Misconfigured task (queue mismatch)"),
             )
-            await ctx.fail(Exception("Misconfigured task (queue mismatch)"))
             return
 
-        ctx = await AsyncTaskContext.create(
-            task["task_id"], self._conn, registration["queue"], task, claim_timeout
+        ctx = await _create_async_task_context(
+            task["task_id"], self._conn, queue_name, task, claim_timeout
         )
 
         try:
             result = await registration["handler"](task["params"], ctx)
-            await ctx.complete(result)
+            await _complete_task_run_async(
+                self._conn, queue_name, task["run_id"], result
+            )
         except (SuspendTask, CancelledTask):
             pass
         except Exception as err:
-            await ctx.fail(err)
+            await _fail_task_run_async(
+                self._conn,
+                queue_name,
+                task["run_id"],
+                err,
+            )
