@@ -3,17 +3,17 @@ import { createTestAbsurd, randomName, type TestContext } from "./setup.js";
 import type { Absurd } from "../src/index.js";
 
 describe("Retry and cancellation", () => {
-  let thelper: TestContext;
+  let ctx: TestContext;
   let absurd: Absurd;
 
   beforeAll(async () => {
-    thelper = await createTestAbsurd(randomName("retry_queue"));
-    absurd = thelper.absurd;
+    ctx = await createTestAbsurd(randomName("retry_queue"));
+    absurd = ctx.absurd;
   });
 
   afterEach(async () => {
-    await thelper.cleanupTasks();
-    await thelper.setFakeNow(null);
+    await ctx.cleanupTasks();
+    await ctx.setFakeNow(null);
   });
 
   test("fail run without strategy requeues immediately", async () => {
@@ -34,12 +34,12 @@ describe("Retry and cancellation", () => {
 
     // First attempt fails
     await absurd.workBatch("worker1", 60, 1);
-    expect((await thelper.getTask(taskID))?.state).toBe("pending");
-    expect((await thelper.getTask(taskID))?.attempts).toBe(2);
+    expect((await ctx.getTask(taskID))?.state).toBe("pending");
+    expect((await ctx.getTask(taskID))?.attempts).toBe(2);
 
     // Second attempt succeeds
     await absurd.workBatch("worker1", 60, 1);
-    expect(await thelper.getTask(taskID)).toMatchObject({
+    expect(await ctx.getTask(taskID)).toMatchObject({
       state: "completed",
       attempts: 2,
       completed_payload: { attempts: 2 },
@@ -48,7 +48,7 @@ describe("Retry and cancellation", () => {
 
   test("exponential backoff retry strategy", async () => {
     const baseTime = new Date("2024-05-01T10:00:00Z");
-    await thelper.setFakeNow(baseTime);
+    await ctx.setFakeNow(baseTime);
 
     let attempts = 0;
 
@@ -67,27 +67,27 @@ describe("Retry and cancellation", () => {
 
     // First attempt - fails, schedules retry with 40s backoff
     await absurd.workBatch("worker1", 60, 1);
-    let task = await thelper.getTask(taskID);
+    let task = await ctx.getTask(taskID);
     expect(task?.state).toBe("sleeping");
     expect(task?.attempts).toBe(2);
 
     // Advance time past first backoff (40 seconds)
-    await thelper.setFakeNow(new Date(baseTime.getTime() + 40 * 1000));
+    await ctx.setFakeNow(new Date(baseTime.getTime() + 40 * 1000));
 
     // Second attempt - fails again with 80s backoff (40 * 2)
     await absurd.workBatch("worker1", 60, 1);
-    task = await thelper.getTask(taskID);
+    task = await ctx.getTask(taskID);
     expect(task?.state).toBe("sleeping");
     expect(task?.attempts).toBe(3);
 
     // Advance time past second backoff (80 seconds from second failure)
-    await thelper.setFakeNow(
+    await ctx.setFakeNow(
       new Date(baseTime.getTime() + 40 * 1000 + 80 * 1000),
     );
 
     // Third attempt - succeeds
     await absurd.workBatch("worker1", 60, 1);
-    expect(await thelper.getTask(taskID)).toMatchObject({
+    expect(await ctx.getTask(taskID)).toMatchObject({
       state: "completed",
       attempts: 3,
       completed_payload: { success: true },
@@ -96,7 +96,7 @@ describe("Retry and cancellation", () => {
 
   test("fixed backoff retry strategy", async () => {
     const baseTime = new Date("2024-05-01T11:00:00Z");
-    await thelper.setFakeNow(baseTime);
+    await ctx.setFakeNow(baseTime);
 
     let attempts = 0;
 
@@ -115,14 +115,14 @@ describe("Retry and cancellation", () => {
 
     // First attempt fails
     await absurd.workBatch("worker1", 60, 1);
-    expect((await thelper.getTask(taskID))?.state).toBe("sleeping");
+    expect((await ctx.getTask(taskID))?.state).toBe("sleeping");
 
     // Advance time past fixed backoff (10 seconds)
-    await thelper.setFakeNow(new Date(baseTime.getTime() + 10 * 1000));
+    await ctx.setFakeNow(new Date(baseTime.getTime() + 10 * 1000));
 
     // Second attempt succeeds
     await absurd.workBatch("worker1", 60, 1);
-    expect(await thelper.getTask(taskID)).toMatchObject({
+    expect(await ctx.getTask(taskID)).toMatchObject({
       state: "completed",
       attempts: 2,
     });
@@ -140,11 +140,11 @@ describe("Retry and cancellation", () => {
 
     // Attempt 1
     await absurd.workBatch("worker1", 60, 1);
-    expect((await thelper.getTask(taskID))?.state).toBe("pending");
+    expect((await ctx.getTask(taskID))?.state).toBe("pending");
 
     // Attempt 2 (final)
     await absurd.workBatch("worker1", 60, 1);
-    expect(await thelper.getTask(taskID)).toMatchObject({
+    expect(await ctx.getTask(taskID)).toMatchObject({
       state: "failed",
       attempts: 2,
     });
@@ -152,7 +152,7 @@ describe("Retry and cancellation", () => {
 
   test("cancellation by max duration", async () => {
     const baseTime = new Date("2024-05-01T09:00:00Z");
-    await thelper.setFakeNow(baseTime);
+    await ctx.setFakeNow(baseTime);
 
     absurd.registerTask({ name: "duration-cancel" }, async () => {
       throw new Error("always fails");
@@ -166,21 +166,21 @@ describe("Retry and cancellation", () => {
 
     await absurd.workBatch("worker1", 60, 1);
 
-    await thelper.setFakeNow(new Date(baseTime.getTime() + 91 * 1000));
+    await ctx.setFakeNow(new Date(baseTime.getTime() + 91 * 1000));
     await absurd.workBatch("worker1", 60, 1);
 
-    const task = await thelper.getTask(taskID);
+    const task = await ctx.getTask(taskID);
     expect(task?.state).toBe("cancelled");
     expect(task?.cancelled_at).not.toBeNull();
 
-    const runs = await thelper.getRuns(taskID);
+    const runs = await ctx.getRuns(taskID);
     expect(runs.length).toBe(2);
     expect(runs[1].state).toBe("cancelled");
   });
 
   test("cancellation by max delay", async () => {
     const baseTime = new Date("2024-05-01T08:00:00Z");
-    await thelper.setFakeNow(baseTime);
+    await ctx.setFakeNow(baseTime);
 
     absurd.registerTask({ name: "delay-cancel" }, async () => {
       return { done: true };
@@ -190,10 +190,10 @@ describe("Retry and cancellation", () => {
       cancellation: { maxDelay: 60 },
     });
 
-    await thelper.setFakeNow(new Date(baseTime.getTime() + 61 * 1000));
+    await ctx.setFakeNow(new Date(baseTime.getTime() + 61 * 1000));
     await absurd.workBatch("worker1", 60, 1);
 
-    const task = await thelper.getTask(taskID);
+    const task = await ctx.getTask(taskID);
     expect(task?.state).toBe("cancelled");
     expect(task?.cancelled_at).not.toBeNull();
   });
@@ -204,11 +204,11 @@ describe("Retry and cancellation", () => {
     });
 
     const { taskID } = await absurd.spawn("pending-cancel", { data: 1 });
-    expect((await thelper.getTask(taskID))?.state).toBe("pending");
+    expect((await ctx.getTask(taskID))?.state).toBe("pending");
 
     await absurd.cancelTask(taskID);
 
-    const task = await thelper.getTask(taskID);
+    const task = await ctx.getTask(taskID);
     expect(task?.state).toBe("cancelled");
     expect(task?.cancelled_at).not.toBeNull();
 
@@ -233,7 +233,7 @@ describe("Retry and cancellation", () => {
 
     await absurd.cancelTask(taskID);
 
-    const task = await thelper.getTask(taskID);
+    const task = await ctx.getTask(taskID);
     expect(task?.state).toBe("cancelled");
     expect(task?.cancelled_at).not.toBeNull();
   });
@@ -252,10 +252,10 @@ describe("Retry and cancellation", () => {
     await absurd.cancelTask(taskID);
 
     await expect(
-      thelper.pool.query(
+      ctx.pool.query(
         `SELECT absurd.set_task_checkpoint_state($1, $2, $3, $4, $5, $6)`,
         [
-          thelper.queueName,
+          ctx.queueName,
           taskID,
           "step-1",
           JSON.stringify({ result: "value" }),
@@ -280,8 +280,8 @@ describe("Retry and cancellation", () => {
     await absurd.cancelTask(taskID);
 
     await expect(
-      thelper.pool.query(`SELECT absurd.await_event($1, $2, $3, $4, $5, $6)`, [
-        thelper.queueName,
+      ctx.pool.query(`SELECT absurd.await_event($1, $2, $3, $4, $5, $6)`, [
+        ctx.queueName,
         taskID,
         claim.run_id,
         "wait-step",
@@ -305,8 +305,8 @@ describe("Retry and cancellation", () => {
     await absurd.cancelTask(taskID);
 
     await expect(
-      thelper.pool.query(`SELECT absurd.extend_claim($1, $2, $3)`, [
-        thelper.queueName,
+      ctx.pool.query(`SELECT absurd.extend_claim($1, $2, $3)`, [
+        ctx.queueName,
         claim.run_id,
         30,
       ]),
@@ -320,11 +320,11 @@ describe("Retry and cancellation", () => {
 
     const { taskID } = await absurd.spawn("idempotent-cancel", { data: 1 });
     await absurd.cancelTask(taskID);
-    const first = await thelper.getTask(taskID);
+    const first = await ctx.getTask(taskID);
     expect(first?.cancelled_at).not.toBeNull();
 
     await absurd.cancelTask(taskID);
-    const second = await thelper.getTask(taskID);
+    const second = await ctx.getTask(taskID);
     expect(second?.cancelled_at?.getTime()).toBe(
       first?.cancelled_at?.getTime(),
     );
@@ -340,7 +340,7 @@ describe("Retry and cancellation", () => {
 
     await absurd.cancelTask(taskID);
 
-    const task = await thelper.getTask(taskID);
+    const task = await ctx.getTask(taskID);
     expect(task?.state).toBe("completed");
     expect(task?.cancelled_at).toBeNull();
   });
@@ -358,7 +358,7 @@ describe("Retry and cancellation", () => {
 
     await absurd.cancelTask(taskID);
 
-    const task = await thelper.getTask(taskID);
+    const task = await ctx.getTask(taskID);
     expect(task?.state).toBe("failed");
     expect(task?.cancelled_at).toBeNull();
   });
@@ -375,19 +375,19 @@ describe("Retry and cancellation", () => {
       claimTimeout: 60,
     });
 
-    await thelper.pool.query(
+    await ctx.pool.query(
       `SELECT absurd.await_event($1, $2, $3, $4, $5, $6)`,
-      [thelper.queueName, taskID, claim.run_id, "wait-step", eventName, 300],
+      [ctx.queueName, taskID, claim.run_id, "wait-step", eventName, 300],
     );
 
-    const sleepingTask = await thelper.getTask(taskID);
+    const sleepingTask = await ctx.getTask(taskID);
     expect(sleepingTask?.state).toBe("sleeping");
 
     await absurd.cancelTask(taskID);
 
-    const cancelledTask = await thelper.getTask(taskID);
+    const cancelledTask = await ctx.getTask(taskID);
     expect(cancelledTask?.state).toBe("cancelled");
-    const run = await thelper.getRun(claim.run_id);
+    const run = await ctx.getRun(claim.run_id);
     expect(run?.state).toBe("cancelled");
   });
 

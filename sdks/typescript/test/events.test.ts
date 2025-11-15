@@ -4,17 +4,17 @@ import type { Absurd } from "../src/index.js";
 import { TimeoutError } from "../src/index.js";
 
 describe("Event system", () => {
-  let thelper: TestContext;
+  let ctx: TestContext;
   let absurd: Absurd;
 
   beforeAll(async () => {
-    thelper = await createTestAbsurd(randomName("event_queue"));
-    absurd = thelper.absurd;
+    ctx = await createTestAbsurd(randomName("event_queue"));
+    absurd = ctx.absurd;
   });
 
   afterEach(async () => {
-    await thelper.cleanupTasks();
-    await thelper.setFakeNow(null);
+    await ctx.cleanupTasks();
+    await ctx.setFakeNow(null);
   });
 
   test("await and emit event flow", async () => {
@@ -30,7 +30,7 @@ describe("Event system", () => {
     // Start processing, task should suspend waiting for event
     await absurd.workBatch("worker1", 60, 1);
 
-    const sleepingRun = await thelper.getRun(runID);
+    const sleepingRun = await ctx.getRun(runID);
     expect(sleepingRun).toMatchObject({
       state: "sleeping",
       wake_event: eventName,
@@ -41,13 +41,13 @@ describe("Event system", () => {
     await absurd.emitEvent(eventName, payload);
 
     // Task should now be pending
-    const pendingRun = await thelper.getRun(runID);
+    const pendingRun = await ctx.getRun(runID);
     expect(pendingRun?.state).toBe("pending");
 
     // Resume and complete
     await absurd.workBatch("worker1", 60, 1);
 
-    expect(await thelper.getTask(taskID)).toMatchObject({
+    expect(await ctx.getTask(taskID)).toMatchObject({
       state: "completed",
       completed_payload: { received: payload },
     });
@@ -70,7 +70,7 @@ describe("Event system", () => {
     // Should complete immediately with cached event
     await absurd.workBatch("worker1", 60, 1);
 
-    expect(await thelper.getTask(taskID)).toMatchObject({
+    expect(await ctx.getTask(taskID)).toMatchObject({
       state: "completed",
       completed_payload: { received: payload },
     });
@@ -81,7 +81,7 @@ describe("Event system", () => {
     const baseTime = new Date("2024-05-01T10:00:00Z");
     const timeoutSeconds = 600;
 
-    await thelper.setFakeNow(baseTime);
+    await ctx.setFakeNow(baseTime);
 
     absurd.registerTask({ name: "timeout-waiter" }, async (_params, ctx) => {
       try {
@@ -100,12 +100,12 @@ describe("Event system", () => {
     const { taskID, runID } = await absurd.spawn("timeout-waiter", undefined);
     await absurd.workBatch("worker1", 120, 1);
 
-    const waitCountBefore = await thelper.pool.query<{ count: string }>(
-      `SELECT COUNT(*)::text AS count FROM absurd.w_${thelper.queueName}`,
+    const waitCountBefore = await ctx.pool.query<{ count: string }>(
+      `SELECT COUNT(*)::text AS count FROM absurd.w_${ctx.queueName}`,
     );
     expect(Number(waitCountBefore.rows[0].count)).toBe(1);
 
-    const sleepingRun = await thelper.getRun(runID);
+    const sleepingRun = await ctx.getRun(runID);
     expect(sleepingRun).toMatchObject({
       state: "sleeping",
       wake_event: eventName,
@@ -113,16 +113,16 @@ describe("Event system", () => {
     const expectedWake = new Date(baseTime.getTime() + timeoutSeconds * 1000);
     expect(sleepingRun?.available_at?.getTime()).toBe(expectedWake.getTime());
 
-    await thelper.setFakeNow(new Date(expectedWake.getTime() + 1000));
+    await ctx.setFakeNow(new Date(expectedWake.getTime() + 1000));
     await absurd.workBatch("worker1", 120, 1);
 
-    expect(await thelper.getTask(taskID)).toMatchObject({
+    expect(await ctx.getTask(taskID)).toMatchObject({
       state: "completed",
       completed_payload: { timedOut: true, result: null },
     });
 
-    const waitCountAfter = await thelper.pool.query<{ count: string }>(
-      `SELECT COUNT(*)::text AS count FROM absurd.w_${thelper.queueName}`,
+    const waitCountAfter = await ctx.pool.query<{ count: string }>(
+      `SELECT COUNT(*)::text AS count FROM absurd.w_${ctx.queueName}`,
     );
     expect(Number(waitCountAfter.rows[0].count)).toBe(0);
   });
@@ -148,7 +148,7 @@ describe("Event system", () => {
     await absurd.workBatch("worker1", 60, 10);
 
     for (const task of tasks) {
-      expect((await thelper.getTask(task.taskID))?.state).toBe("sleeping");
+      expect((await ctx.getTask(task.taskID))?.state).toBe("sleeping");
     }
 
     // Emit event once
@@ -160,7 +160,7 @@ describe("Event system", () => {
 
     for (let i = 0; i < tasks.length; i++) {
       const task = tasks[i];
-      expect(await thelper.getTask(task.taskID)).toMatchObject({
+      expect(await ctx.getTask(task.taskID)).toMatchObject({
         state: "completed",
         completed_payload: { taskNum: i + 1, received: payload },
       });
@@ -170,7 +170,7 @@ describe("Event system", () => {
   test("awaitEvent timeout does not recreate wait on resume", async () => {
     const eventName = randomName("timeout_no_loop");
     const baseTime = new Date("2024-05-02T11:00:00Z");
-    await thelper.setFakeNow(baseTime);
+    await ctx.setFakeNow(baseTime);
 
     absurd.registerTask({ name: "timeout-no-loop" }, async (_params, ctx) => {
       try {
@@ -191,23 +191,23 @@ describe("Event system", () => {
     const { taskID, runID } = await absurd.spawn("timeout-no-loop", undefined);
     await absurd.workBatch("worker-timeout", 60, 1);
 
-    const waitCount = await thelper.pool.query<{ count: string }>(
-      `SELECT COUNT(*)::text AS count FROM absurd.w_${thelper.queueName}`,
+    const waitCount = await ctx.pool.query<{ count: string }>(
+      `SELECT COUNT(*)::text AS count FROM absurd.w_${ctx.queueName}`,
     );
     expect(Number(waitCount.rows[0].count)).toBe(1);
 
-    await thelper.setFakeNow(new Date(baseTime.getTime() + 15 * 1000));
+    await ctx.setFakeNow(new Date(baseTime.getTime() + 15 * 1000));
     await absurd.workBatch("worker-timeout", 60, 1);
 
-    const waitCountAfter = await thelper.pool.query<{ count: string }>(
-      `SELECT COUNT(*)::text AS count FROM absurd.w_${thelper.queueName}`,
+    const waitCountAfter = await ctx.pool.query<{ count: string }>(
+      `SELECT COUNT(*)::text AS count FROM absurd.w_${ctx.queueName}`,
     );
     expect(Number(waitCountAfter.rows[0].count)).toBe(0);
 
-    const run = await thelper.getRun(runID);
+    const run = await ctx.getRun(runID);
     expect(run?.state).toBe("completed");
 
-    expect(await thelper.getTask(taskID)).toMatchObject({
+    expect(await ctx.getTask(taskID)).toMatchObject({
       state: "completed",
       completed_payload: { stage: "resumed", payload: null },
     });

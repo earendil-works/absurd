@@ -3,17 +3,17 @@ import { createTestAbsurd, randomName, type TestContext } from "./setup.js";
 import type { Absurd } from "../src/index.js";
 
 describe("Step functionality", () => {
-  let thelper: TestContext;
+  let ctx: TestContext;
   let absurd: Absurd;
 
   beforeAll(async () => {
-    thelper = await createTestAbsurd(randomName("step_queue"));
-    absurd = thelper.absurd;
+    ctx = await createTestAbsurd(randomName("step_queue"));
+    absurd = ctx.absurd;
   });
 
   afterEach(async () => {
-    await thelper.cleanupTasks();
-    await thelper.setFakeNow(null);
+    await ctx.cleanupTasks();
+    await ctx.setFakeNow(null);
     vi.useRealTimers();
   });
 
@@ -31,7 +31,7 @@ describe("Step functionality", () => {
     const { taskID } = await absurd.spawn("basic", { value: 42 });
     await absurd.workBatch(randomName("w"), 60, 1);
 
-    expect(await thelper.getTask(taskID)).toMatchObject({
+    expect(await ctx.getTask(taskID)).toMatchObject({
       state: "completed",
       completed_payload: { result: "processed-42" },
     });
@@ -69,7 +69,7 @@ describe("Step functionality", () => {
     expect(executionCount).toBe(1);
     expect(attemptCount).toBe(2);
 
-    expect(await thelper.getTask(taskID)).toMatchObject({
+    expect(await ctx.getTask(taskID)).toMatchObject({
       state: "completed",
       completed_payload: { count: 1 },
       attempts: 2,
@@ -117,7 +117,7 @@ describe("Step functionality", () => {
     await absurd.workBatch(workerID, 60, 1);
     expect(executed).toEqual(["step1", "step2", "step3"]);
 
-    expect(await thelper.getTask(taskID)).toMatchObject({
+    expect(await ctx.getTask(taskID)).toMatchObject({
       state: "completed",
       completed_payload: {
         steps: ["result1", "result2", "result3"],
@@ -145,7 +145,7 @@ describe("Step functionality", () => {
     const { taskID } = await absurd.spawn("deduplicate", undefined);
     await absurd.workBatch(randomName("w"), 60, 1);
 
-    expect(await thelper.getTask(taskID)).toMatchObject({
+    expect(await ctx.getTask(taskID)).toMatchObject({
       state: "completed",
       completed_payload: { results: [0, 10, 20] },
     });
@@ -178,7 +178,7 @@ describe("Step functionality", () => {
     await absurd.workBatch(workerID, 60, 1);
     expect(attemptCount).toBe(2);
 
-    expect(await thelper.getTask(taskID)).toMatchObject({
+    expect(await ctx.getTask(taskID)).toMatchObject({
       state: "completed",
       completed_payload: { result: "success" },
       attempts: 2,
@@ -189,7 +189,7 @@ describe("Step functionality", () => {
     vi.useFakeTimers();
     const base = new Date("2024-05-05T10:00:00Z");
     vi.setSystemTime(base);
-    await thelper.setFakeNow(base);
+    await ctx.setFakeNow(base);
 
     const durationSeconds = 60;
     absurd.registerTask({ name: "sleep-for" }, async (_params, ctx) => {
@@ -200,7 +200,7 @@ describe("Step functionality", () => {
     const { taskID, runID } = await absurd.spawn("sleep-for", undefined);
     await absurd.workBatch("worker-sleep", 120, 1);
 
-    const sleepingRun = await thelper.getRun(runID);
+    const sleepingRun = await ctx.getRun(runID);
     expect(sleepingRun).toMatchObject({
       state: "sleeping",
     });
@@ -209,10 +209,10 @@ describe("Step functionality", () => {
 
     const resumeTime = new Date(wakeTime.getTime() + 5 * 1000);
     vi.setSystemTime(resumeTime);
-    await thelper.setFakeNow(resumeTime);
+    await ctx.setFakeNow(resumeTime);
     await absurd.workBatch("worker-sleep", 120, 1);
 
-    expect(await thelper.getTask(taskID)).toMatchObject({
+    expect(await ctx.getTask(taskID)).toMatchObject({
       state: "completed",
       completed_payload: { resumed: true },
     });
@@ -222,7 +222,7 @@ describe("Step functionality", () => {
     vi.useFakeTimers();
     const base = new Date("2024-05-06T09:00:00Z");
     vi.setSystemTime(base);
-    await thelper.setFakeNow(base);
+    await ctx.setFakeNow(base);
 
     const wakeTime = new Date(base.getTime() + 5 * 60 * 1000);
     let executions = 0;
@@ -236,12 +236,12 @@ describe("Step functionality", () => {
     const { taskID, runID } = await absurd.spawn("sleep-until", undefined);
     await absurd.workBatch("worker-sleep", 120, 1);
 
-    const checkpointRow = await thelper.pool.query<{
+    const checkpointRow = await ctx.pool.query<{
       checkpoint_name: string;
       state: string;
       owner_run_id: string;
     }>(
-      `SELECT checkpoint_name, state, owner_run_id FROM absurd.c_${thelper.queueName} WHERE task_id = $1`,
+      `SELECT checkpoint_name, state, owner_run_id FROM absurd.c_${ctx.queueName} WHERE task_id = $1`,
       [taskID],
     );
     expect(checkpointRow.rows[0]).toMatchObject({
@@ -250,14 +250,14 @@ describe("Step functionality", () => {
       state: wakeTime.toISOString(),
     });
 
-    const sleepingRun = await thelper.getRun(runID);
+    const sleepingRun = await ctx.getRun(runID);
     expect(sleepingRun?.state).toBe("sleeping");
 
     vi.setSystemTime(wakeTime);
-    await thelper.setFakeNow(wakeTime);
+    await ctx.setFakeNow(wakeTime);
     await absurd.workBatch("worker-sleep", 120, 1);
 
-    expect(await thelper.getTask(taskID)).toMatchObject({
+    expect(await ctx.getTask(taskID)).toMatchObject({
       state: "completed",
       completed_payload: { executions: 2 },
     });

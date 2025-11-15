@@ -3,17 +3,17 @@ import { createTestAbsurd, randomName, type TestContext } from "./setup.js";
 import type { Absurd } from "../src/index.js";
 
 describe("Basic SDK Operations", () => {
-  let thelper: TestContext;
+  let ctx: TestContext;
   let absurd: Absurd;
 
   beforeAll(async () => {
-    thelper = await createTestAbsurd(randomName("test_queue"));
-    absurd = thelper.absurd;
+    ctx = await createTestAbsurd(randomName("test_queue"));
+    absurd = ctx.absurd;
   });
 
   afterEach(async () => {
-    await thelper.cleanupTasks();
-    await thelper.setFakeNow(null);
+    await ctx.cleanupTasks();
+    await ctx.setFakeNow(null);
   });
 
   describe("Queue management", () => {
@@ -24,7 +24,7 @@ describe("Basic SDK Operations", () => {
       let queues = await absurd.listQueues();
       expect(queues).toContain(queueName);
 
-      const tables = await thelper.pool.query(`
+      const tables = await ctx.pool.query(`
         SELECT tablename
         FROM pg_tables
         WHERE schemaname = 'absurd'
@@ -46,7 +46,7 @@ describe("Basic SDK Operations", () => {
       expect(queues).not.toContain(queueName);
 
       expect(
-        await thelper.pool.query(
+        await ctx.pool.query(
           "SELECT tablename FROM pg_tables WHERE schemaname = 'absurd' AND tablename LIKE $1",
           [`%_${queueName}`],
         ),
@@ -72,7 +72,7 @@ describe("Basic SDK Operations", () => {
       await absurd.workBatch("test-worker-attempts", 60, 1);
       await absurd.workBatch("test-worker-attempts", 60, 1);
 
-      expect(await thelper.getTask(taskID)).toMatchObject({
+      expect(await ctx.getTask(taskID)).toMatchObject({
         state: "failed",
         attempts: 2,
       });
@@ -91,21 +91,21 @@ describe("Basic SDK Operations", () => {
       const otherQueue = randomName("other_queue");
 
       absurd.registerTask(
-        { name: taskName, queue: thelper.queueName },
+        { name: taskName, queue: ctx.queueName },
         async () => ({ success: true }),
       );
 
       await expect(
         absurd.spawn(taskName, undefined, { queue: otherQueue }),
       ).rejects.toThrowError(
-        `Task "${taskName}" is registered for queue "${thelper.queueName}" but spawn requested queue "${otherQueue}".`,
+        `Task "${taskName}" is registered for queue "${ctx.queueName}" but spawn requested queue "${otherQueue}".`,
       );
     });
   });
 
   describe("Task claiming", () => {
     test("claim tasks with various batch sizes", async () => {
-      await thelper.cleanupTasks();
+      await ctx.cleanupTasks();
 
       absurd.registerTask<{ id: number }>(
         { name: "test-claim" },
@@ -131,7 +131,7 @@ describe("Basic SDK Operations", () => {
       );
 
       // Should now be "running"
-      expect((await thelper.getTask(spawned[0].taskID))?.state).toBe("running");
+      expect((await ctx.getTask(spawned[0].taskID))?.state).toBe("running");
 
       // There should be none to claim
       expect(
@@ -146,9 +146,9 @@ describe("Basic SDK Operations", () => {
 
   describe("State transitions", () => {
     test("scheduleRun moves run between running and sleeping", async () => {
-      await thelper.cleanupTasks();
+      await ctx.cleanupTasks();
       const baseTime = new Date("2024-04-01T10:00:00Z");
-      await thelper.setFakeNow(baseTime);
+      await ctx.setFakeNow(baseTime);
 
       absurd.registerTask<{ step: string }>(
         { name: "schedule-task" },
@@ -165,23 +165,23 @@ describe("Basic SDK Operations", () => {
       expect(claim.run_id).toBe(runID);
 
       const wakeAt = new Date(baseTime.getTime() + 5 * 60 * 1000);
-      await thelper.pool.query(`SELECT absurd.schedule_run($1, $2, $3)`, [
-        thelper.queueName,
+      await ctx.pool.query(`SELECT absurd.schedule_run($1, $2, $3)`, [
+        ctx.queueName,
         runID,
         wakeAt,
       ]);
 
-      const scheduledRun = await thelper.getRun(runID);
+      const scheduledRun = await ctx.getRun(runID);
       expect(scheduledRun).toMatchObject({
         state: "sleeping",
         available_at: wakeAt,
         wake_event: null,
       });
 
-      const scheduledTask = await thelper.getTask(claim.task_id);
+      const scheduledTask = await ctx.getTask(claim.task_id);
       expect(scheduledTask?.state).toBe("sleeping");
 
-      await thelper.setFakeNow(wakeAt);
+      await ctx.setFakeNow(wakeAt);
       const [resumed] = await absurd.claimTasks({
         workerId: "worker-1",
         claimTimeout: 120,
@@ -189,7 +189,7 @@ describe("Basic SDK Operations", () => {
       expect(resumed.run_id).toBe(runID);
       expect(resumed.attempt).toBe(1);
 
-      const resumedRun = await thelper.getRun(runID);
+      const resumedRun = await ctx.getRun(runID);
       expect(resumedRun).toMatchObject({
         state: "running",
         started_at: wakeAt,
@@ -197,9 +197,9 @@ describe("Basic SDK Operations", () => {
     });
 
     test("claim timeout releases run to a new worker", async () => {
-      await thelper.cleanupTasks();
+      await ctx.cleanupTasks();
       const baseTime = new Date("2024-04-02T09:00:00Z");
-      await thelper.setFakeNow(baseTime);
+      await ctx.setFakeNow(baseTime);
 
       absurd.registerTask<{ step: string }>(
         { name: "lease-task" },
@@ -215,14 +215,14 @@ describe("Basic SDK Operations", () => {
       });
       expect(claim.task_id).toBe(taskID);
 
-      const running = await thelper.getRun(claim.run_id);
+      const running = await ctx.getRun(claim.run_id);
       expect(running).toMatchObject({
         state: "running",
         claimed_by: "worker-a",
         claim_expires_at: new Date(baseTime.getTime() + 30 * 1000),
       });
 
-      await thelper.setFakeNow(new Date(baseTime.getTime() + 5 * 60 * 1000));
+      await ctx.setFakeNow(new Date(baseTime.getTime() + 5 * 60 * 1000));
       const [reclaim] = await absurd.claimTasks({
         workerId: "worker-b",
         claimTimeout: 45,
@@ -230,7 +230,7 @@ describe("Basic SDK Operations", () => {
       expect(reclaim.run_id).not.toBe(claim.run_id);
       expect(reclaim.attempt).toBe(2);
 
-      const expiredRun = await thelper.getRun(claim.run_id);
+      const expiredRun = await ctx.getRun(claim.run_id);
       expect(expiredRun?.state).toBe("failed");
       expect(expiredRun?.failure_reason).toMatchObject({
         name: "$ClaimTimeout",
@@ -238,13 +238,13 @@ describe("Basic SDK Operations", () => {
         attempt: 1,
       });
 
-      const newRun = await thelper.getRun(reclaim.run_id);
+      const newRun = await ctx.getRun(reclaim.run_id);
       expect(newRun).toMatchObject({
         state: "running",
         claimed_by: "worker-b",
       });
 
-      const taskRow = await thelper.getTask(taskID);
+      const taskRow = await ctx.getTask(taskID);
       expect(taskRow).toMatchObject({
         state: "running",
         attempts: 2,
@@ -254,9 +254,9 @@ describe("Basic SDK Operations", () => {
 
   describe("Cleanup maintenance", () => {
     test("cleanup tasks and events respect TTLs", async () => {
-      await thelper.cleanupTasks();
+      await ctx.cleanupTasks();
       const base = new Date("2024-03-01T08:00:00Z");
-      await thelper.setFakeNow(base);
+      await ctx.setFakeNow(base);
 
       absurd.registerTask<{ step: string }>({ name: "cleanup" }, async () => {
         return { status: "done" };
@@ -270,53 +270,53 @@ describe("Basic SDK Operations", () => {
       expect(claim.run_id).toBe(runID);
 
       const finishTime = new Date(base.getTime() + 10 * 60 * 1000);
-      await thelper.setFakeNow(finishTime);
-      await thelper.pool.query(`SELECT absurd.complete_run($1, $2, $3)`, [
-        thelper.queueName,
+      await ctx.setFakeNow(finishTime);
+      await ctx.pool.query(`SELECT absurd.complete_run($1, $2, $3)`, [
+        ctx.queueName,
         runID,
         JSON.stringify({ status: "done" }),
       ]);
 
       await absurd.emitEvent("cleanup-event", { kind: "notify" });
 
-      const runRow = await thelper.getRun(runID);
+      const runRow = await ctx.getRun(runID);
       expect(runRow).toMatchObject({
         claimed_by: "worker-clean",
         claim_expires_at: new Date(base.getTime() + 60 * 1000),
       });
 
       const beforeTTL = new Date(finishTime.getTime() + 30 * 60 * 1000);
-      await thelper.setFakeNow(beforeTTL);
-      const beforeTasks = await thelper.pool.query<{ count: string }>(
+      await ctx.setFakeNow(beforeTTL);
+      const beforeTasks = await ctx.pool.query<{ count: string }>(
         `SELECT absurd.cleanup_tasks($1, $2, $3) AS count`,
-        [thelper.queueName, 3600, 10],
+        [ctx.queueName, 3600, 10],
       );
       expect(Number(beforeTasks.rows[0].count)).toBe(0);
-      const beforeEvents = await thelper.pool.query<{ count: string }>(
+      const beforeEvents = await ctx.pool.query<{ count: string }>(
         `SELECT absurd.cleanup_events($1, $2, $3) AS count`,
-        [thelper.queueName, 3600, 10],
+        [ctx.queueName, 3600, 10],
       );
       expect(Number(beforeEvents.rows[0].count)).toBe(0);
 
       const later = new Date(finishTime.getTime() + 26 * 60 * 60 * 1000);
-      await thelper.setFakeNow(later);
-      const deletedTasks = await thelper.pool.query<{ count: string }>(
+      await ctx.setFakeNow(later);
+      const deletedTasks = await ctx.pool.query<{ count: string }>(
         `SELECT absurd.cleanup_tasks($1, $2, $3) AS count`,
-        [thelper.queueName, 3600, 10],
+        [ctx.queueName, 3600, 10],
       );
       expect(Number(deletedTasks.rows[0].count)).toBe(1);
-      const deletedEvents = await thelper.pool.query<{ count: string }>(
+      const deletedEvents = await ctx.pool.query<{ count: string }>(
         `SELECT absurd.cleanup_events($1, $2, $3) AS count`,
-        [thelper.queueName, 3600, 10],
+        [ctx.queueName, 3600, 10],
       );
       expect(Number(deletedEvents.rows[0].count)).toBe(1);
 
-      const remainingTasks = await thelper.pool.query<{ count: string }>(
-        `SELECT COUNT(*)::text AS count FROM absurd.t_${thelper.queueName}`,
+      const remainingTasks = await ctx.pool.query<{ count: string }>(
+        `SELECT COUNT(*)::text AS count FROM absurd.t_${ctx.queueName}`,
       );
       expect(Number(remainingTasks.rows[0].count)).toBe(0);
-      const remainingEvents = await thelper.pool.query<{ count: string }>(
-        `SELECT COUNT(*)::text AS count FROM absurd.e_${thelper.queueName}`,
+      const remainingEvents = await ctx.pool.query<{ count: string }>(
+        `SELECT COUNT(*)::text AS count FROM absurd.e_${ctx.queueName}`,
       );
       expect(Number(remainingEvents.rows[0].count)).toBe(0);
     });
@@ -338,12 +338,12 @@ describe("Basic SDK Operations", () => {
       const { taskID } = await absurd.spawn("test-task-complete", {
         value: 21,
       });
-      expect((await thelper.getTask(taskID))?.state).toBe("pending");
+      expect((await ctx.getTask(taskID))?.state).toBe("pending");
 
       // Process with workBatch: transitions pending -> running -> completed
       await absurd.workBatch("test-worker-complete", 60, 1);
 
-      expect(await thelper.getTask(taskID)).toMatchObject({
+      expect(await ctx.getTask(taskID)).toMatchObject({
         state: "completed",
         attempts: 1,
         completed_payload: { doubled: 42 },
@@ -363,13 +363,13 @@ describe("Basic SDK Operations", () => {
 
       // Process task (suspends waiting for event)
       await absurd.workBatch("test-worker-suspend", 60, 1);
-      expect((await thelper.getTask(taskID))?.state).toBe("sleeping");
+      expect((await ctx.getTask(taskID))?.state).toBe("sleeping");
 
       // Emit event and resume
       await absurd.emitEvent(eventName, { data: "wakeup" });
       await absurd.workBatch("test-worker-suspend", 60, 1);
 
-      expect(await thelper.getTask(taskID)).toMatchObject({
+      expect(await ctx.getTask(taskID)).toMatchObject({
         state: "completed",
         completed_payload: { received: { data: "wakeup" } },
       });
@@ -390,12 +390,12 @@ describe("Basic SDK Operations", () => {
 
       // First attempt fails (task: pending, run: failed)
       await absurd.workBatch("test-worker-fail", 60, 1);
-      expect((await thelper.getRun(firstRunID))?.state).toBe("failed");
-      expect((await thelper.getTask(taskID))?.state).toBe("pending");
+      expect((await ctx.getRun(firstRunID))?.state).toBe("failed");
+      expect((await ctx.getTask(taskID))?.state).toBe("pending");
       // Second attempt fails (task: failed, run: failed)
       await absurd.workBatch("test-worker-fail", 60, 1);
-      expect((await thelper.getTask(taskID))?.state).toBe("failed");
-      expect(await thelper.getRun(firstRunID)).toMatchObject({
+      expect((await ctx.getTask(taskID))?.state).toBe("failed");
+      expect(await ctx.getRun(firstRunID)).toMatchObject({
         state: "failed",
         attempt: 1,
         failure_reason: expect.objectContaining({
@@ -423,7 +423,7 @@ describe("Basic SDK Operations", () => {
 
       await absurd.workBatch("test-worker-cached", 60, 1);
 
-      const taskInfo = await thelper.getTask(taskID);
+      const taskInfo = await ctx.getTask(taskID);
       assert(taskInfo);
       expect(taskInfo).toMatchObject({
         state: "completed",
@@ -449,7 +449,7 @@ describe("Basic SDK Operations", () => {
 
       for (let i = 0; i < tasks.length; i++) {
         const task = tasks[i];
-        expect(await thelper.getTask(task.taskID)).toMatchObject({
+        expect(await ctx.getTask(task.taskID)).toMatchObject({
           state: "completed",
           completed_payload: { result: `task-${i + 1}` },
         });
@@ -476,8 +476,8 @@ describe("Basic SDK Operations", () => {
 
       await absurd.workBatch("mixed", 60, 2);
 
-      expect((await thelper.getTask(bad.taskID))?.state).toBe("failed");
-      expect((await thelper.getTask(ok.taskID))?.state).toBe("completed");
+      expect((await ctx.getTask(bad.taskID))?.state).toBe("failed");
+      expect((await ctx.getTask(ok.taskID))?.state).toBe("completed");
     });
   });
 });
