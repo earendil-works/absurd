@@ -102,6 +102,7 @@ export interface TestContext {
   getRun(runID: string): Promise<RunRow | null>;
   getRuns(taskID: string): Promise<RunRow[]>;
   setFakeNow(ts: Date | null): Promise<void>;
+  sleep(ms: number): Promise<void>;
 }
 
 export function randomName(prefix = "test"): string {
@@ -127,6 +128,7 @@ export async function createTestAbsurd(
     getRun: (runID: string) => getRun(runID, queueName),
     getRuns: (taskID: string) => getRuns(taskID, queueName),
     setFakeNow: (ts: Date | null) => setFakeNow(ts),
+    sleep: (ms: number) => new Promise((resolve) => setTimeout(resolve, ms)),
   };
 }
 
