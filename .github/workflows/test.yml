@@ -2,15 +2,10 @@ name: Test
 
 on:
   push:
-    branches:
-      - '**'
   pull_request:
-    branches:
-      - 'main'
 
 jobs:
-  test-python:
-    name: Python Tests
+  test:
     runs-on: ubuntu-latest
 
     steps:
@@ -35,29 +30,4 @@ jobs:
         run: npm ci
 
       - name: Run tests
-        run: make test-python
-
-  test-typescript:
-    name: TypeScript SDK Tests
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
-      - name: Install dependencies
-        working-directory: sdks/typescript
-        run: npm ci
-
-      - name: Type check
-        working-directory: sdks/typescript
-        run: npm run type-check
-
-      - name: Run tests
-        working-directory: sdks/typescript
-        run: npm run test
+        run: make test
