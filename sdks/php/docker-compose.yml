@@ -1,0 +1,23 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: absurd-postgres
+    environment:
+      POSTGRES_DB: absurd
+      POSTGRES_USER: absurd
+      POSTGRES_PASSWORD: absurd
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ../../sql/absurd.sql:/docker-entrypoint-initdb.d/01-absurd.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U absurd"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:
