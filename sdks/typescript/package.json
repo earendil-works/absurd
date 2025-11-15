@@ -20,7 +20,7 @@
     "build": "tsc --project tsconfig.build.json && tsc --project tsconfig.cjs.json && echo '{\"type\":\"commonjs\"}' > dist/cjs/package.json",
     "type-check": "tsc --noEmit",
     "prepare": "npm run build",
-    "test": "vitest --silent --run ",
+    "test": "vitest --silent --run",
     "test:watch": "vitest",
     "test:ui": "vitest --ui"
   },

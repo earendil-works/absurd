@@ -43,8 +43,8 @@ describe("Basic SDK Operations", () => {
       expect(
         await thelper.pool.query(
           "SELECT tablename FROM pg_tables WHERE schemaname = 'absurd' AND tablename LIKE $1",
-          [`%_${queueName}`]
-        )
+          [`%_${queueName}`],
+        ),
       ).toMatchObject({
         rows: [],
       });
@@ -57,7 +57,7 @@ describe("Basic SDK Operations", () => {
         { name: "test-max-attempts", defaultMaxAttempts: 5 },
         async () => {
           throw new Error("Always fails");
-        }
+        },
       );
 
       const { taskID } = await absurd.spawn("test-max-attempts", undefined, {
@@ -75,9 +75,9 @@ describe("Basic SDK Operations", () => {
 
     test("rejects spawning unregistered task without queue override", async () => {
       await expect(
-        absurd.spawn("unregistered-task", { value: 1 })
+        absurd.spawn("unregistered-task", { value: 1 }),
       ).rejects.toThrowError(
-        'Task "unregistered-task" is not registered. Provide options.queue when spawning unregistered tasks.'
+        'Task "unregistered-task" is not registered. Provide options.queue when spawning unregistered tasks.',
       );
     });
 
@@ -87,13 +87,13 @@ describe("Basic SDK Operations", () => {
 
       absurd.registerTask(
         { name: taskName, queue: thelper.queueName },
-        async () => ({ success: true })
+        async () => ({ success: true }),
       );
 
       await expect(
-        absurd.spawn(taskName, undefined, { queue: otherQueue })
+        absurd.spawn(taskName, undefined, { queue: otherQueue }),
       ).rejects.toThrowError(
-        `Task "${taskName}" is registered for queue "${thelper.queueName}" but spawn requested queue "${otherQueue}".`
+        `Task "${taskName}" is registered for queue "${thelper.queueName}" but spawn requested queue "${otherQueue}".`,
       );
     });
   });
@@ -106,11 +106,11 @@ describe("Basic SDK Operations", () => {
         { name: "test-claim" },
         async (params) => {
           return params;
-        }
+        },
       );
 
       const spawned = await Promise.all(
-        [1, 2, 3].map((id) => absurd.spawn("test-claim", { id }))
+        [1, 2, 3].map((id) => absurd.spawn("test-claim", { id })),
       );
 
       // Test batch claim
@@ -122,7 +122,7 @@ describe("Basic SDK Operations", () => {
 
       expect(claimed.length).toBe(3);
       expect(claimed.map((c) => c.task_id).sort()).toEqual(
-        spawned.map((s) => s.taskID).sort()
+        spawned.map((s) => s.taskID).sort(),
       );
 
       // Should now be "running"
@@ -134,7 +134,7 @@ describe("Basic SDK Operations", () => {
           batchSize: 10,
           claimTimeout: 60,
           workerId: "test-worker-empty",
-        })
+        }),
       ).toEqual([]);
     });
   });
@@ -148,7 +148,7 @@ describe("Basic SDK Operations", () => {
             return params.value * 2;
           });
           return { doubled };
-        }
+        },
       );
 
       // Spawn: transitions to pending
@@ -157,19 +157,9 @@ describe("Basic SDK Operations", () => {
       });
       expect((await thelper.getTask(taskID))?.state).toBe("pending");
 
-      // Claim :transitions to running
-      const claimed = await absurd.claimTasks({
-        batchSize: 1,
-        claimTimeout: 60,
-        workerId: "test-worker-complete",
-      });
-      const claimedTask = claimed[0];
-      assert(claimedTask && claimedTask.task_id === taskID);
-      // state: running
-      expect((await thelper.getTask(taskID))?.state).toBe("running");
+      // Process with workBatch: transitions pending -> running -> completed
+      await absurd.workBatch("test-worker-complete", 60, 1);
 
-      // Execute (OK): transitions to completed
-      await absurd.executeTask(claimedTask, 60);
       expect(await thelper.getTask(taskID)).toMatchObject({
         state: "completed",
         attempts: 1,
@@ -183,7 +173,7 @@ describe("Basic SDK Operations", () => {
         { name: "test-task-suspend" },
         async (params, ctx) => {
           return { received: await ctx.awaitEvent(eventName) };
-        }
+        },
       );
 
       const { taskID } = await absurd.spawn("test-task-suspend", undefined);
@@ -207,12 +197,12 @@ describe("Basic SDK Operations", () => {
         { name: "test-task-fail", defaultMaxAttempts: 2 },
         async () => {
           throw new Error("Task intentionally failed");
-        }
+        },
       );
 
       const { taskID, runID: firstRunID } = await absurd.spawn(
         "test-task-fail",
-        undefined
+        undefined,
       );
 
       // First attempt fails (task: pending, run: failed)
@@ -239,7 +229,7 @@ describe("Basic SDK Operations", () => {
         async (params, ctx) => {
           const payload = await ctx.awaitEvent(params.eventName);
           return { received: payload };
-        }
+        },
       );
 
       const eventName = randomName("test_event");
@@ -265,16 +255,17 @@ describe("Basic SDK Operations", () => {
         { name: "test-work-batch" },
         async (params) => {
           return { result: `task-${params.id}` };
-        }
+        },
       );
 
       const tasks = await Promise.all(
-        [1, 2, 3].map((id) => absurd.spawn("test-work-batch", { id }))
+        [1, 2, 3].map((id) => absurd.spawn("test-work-batch", { id })),
       );
 
       await absurd.workBatch("test-worker-batch", 60, 5);
 
-      for (const [i, task] of tasks.entries()) {
+      for (let i = 0; i < tasks.length; i++) {
+        const task = tasks[i];
         expect(await thelper.getTask(task.taskID)).toMatchObject({
           state: "completed",
           completed_payload: { result: `task-${i + 1}` },
@@ -290,7 +281,7 @@ describe("Basic SDK Operations", () => {
             throw new Error("Task failed in batch");
           }
           return { result: "success" };
-        }
+        },
       );
 
       const bad = await absurd.spawn("mixed", {

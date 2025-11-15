@@ -1,4 +1,4 @@
-.PHONY: format test test-python test-typescript
+.PHONY: format test test-core test-typescript
 
 # Format TypeScript files only
 format:
@@ -7,12 +7,14 @@ format:
 	@uvx ruff format tests
 
 # Run all tests
-test: test-python test-typescript
+test: test-core test-typescript
 
-# Run Python tests
-test-python:
+# Run core tests
+test-core:
+	@echo "Running core tests"
 	@cd tests; uv run pytest
 
 # Run TypeScript SDK tests
 test-typescript:
-	@cd sdks/typescript && npm test
+	@echo "Running TypeScript SDK tests"
+	@cd sdks/typescript && npm run test

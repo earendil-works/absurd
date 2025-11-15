@@ -100,6 +100,7 @@ export interface TestContext {
   cleanupTasks(): Promise<void>;
   getTask(taskID: string): Promise<TaskRow | null>;
   getRun(runID: string): Promise<RunRow | null>;
+  setFakeNow(ts: Date | null): Promise<void>;
 }
 
 export function randomName(prefix = "test"): string {
@@ -123,7 +124,18 @@ export async function createTestAbsurd(
     cleanupTasks: () => cleanupTasks(queueName),
     getTask: (taskID: string) => getTask(taskID, queueName),
     getRun: (runID: string) => getRun(runID, queueName),
+    setFakeNow: (ts: Date | null) => setFakeNow(ts),
   };
+}
+
+async function setFakeNow(ts: Date | null): Promise<void> {
+  if (ts === null) {
+    await pool.query("SELECT set_config('absurd.fake_now', NULL, false)");
+  } else {
+    await pool.query("SELECT set_config('absurd.fake_now', $1, false)", [
+      ts.toISOString(),
+    ]);
+  }
 }
 
 async function cleanupTasks(queue: string): Promise<void> {
