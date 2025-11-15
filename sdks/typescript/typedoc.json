@@ -1,0 +1,11 @@
+{
+  "entryPoints": ["src/index.ts"],
+  "out": "docs",
+  "plugin": [],
+  "exclude": ["**/*.test.ts", "**/__tests__/**"],
+  "excludePrivate": true,
+  "excludeProtected": false,
+  "skipErrorChecking": false,
+  "includeVersion": true,
+  "readme": "README.md"
+}
