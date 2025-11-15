@@ -2,20 +2,120 @@
 Absurd SDK for Python
 """
 
+from __future__ import annotations
+
 import json
 import os
 import socket
 import time
 import traceback
-from datetime import datetime, timezone
-from functools import wraps
+from datetime import datetime, timedelta, timezone
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Awaitable,
+    Callable,
+    Dict,
+    List,
+    Literal,
+    Optional,
+    Protocol,
+    TypedDict,
+    TypeVar,
+    Union,
+)
 
 from psycopg import AsyncConnection, Connection
 from psycopg.rows import dict_row
 
+if TYPE_CHECKING:
+    from psycopg import Cursor
+    from psycopg.abc import Query
+
+__all__ = [
+    "Absurd",
+    "AsyncAbsurd",
+    "TaskContext",
+    "AsyncTaskContext",
+    "SuspendTask",
+    "CancelledTask",
+    "TimeoutError",
+    "RetryStrategy",
+    "CancellationPolicy",
+    "SpawnOptions",
+    "ClaimedTask",
+]
+
+JsonValue = Union[
+    str, int, float, bool, None, List["JsonValue"], Dict[str, "JsonValue"]
+]
+JsonObject = Dict[str, JsonValue]
+
+P = TypeVar("P")
+R = TypeVar("R")
+
+
+class RetryStrategy(TypedDict, total=False):
+    """Retry strategy configuration"""
+
+    kind: Literal["fixed", "exponential", "none"]
+    base_seconds: float
+    factor: float
+    max_seconds: float
+
+
+class CancellationPolicy(TypedDict, total=False):
+    """Task cancellation policy"""
+
+    max_duration: int
+    max_delay: int
+
+
+class SpawnOptions(TypedDict, total=False):
+    """Options for spawning a task"""
+
+    max_attempts: int
+    retry_strategy: RetryStrategy
+    headers: JsonObject
+    queue: str
+    cancellation: CancellationPolicy
+
+
+class ClaimedTask(TypedDict):
+    """A claimed task from the queue"""
+
+    run_id: str
+    task_id: str
+    task_name: str
+    attempt: int
+    params: JsonValue
+    retry_strategy: JsonValue
+    max_attempts: Optional[int]
+    headers: Optional[JsonObject]
+    wake_event: Optional[str]
+    event_payload: Optional[JsonValue]
+
+
+class SpawnResult(TypedDict):
+    """Result of spawning a task"""
+
+    task_id: str
+    run_id: str
+    attempt: int
+
+
+TaskHandler = Callable[[Any, "TaskContext"], Any]
+AsyncTaskHandler = Callable[[Any, "AsyncTaskContext"], Awaitable[Any]]
+
 
 class SuspendTask(Exception):
     """Internal exception thrown to suspend a run."""
+
+    pass
+
+
+class CancelledTask(Exception):
+    """Internal exception thrown when a task is cancelled."""
 
     pass
 
@@ -26,20 +126,114 @@ class TimeoutError(Exception):
     pass
 
 
+class Queryable(Protocol):
+    """Protocol for database connection or cursor"""
+
+    def query(self, query: Query, params: Any = None) -> Any: ...
+
+
+def _serialize_error(err: Any) -> JsonObject:
+    """Serialize an exception to JSON"""
+    if isinstance(err, Exception):
+        formatted = (
+            "".join(traceback.format_exception(err.__class__, err, err.__traceback__))
+            if err.__traceback__
+            else None
+        )
+        return {
+            "name": err.__class__.__name__,
+            "message": str(err),
+            "traceback": formatted,
+        }
+    return {"message": str(err)}
+
+
+def _normalize_spawn_options(
+    max_attempts: Optional[int] = None,
+    retry_strategy: Optional[RetryStrategy] = None,
+    headers: Optional[JsonObject] = None,
+    cancellation: Optional[CancellationPolicy] = None,
+) -> JsonObject:
+    """Normalize spawn options to JSON"""
+    normalized: JsonObject = {}
+
+    if headers is not None:
+        normalized["headers"] = headers
+    if max_attempts is not None:
+        normalized["max_attempts"] = max_attempts
+    if retry_strategy:
+        normalized["retry_strategy"] = _serialize_retry_strategy(retry_strategy)
+
+    cancel = _normalize_cancellation(cancellation)
+    if cancel:
+        normalized["cancellation"] = cancel
+
+    return normalized
+
+
+def _serialize_retry_strategy(strategy: RetryStrategy) -> JsonObject:
+    """Serialize retry strategy to JSON"""
+    serialized: JsonObject = {"kind": strategy["kind"]}
+
+    if "base_seconds" in strategy:
+        serialized["base_seconds"] = strategy["base_seconds"]
+    if "factor" in strategy:
+        serialized["factor"] = strategy["factor"]
+    if "max_seconds" in strategy:
+        serialized["max_seconds"] = strategy["max_seconds"]
+
+    return serialized
+
+
+def _normalize_cancellation(policy: Optional[CancellationPolicy]) -> Optional[JsonObject]:
+    """Normalize cancellation policy to JSON"""
+    if not policy:
+        return None
+
+    normalized: JsonObject = {}
+    if "max_duration" in policy:
+        normalized["max_duration"] = policy["max_duration"]
+    if "max_delay" in policy:
+        normalized["max_delay"] = policy["max_delay"]
+
+    return normalized if normalized else None
+
+
+def _get_current_time() -> datetime:
+    """Get current time (can be monkeypatched in tests)"""
+    return datetime.now(timezone.utc)
+
+
 class TaskContext:
+    """Synchronous task execution context"""
+
     def __init__(
-        self, task_id, conn, queue_name, task, checkpoint_cache, claim_timeout
-    ):
+        self,
+        task_id: str,
+        conn: Connection[Any],
+        queue_name: str,
+        task: ClaimedTask,
+        checkpoint_cache: Dict[str, JsonValue],
+        claim_timeout: int,
+    ) -> None:
         self.task_id = task_id
         self._conn = conn
         self._queue_name = queue_name
         self._task = task
         self._checkpoint_cache = checkpoint_cache
         self._claim_timeout = claim_timeout
-        self._step_name_counter = {}
+        self._step_name_counter: Dict[str, int] = {}
 
     @classmethod
-    def create(cls, task_id, conn, queue_name, task, claim_timeout):
+    def create(
+        cls,
+        task_id: str,
+        conn: Connection[Any],
+        queue_name: str,
+        task: ClaimedTask,
+        claim_timeout: int,
+    ) -> TaskContext:
+        """Create a new task context by loading checkpoints"""
         cursor = conn.cursor(row_factory=dict_row)
         cursor.execute(
             """SELECT checkpoint_name, state, status, owner_run_id, updated_at
@@ -49,29 +243,26 @@ class TaskContext:
         cache = {row["checkpoint_name"]: row["state"] for row in cursor.fetchall()}
         return cls(task_id, conn, queue_name, task, cache, claim_timeout)
 
-    def step(self, name, fn):
+    def step(self, name: str, fn: Callable[[], R]) -> R:
+        """Execute an idempotent step identified by name"""
         checkpoint_name = self._get_checkpoint_name(name)
         state = self._lookup_checkpoint(checkpoint_name)
         if state is not None:
-            return state
+            return state  # type: ignore
 
         rv = fn()
         self._persist_checkpoint(checkpoint_name, rv)
         return rv
 
-    def run_step(self, name=None):
-        def decorator(fn):
-            step_name = name if name is not None else fn.__name__
-            return self.step(step_name, fn)
+    def sleep_for(self, step_name: str, duration: float) -> None:
+        """Suspend the task for the given duration in seconds"""
+        wake_at = _get_current_time() + timedelta(seconds=duration)
+        return self.sleep_until(step_name, wake_at)
 
-        return decorator
-
-    def sleep_for(self, step_name, duration):
-        return self.sleep_until(
-            step_name, datetime.now(timezone.utc).timestamp() + duration
-        )
-
-    def sleep_until(self, step_name, wake_at):
+    def sleep_until(
+        self, step_name: str, wake_at: Union[datetime, int, float]
+    ) -> None:
+        """Suspend the task until the specified time"""
         if isinstance(wake_at, (int, float)):
             wake_at = datetime.fromtimestamp(wake_at, timezone.utc)
 
@@ -86,11 +277,17 @@ class TaskContext:
             actual_wake_at = wake_at
             self._persist_checkpoint(checkpoint_name, wake_at.isoformat())
 
-        if datetime.now(timezone.utc) < actual_wake_at:
+        if _get_current_time() < actual_wake_at:
             self._schedule_run(actual_wake_at)
             raise SuspendTask()
 
-    def await_event(self, event_name, step_name=None, timeout=None):
+    def await_event(
+        self,
+        event_name: str,
+        step_name: Optional[str] = None,
+        timeout: Optional[int] = None,
+    ) -> JsonValue:
+        """Wait for an event by name and return its payload"""
         step_name = step_name or f"$awaitEvent:{event_name}"
         checkpoint_name = self._get_checkpoint_name(step_name)
         cached = self._lookup_checkpoint(checkpoint_name)
@@ -107,18 +304,24 @@ class TaskContext:
             raise TimeoutError(f'Timed out waiting for event "{event_name}"')
 
         cursor = self._conn.cursor(row_factory=dict_row)
-        cursor.execute(
-            """SELECT should_suspend, payload
-               FROM absurd.await_event(%s, %s, %s, %s, %s, %s)""",
-            (
-                self._queue_name,
-                self._task["task_id"],
-                self._task["run_id"],
-                checkpoint_name,
-                event_name,
-                timeout,
-            ),
-        )
+        try:
+            cursor.execute(
+                """SELECT should_suspend, payload
+                   FROM absurd.await_event(%s, %s, %s, %s, %s, %s)""",
+                (
+                    self._queue_name,
+                    self._task["task_id"],
+                    self._task["run_id"],
+                    checkpoint_name,
+                    event_name,
+                    timeout,
+                ),
+            )
+        except Exception as e:
+            if hasattr(e, "pgcode") and e.pgcode == "AB001":  # type: ignore
+                raise CancelledTask() from e
+            raise
+
         result = cursor.fetchone()
 
         if not result:
@@ -131,7 +334,8 @@ class TaskContext:
 
         raise SuspendTask()
 
-    def emit_event(self, event_name, payload=None):
+    def emit_event(self, event_name: str, payload: Optional[JsonValue] = None) -> None:
+        """Emit an event to this task's queue with an optional payload"""
         if not event_name:
             raise ValueError("event_name must be a non-empty string")
 
@@ -141,14 +345,29 @@ class TaskContext:
             (self._queue_name, event_name, json.dumps(payload)),
         )
 
-    def complete(self, result=None):
+    def heartbeat(self, seconds: Optional[int] = None) -> None:
+        """Extend the current run's lease by the given seconds"""
+        cursor = self._conn.cursor()
+        try:
+            cursor.execute(
+                "SELECT absurd.extend_claim(%s, %s, %s)",
+                (self._queue_name, self._task["run_id"], seconds or self._claim_timeout),
+            )
+        except Exception as e:
+            if hasattr(e, "pgcode") and e.pgcode == "AB001":  # type: ignore
+                raise CancelledTask() from e
+            raise
+
+    def complete(self, result: Optional[JsonValue] = None) -> None:
+        """Mark the task run as completed"""
         cursor = self._conn.cursor()
         cursor.execute(
             "SELECT absurd.complete_run(%s, %s, %s)",
             (self._queue_name, self._task["run_id"], json.dumps(result)),
         )
 
-    def fail(self, err):
+    def fail(self, err: Any) -> None:
+        """Mark the task run as failed"""
         cursor = self._conn.cursor()
         cursor.execute(
             "SELECT absurd.fail_run(%s, %s, %s, %s)",
@@ -160,12 +379,14 @@ class TaskContext:
             ),
         )
 
-    def _get_checkpoint_name(self, name):
+    def _get_checkpoint_name(self, name: str) -> str:
+        """Get unique checkpoint name handling duplicates"""
         count = self._step_name_counter.get(name, 0) + 1
         self._step_name_counter[name] = count
         return name if count == 1 else f"{name}#{count}"
 
-    def _lookup_checkpoint(self, checkpoint_name):
+    def _lookup_checkpoint(self, checkpoint_name: str) -> Optional[JsonValue]:
+        """Look up a checkpoint by name"""
         if checkpoint_name in self._checkpoint_cache:
             return self._checkpoint_cache[checkpoint_name]
 
@@ -184,22 +405,29 @@ class TaskContext:
 
         return None
 
-    def _persist_checkpoint(self, checkpoint_name, value):
+    def _persist_checkpoint(self, checkpoint_name: str, value: Any) -> None:
+        """Persist a checkpoint value"""
         cursor = self._conn.cursor()
-        cursor.execute(
-            "SELECT absurd.set_task_checkpoint_state(%s, %s, %s, %s, %s, %s)",
-            (
-                self._queue_name,
-                self._task["task_id"],
-                checkpoint_name,
-                json.dumps(value),
-                self._task["run_id"],
-                self._claim_timeout,
-            ),
-        )
+        try:
+            cursor.execute(
+                "SELECT absurd.set_task_checkpoint_state(%s, %s, %s, %s, %s, %s)",
+                (
+                    self._queue_name,
+                    self._task["task_id"],
+                    checkpoint_name,
+                    json.dumps(value),
+                    self._task["run_id"],
+                    self._claim_timeout,
+                ),
+            )
+        except Exception as e:
+            if hasattr(e, "pgcode") and e.pgcode == "AB001":  # type: ignore
+                raise CancelledTask() from e
+            raise
         self._checkpoint_cache[checkpoint_name] = value
 
-    def _schedule_run(self, wake_at):
+    def _schedule_run(self, wake_at: datetime) -> None:
+        """Schedule a run to wake at a specific time"""
         cursor = self._conn.cursor()
         cursor.execute(
             "SELECT absurd.schedule_run(%s, %s, %s)",
@@ -208,19 +436,35 @@ class TaskContext:
 
 
 class AsyncTaskContext:
+    """Asynchronous task execution context"""
+
     def __init__(
-        self, task_id, conn, queue_name, task, checkpoint_cache, claim_timeout
-    ):
+        self,
+        task_id: str,
+        conn: AsyncConnection[Any],
+        queue_name: str,
+        task: ClaimedTask,
+        checkpoint_cache: Dict[str, JsonValue],
+        claim_timeout: int,
+    ) -> None:
         self.task_id = task_id
         self._conn = conn
         self._queue_name = queue_name
         self._task = task
         self._checkpoint_cache = checkpoint_cache
         self._claim_timeout = claim_timeout
-        self._step_name_counter = {}
+        self._step_name_counter: Dict[str, int] = {}
 
     @classmethod
-    async def create(cls, task_id, conn, queue_name, task, claim_timeout):
+    async def create(
+        cls,
+        task_id: str,
+        conn: AsyncConnection[Any],
+        queue_name: str,
+        task: ClaimedTask,
+        claim_timeout: int,
+    ) -> AsyncTaskContext:
+        """Create a new async task context by loading checkpoints"""
         cursor = conn.cursor(row_factory=dict_row)
         await cursor.execute(
             """SELECT checkpoint_name, state, status, owner_run_id, updated_at
@@ -231,35 +475,26 @@ class AsyncTaskContext:
         cache = {row["checkpoint_name"]: row["state"] for row in rows}
         return cls(task_id, conn, queue_name, task, cache, claim_timeout)
 
-    async def step(self, name, fn):
+    async def step(self, name: str, fn: Callable[[], Awaitable[R]]) -> R:
+        """Execute an idempotent step identified by name"""
         checkpoint_name = self._get_checkpoint_name(name)
         state = await self._lookup_checkpoint(checkpoint_name)
         if state is not None:
-            return state
+            return state  # type: ignore
 
         rv = await fn()
         await self._persist_checkpoint(checkpoint_name, rv)
         return rv
 
-    def run_step(self, name=None):
-        def decorator(fn):
-            step_name = name if name is not None else fn.__name__
+    async def sleep_for(self, step_name: str, duration: float) -> None:
+        """Suspend the task for the given duration in seconds"""
+        wake_at = _get_current_time() + timedelta(seconds=duration)
+        return await self.sleep_until(step_name, wake_at)
 
-            @wraps(fn)
-            async def wrapper():
-                return await self.step(step_name, fn)
-
-            # Create a coroutine from the wrapper and await it immediately
-            return asyncio.create_task(wrapper())
-
-        return decorator
-
-    async def sleep_for(self, step_name, duration):
-        return await self.sleep_until(
-            step_name, datetime.now(timezone.utc).timestamp() + duration
-        )
-
-    async def sleep_until(self, step_name, wake_at):
+    async def sleep_until(
+        self, step_name: str, wake_at: Union[datetime, int, float]
+    ) -> None:
+        """Suspend the task until the specified time"""
         if isinstance(wake_at, (int, float)):
             wake_at = datetime.fromtimestamp(wake_at, timezone.utc)
 
@@ -274,11 +509,17 @@ class AsyncTaskContext:
             actual_wake_at = wake_at
             await self._persist_checkpoint(checkpoint_name, wake_at.isoformat())
 
-        if datetime.now(timezone.utc) < actual_wake_at:
+        if _get_current_time() < actual_wake_at:
             await self._schedule_run(actual_wake_at)
             raise SuspendTask()
 
-    async def await_event(self, event_name, step_name=None, timeout=None):
+    async def await_event(
+        self,
+        event_name: str,
+        step_name: Optional[str] = None,
+        timeout: Optional[int] = None,
+    ) -> JsonValue:
+        """Wait for an event by name and return its payload"""
         step_name = step_name or f"$awaitEvent:{event_name}"
         checkpoint_name = self._get_checkpoint_name(step_name)
         cached = await self._lookup_checkpoint(checkpoint_name)
@@ -295,18 +536,24 @@ class AsyncTaskContext:
             raise TimeoutError(f'Timed out waiting for event "{event_name}"')
 
         cursor = self._conn.cursor(row_factory=dict_row)
-        await cursor.execute(
-            """SELECT should_suspend, payload
-               FROM absurd.await_event(%s, %s, %s, %s, %s, %s)""",
-            (
-                self._queue_name,
-                self._task["task_id"],
-                self._task["run_id"],
-                checkpoint_name,
-                event_name,
-                timeout,
-            ),
-        )
+        try:
+            await cursor.execute(
+                """SELECT should_suspend, payload
+                   FROM absurd.await_event(%s, %s, %s, %s, %s, %s)""",
+                (
+                    self._queue_name,
+                    self._task["task_id"],
+                    self._task["run_id"],
+                    checkpoint_name,
+                    event_name,
+                    timeout,
+                ),
+            )
+        except Exception as e:
+            if hasattr(e, "pgcode") and e.pgcode == "AB001":  # type: ignore
+                raise CancelledTask() from e
+            raise
+
         result = await cursor.fetchone()
 
         if not result:
@@ -319,7 +566,10 @@ class AsyncTaskContext:
 
         raise SuspendTask()
 
-    async def emit_event(self, event_name, payload=None):
+    async def emit_event(
+        self, event_name: str, payload: Optional[JsonValue] = None
+    ) -> None:
+        """Emit an event to this task's queue with an optional payload"""
         if not event_name:
             raise ValueError("event_name must be a non-empty string")
 
@@ -329,14 +579,29 @@ class AsyncTaskContext:
             (self._queue_name, event_name, json.dumps(payload)),
         )
 
-    async def complete(self, result=None):
+    async def heartbeat(self, seconds: Optional[int] = None) -> None:
+        """Extend the current run's lease by the given seconds"""
+        cursor = self._conn.cursor()
+        try:
+            await cursor.execute(
+                "SELECT absurd.extend_claim(%s, %s, %s)",
+                (self._queue_name, self._task["run_id"], seconds or self._claim_timeout),
+            )
+        except Exception as e:
+            if hasattr(e, "pgcode") and e.pgcode == "AB001":  # type: ignore
+                raise CancelledTask() from e
+            raise
+
+    async def complete(self, result: Optional[JsonValue] = None) -> None:
+        """Mark the task run as completed"""
         cursor = self._conn.cursor()
         await cursor.execute(
             "SELECT absurd.complete_run(%s, %s, %s)",
             (self._queue_name, self._task["run_id"], json.dumps(result)),
         )
 
-    async def fail(self, err):
+    async def fail(self, err: Any) -> None:
+        """Mark the task run as failed"""
         cursor = self._conn.cursor()
         await cursor.execute(
             "SELECT absurd.fail_run(%s, %s, %s, %s)",
@@ -348,12 +613,14 @@ class AsyncTaskContext:
             ),
         )
 
-    def _get_checkpoint_name(self, name):
+    def _get_checkpoint_name(self, name: str) -> str:
+        """Get unique checkpoint name handling duplicates"""
         count = self._step_name_counter.get(name, 0) + 1
         self._step_name_counter[name] = count
         return name if count == 1 else f"{name}#{count}"
 
-    async def _lookup_checkpoint(self, checkpoint_name):
+    async def _lookup_checkpoint(self, checkpoint_name: str) -> Optional[JsonValue]:
+        """Look up a checkpoint by name"""
         if checkpoint_name in self._checkpoint_cache:
             return self._checkpoint_cache[checkpoint_name]
 
@@ -372,22 +639,29 @@ class AsyncTaskContext:
 
         return None
 
-    async def _persist_checkpoint(self, checkpoint_name, value):
+    async def _persist_checkpoint(self, checkpoint_name: str, value: Any) -> None:
+        """Persist a checkpoint value"""
         cursor = self._conn.cursor()
-        await cursor.execute(
-            "SELECT absurd.set_task_checkpoint_state(%s, %s, %s, %s, %s, %s)",
-            (
-                self._queue_name,
-                self._task["task_id"],
-                checkpoint_name,
-                json.dumps(value),
-                self._task["run_id"],
-                self._claim_timeout,
-            ),
-        )
+        try:
+            await cursor.execute(
+                "SELECT absurd.set_task_checkpoint_state(%s, %s, %s, %s, %s, %s)",
+                (
+                    self._queue_name,
+                    self._task["task_id"],
+                    checkpoint_name,
+                    json.dumps(value),
+                    self._task["run_id"],
+                    self._claim_timeout,
+                ),
+            )
+        except Exception as e:
+            if hasattr(e, "pgcode") and e.pgcode == "AB001":  # type: ignore
+                raise CancelledTask() from e
+            raise
         self._checkpoint_cache[checkpoint_name] = value
 
-    async def _schedule_run(self, wake_at):
+    async def _schedule_run(self, wake_at: datetime) -> None:
+        """Schedule a run to wake at a specific time"""
         cursor = self._conn.cursor()
         await cursor.execute(
             "SELECT absurd.schedule_run(%s, %s, %s)",
@@ -396,16 +670,26 @@ class AsyncTaskContext:
 
 
 class _AbsurdBase:
-    def __init__(self, queue_name="default", default_max_attempts=5):
+    """Base class for Absurd clients"""
+
+    def __init__(
+        self, queue_name: str = "default", default_max_attempts: int = 5
+    ) -> None:
         self._queue_name = queue_name
         self._default_max_attempts = default_max_attempts
-        self._registry = {}
+        self._registry: Dict[str, Dict[str, Any]] = {}
         self._worker_running = False
 
     def register_task(
-        self, name, queue=None, default_max_attempts=None, default_cancellation=None
-    ):
-        def decorator(handler):
+        self,
+        name: str,
+        queue: Optional[str] = None,
+        default_max_attempts: Optional[int] = None,
+        default_cancellation: Optional[CancellationPolicy] = None,
+    ) -> Callable[[TaskHandler], TaskHandler]:
+        """Register a task handler by name"""
+
+        def decorator(handler: TaskHandler) -> TaskHandler:
             actual_queue = queue or self._queue_name
             if not actual_queue:
                 raise ValueError(
@@ -425,13 +709,14 @@ class _AbsurdBase:
 
     def _prepare_spawn(
         self,
-        task_name,
-        max_attempts=None,
-        retry_strategy=None,
-        headers=None,
-        queue=None,
-        cancellation=None,
-    ):
+        task_name: str,
+        max_attempts: Optional[int] = None,
+        retry_strategy: Optional[RetryStrategy] = None,
+        headers: Optional[JsonObject] = None,
+        queue: Optional[str] = None,
+        cancellation: Optional[CancellationPolicy] = None,
+    ) -> tuple[str, JsonObject]:
+        """Prepare spawn options for a task"""
         registration = self._registry.get(task_name)
 
         if registration:
@@ -475,45 +760,56 @@ class _AbsurdBase:
 
 
 class Absurd(_AbsurdBase):
-    def __init__(self, conn_or_url=None, queue_name="default", default_max_attempts=5):
+    """Synchronous Absurd SDK client"""
+
+    def __init__(
+        self,
+        conn_or_url: Optional[Union[Connection[Any], str]] = None,
+        queue_name: str = "default",
+        default_max_attempts: int = 5,
+    ) -> None:
         if conn_or_url is None:
             conn_or_url = os.environ.get(
                 "ABSURD_DATABASE_URL", "postgresql://localhost/absurd"
             )
 
         if isinstance(conn_or_url, str):
-            self._conn = Connection.connect(conn_or_url)
+            self._conn: Connection[Any] = Connection.connect(conn_or_url)
             self._owned_conn = True
         else:
             self._conn = conn_or_url
             self._owned_conn = False
         super().__init__(queue_name, default_max_attempts)
 
-    def create_queue(self, queue_name=None):
+    def create_queue(self, queue_name: Optional[str] = None) -> None:
+        """Create a queue (defaults to this client's queue)"""
         queue = queue_name or self._queue_name
         cursor = self._conn.cursor()
         cursor.execute("SELECT absurd.create_queue(%s)", (queue,))
 
-    def drop_queue(self, queue_name=None):
+    def drop_queue(self, queue_name: Optional[str] = None) -> None:
+        """Drop a queue (defaults to this client's queue)"""
         queue = queue_name or self._queue_name
         cursor = self._conn.cursor()
         cursor.execute("SELECT absurd.drop_queue(%s)", (queue,))
 
-    def list_queues(self):
+    def list_queues(self) -> List[str]:
+        """List all queue names"""
         cursor = self._conn.cursor(row_factory=dict_row)
         cursor.execute("SELECT * FROM absurd.list_queues()")
         return [row["queue_name"] for row in cursor.fetchall()]
 
     def spawn(
         self,
-        task_name,
-        params,
-        max_attempts=None,
-        retry_strategy=None,
-        headers=None,
-        queue=None,
-        cancellation=None,
-    ):
+        task_name: str,
+        params: Any,
+        max_attempts: Optional[int] = None,
+        retry_strategy: Optional[RetryStrategy] = None,
+        headers: Optional[JsonObject] = None,
+        queue: Optional[str] = None,
+        cancellation: Optional[CancellationPolicy] = None,
+    ) -> SpawnResult:
+        """Spawn a task execution by enqueueing it for processing"""
         actual_queue, options = self._prepare_spawn(
             task_name,
             max_attempts=max_attempts,
@@ -539,7 +835,13 @@ class Absurd(_AbsurdBase):
             "attempt": row["attempt"],
         }
 
-    def emit_event(self, event_name, payload=None, queue_name=None):
+    def emit_event(
+        self,
+        event_name: str,
+        payload: Optional[JsonValue] = None,
+        queue_name: Optional[str] = None,
+    ) -> None:
+        """Emit an event with an optional payload on the specified or default queue"""
         if not event_name:
             raise ValueError("event_name must be a non-empty string")
 
@@ -549,7 +851,18 @@ class Absurd(_AbsurdBase):
             (queue_name or self._queue_name, event_name, json.dumps(payload)),
         )
 
-    def claim_tasks(self, batch_size=1, claim_timeout=120, worker_id="worker"):
+    def cancel_task(self, task_id: str, queue_name: Optional[str] = None) -> None:
+        """Cancel a task by ID on the specified or default queue"""
+        cursor = self._conn.cursor()
+        cursor.execute(
+            "SELECT absurd.cancel_task(%s, %s)",
+            (queue_name or self._queue_name, task_id),
+        )
+
+    def claim_tasks(
+        self, batch_size: int = 1, claim_timeout: int = 120, worker_id: str = "worker"
+    ) -> List[ClaimedTask]:
+        """Claim up to batch_size tasks from the queue"""
         cursor = self._conn.cursor(row_factory=dict_row)
         cursor.execute(
             """SELECT run_id, task_id, attempt, task_name, params, retry_strategy, max_attempts,
@@ -557,9 +870,12 @@ class Absurd(_AbsurdBase):
                FROM absurd.claim_task(%s, %s, %s, %s)""",
             (self._queue_name, worker_id, claim_timeout, batch_size),
         )
-        return cursor.fetchall()
+        return cursor.fetchall()  # type: ignore
 
-    def work_batch(self, worker_id="worker", claim_timeout=120, batch_size=1):
+    def work_batch(
+        self, worker_id: str = "worker", claim_timeout: int = 120, batch_size: int = 1
+    ) -> None:
+        """Claim and process up to batch_size tasks sequentially"""
         tasks = self.claim_tasks(
             batch_size=batch_size, claim_timeout=claim_timeout, worker_id=worker_id
         )
@@ -569,13 +885,14 @@ class Absurd(_AbsurdBase):
 
     def start_worker(
         self,
-        worker_id=None,
-        claim_timeout=120,
-        concurrency=1,
-        batch_size=None,
-        poll_interval=0.25,
-        on_error=None,
-    ):
+        worker_id: Optional[str] = None,
+        claim_timeout: int = 120,
+        concurrency: int = 1,
+        batch_size: Optional[int] = None,
+        poll_interval: float = 0.25,
+        on_error: Optional[Callable[[Exception], None]] = None,
+    ) -> None:
+        """Start a synchronous worker that continuously polls for tasks"""
         if worker_id is None:
             worker_id = f"{socket.gethostname()}:{os.getpid()}"
 
@@ -596,22 +913,26 @@ class Absurd(_AbsurdBase):
             for task in tasks:
                 self._execute_task(task, claim_timeout)
 
-    def stop_worker(self):
+    def stop_worker(self) -> None:
+        """Stop the running worker"""
         self._worker_running = False
 
-    def close(self):
+    def close(self) -> None:
+        """Stop the worker and close the connection if owned"""
         self.stop_worker()
         if self._owned_conn:
             self._conn.close()
 
-    def make_async(self):
+    def make_async(self) -> AsyncAbsurd:
+        """Create an async client with the same configuration"""
         return AsyncAbsurd(
             self._conn.info.dsn,
             queue_name=self._queue_name,
             default_max_attempts=self._default_max_attempts,
         )
 
-    def _execute_task(self, task, claim_timeout):
+    def _execute_task(self, task: ClaimedTask, claim_timeout: int) -> None:
+        """Execute a single task"""
         registration = self._registry.get(task["task_name"])
 
         if not registration:
@@ -635,26 +956,29 @@ class Absurd(_AbsurdBase):
         try:
             result = registration["handler"](task["params"], ctx)
             ctx.complete(result)
-        except SuspendTask:
+        except (SuspendTask, CancelledTask):
             pass
         except Exception as err:
             ctx.fail(err)
 
 
 class AsyncAbsurd(_AbsurdBase):
-    def __init__(self, conn_or_url=None, queue_name="default", default_max_attempts=5):
-        # Defer import asyncio
-        global asyncio
-        import asyncio
+    """Asynchronous Absurd SDK client"""
 
+    def __init__(
+        self,
+        conn_or_url: Optional[Union[AsyncConnection[Any], str]] = None,
+        queue_name: str = "default",
+        default_max_attempts: int = 5,
+    ) -> None:
         if conn_or_url is None:
             conn_or_url = os.environ.get(
                 "ABSURD_DATABASE_URL", "postgresql://localhost/absurd"
             )
 
         if isinstance(conn_or_url, str):
-            self._conn_string = conn_or_url
-            self._conn = None
+            self._conn_string: Optional[str] = conn_or_url
+            self._conn: Optional[AsyncConnection[Any]] = None
             self._owned_conn = True
         else:
             self._conn = conn_or_url
@@ -662,24 +986,31 @@ class AsyncAbsurd(_AbsurdBase):
             self._owned_conn = False
         super().__init__(queue_name, default_max_attempts)
 
-    async def _ensure_connected(self):
+    async def _ensure_connected(self) -> None:
+        """Ensure the connection is established"""
         if self._conn is None and self._conn_string:
             self._conn = await AsyncConnection.connect(self._conn_string)
 
-    async def create_queue(self, queue_name=None):
+    async def create_queue(self, queue_name: Optional[str] = None) -> None:
+        """Create a queue (defaults to this client's queue)"""
         await self._ensure_connected()
+        assert self._conn is not None
         queue = queue_name or self._queue_name
         cursor = self._conn.cursor()
         await cursor.execute("SELECT absurd.create_queue(%s)", (queue,))
 
-    async def drop_queue(self, queue_name=None):
+    async def drop_queue(self, queue_name: Optional[str] = None) -> None:
+        """Drop a queue (defaults to this client's queue)"""
         await self._ensure_connected()
+        assert self._conn is not None
         queue = queue_name or self._queue_name
         cursor = self._conn.cursor()
         await cursor.execute("SELECT absurd.drop_queue(%s)", (queue,))
 
-    async def list_queues(self):
+    async def list_queues(self) -> List[str]:
+        """List all queue names"""
         await self._ensure_connected()
+        assert self._conn is not None
         cursor = self._conn.cursor(row_factory=dict_row)
         await cursor.execute("SELECT * FROM absurd.list_queues()")
         rows = await cursor.fetchall()
@@ -687,15 +1018,17 @@ class AsyncAbsurd(_AbsurdBase):
 
     async def spawn(
         self,
-        task_name,
-        params,
-        max_attempts=None,
-        retry_strategy=None,
-        headers=None,
-        queue=None,
-        cancellation=None,
-    ):
+        task_name: str,
+        params: Any,
+        max_attempts: Optional[int] = None,
+        retry_strategy: Optional[RetryStrategy] = None,
+        headers: Optional[JsonObject] = None,
+        queue: Optional[str] = None,
+        cancellation: Optional[CancellationPolicy] = None,
+    ) -> SpawnResult:
+        """Spawn a task execution by enqueueing it for processing"""
         await self._ensure_connected()
+        assert self._conn is not None
         actual_queue, options = self._prepare_spawn(
             task_name,
             max_attempts=max_attempts,
@@ -721,8 +1054,15 @@ class AsyncAbsurd(_AbsurdBase):
             "attempt": row["attempt"],
         }
 
-    async def emit_event(self, event_name, payload=None, queue_name=None):
+    async def emit_event(
+        self,
+        event_name: str,
+        payload: Optional[JsonValue] = None,
+        queue_name: Optional[str] = None,
+    ) -> None:
+        """Emit an event with an optional payload on the specified or default queue"""
         await self._ensure_connected()
+        assert self._conn is not None
         if not event_name:
             raise ValueError("event_name must be a non-empty string")
 
@@ -732,8 +1072,24 @@ class AsyncAbsurd(_AbsurdBase):
             (queue_name or self._queue_name, event_name, json.dumps(payload)),
         )
 
-    async def claim_tasks(self, batch_size=1, claim_timeout=120, worker_id="worker"):
+    async def cancel_task(
+        self, task_id: str, queue_name: Optional[str] = None
+    ) -> None:
+        """Cancel a task by ID on the specified or default queue"""
         await self._ensure_connected()
+        assert self._conn is not None
+        cursor = self._conn.cursor()
+        await cursor.execute(
+            "SELECT absurd.cancel_task(%s, %s)",
+            (queue_name or self._queue_name, task_id),
+        )
+
+    async def claim_tasks(
+        self, batch_size: int = 1, claim_timeout: int = 120, worker_id: str = "worker"
+    ) -> List[ClaimedTask]:
+        """Claim up to batch_size tasks from the queue"""
+        await self._ensure_connected()
+        assert self._conn is not None
         cursor = self._conn.cursor(row_factory=dict_row)
         await cursor.execute(
             """SELECT run_id, task_id, attempt, task_name, params, retry_strategy, max_attempts,
@@ -741,9 +1097,12 @@ class AsyncAbsurd(_AbsurdBase):
                FROM absurd.claim_task(%s, %s, %s, %s)""",
             (self._queue_name, worker_id, claim_timeout, batch_size),
         )
-        return await cursor.fetchall()
+        return await cursor.fetchall()  # type: ignore
 
-    async def work_batch(self, worker_id="worker", claim_timeout=120, batch_size=1):
+    async def work_batch(
+        self, worker_id: str = "worker", claim_timeout: int = 120, batch_size: int = 1
+    ) -> None:
+        """Claim and process up to batch_size tasks sequentially"""
         tasks = await self.claim_tasks(
             batch_size=batch_size, claim_timeout=claim_timeout, worker_id=worker_id
         )
@@ -753,13 +1112,16 @@ class AsyncAbsurd(_AbsurdBase):
 
     async def start_worker(
         self,
-        worker_id=None,
-        claim_timeout=120,
-        concurrency=1,
-        batch_size=None,
-        poll_interval=0.25,
-        on_error=None,
-    ):
+        worker_id: Optional[str] = None,
+        claim_timeout: int = 120,
+        concurrency: int = 1,
+        batch_size: Optional[int] = None,
+        poll_interval: float = 0.25,
+        on_error: Optional[Callable[[Exception], None]] = None,
+    ) -> None:
+        """Start an asynchronous worker that continuously polls for tasks"""
+        import asyncio
+
         await self._ensure_connected()
         if worker_id is None:
             worker_id = f"{socket.gethostname()}:{os.getpid()}"
@@ -789,22 +1151,27 @@ class AsyncAbsurd(_AbsurdBase):
 
             await asyncio.gather(*executing)
 
-    def stop_worker(self):
+    def stop_worker(self) -> None:
+        """Stop the running worker"""
         self._worker_running = False
 
-    async def close(self):
+    async def close(self) -> None:
+        """Stop the worker and close the connection if owned"""
         self.stop_worker()
         if self._owned_conn and self._conn:
             await self._conn.close()
 
-    def make_sync(self):
+    def make_sync(self) -> Absurd:
+        """Create a sync client with the same configuration"""
         return Absurd(
-            self._conn_string if self._conn_string else self._conn.info.dsn,
+            self._conn_string if self._conn_string else self._conn.info.dsn,  # type: ignore
             queue_name=self._queue_name,
             default_max_attempts=self._default_max_attempts,
         )
 
-    async def _execute_task(self, task, claim_timeout):
+    async def _execute_task(self, task: ClaimedTask, claim_timeout: int) -> None:
+        """Execute a single task"""
+        assert self._conn is not None
         registration = self._registry.get(task["task_name"])
 
         if not registration:
@@ -828,67 +1195,7 @@ class AsyncAbsurd(_AbsurdBase):
         try:
             result = await registration["handler"](task["params"], ctx)
             await ctx.complete(result)
-        except SuspendTask:
+        except (SuspendTask, CancelledTask):
             pass
         except Exception as err:
             await ctx.fail(err)
-
-
-def _serialize_error(err):
-    if isinstance(err, Exception):
-        formatted = (
-            "".join(traceback.format_exception(err.__class__, err, err.__traceback__))
-            if err.__traceback__
-            else None
-        )
-        return {
-            "name": err.__class__.__name__,
-            "message": str(err),
-            "traceback": formatted,
-        }
-    return {"message": str(err)}
-
-
-def _normalize_spawn_options(
-    max_attempts=None, retry_strategy=None, headers=None, cancellation=None
-):
-    normalized = {}
-
-    if headers is not None:
-        normalized["headers"] = headers
-    if max_attempts is not None:
-        normalized["max_attempts"] = max_attempts
-    if retry_strategy:
-        normalized["retry_strategy"] = _serialize_retry_strategy(retry_strategy)
-
-    cancel = _normalize_cancellation(cancellation)
-    if cancel:
-        normalized["cancellation"] = cancel
-
-    return normalized
-
-
-def _serialize_retry_strategy(strategy):
-    serialized = {"kind": strategy["kind"]}
-
-    if "base_seconds" in strategy:
-        serialized["base_seconds"] = strategy["base_seconds"]
-    if "factor" in strategy:
-        serialized["factor"] = strategy["factor"]
-    if "max_seconds" in strategy:
-        serialized["max_seconds"] = strategy["max_seconds"]
-
-    return serialized
-
-
-def _normalize_cancellation(policy):
-    if not policy:
-        return None
-
-    normalized = {}
-    if "max_duration" in policy:
-        normalized["max_duration"] = policy["max_duration"]
-    if "max_delay" in policy:
-        normalized["max_delay"] = policy["max_delay"]
-
-    return normalized if normalized else None
