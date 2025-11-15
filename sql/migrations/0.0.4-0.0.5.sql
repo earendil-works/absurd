@@ -1,4 +1,4 @@
--- Migration from version 0.0.4 to main
+-- Migration from version 0.0.4 to 0.0.5
 --
 -- This migration adds task cancellation support and fixes event timeout handling:
 -- - Adds the absurd.extend_claim function for explicit claim extension with cancellation check
