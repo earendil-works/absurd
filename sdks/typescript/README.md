@@ -94,14 +94,8 @@ const payment = await ctx.step("process-payment", async () => {
 });
 ```
 
-## Documentation
+## License and Links
 
-For more information, examples, and documentation, visit:
-
-- [Main Repository](https://github.com/earendil-works/absurd)
 - [Examples](https://github.com/earendil-works/absurd/tree/main/sdks/typescript/examples)
 - [Issue Tracker](https://github.com/earendil-works/absurd/issues)
-
-## License
-
-Apache-2.0
+- License: [Apache-2.0](https://github.com/earendil-works/absurd/blob/main/LICENSE)

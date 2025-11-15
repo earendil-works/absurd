@@ -1,0 +1,52 @@
+[project]
+name = "absurd_sdk"
+version = "0.0.1"
+description = "Python SDK for Absurd - PostgreSQL-based durable task execution"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "Apache-2.0" }
+keywords = ["absurd", "postgresql", "queue", "task", "durable", "workflow"]
+authors = [
+    { name = "Absurd Contributors" }
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Typing :: Typed",
+]
+dependencies = [
+    "psycopg[binary]>=3.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "testcontainers>=3.0.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/earendil-works/absurd"
+Repository = "https://github.com/earendil-works/absurd"
+Issues = "https://github.com/earendil-works/absurd/issues"
+
+[build-system]
+requires = ["uv_build>=0.9.6,<0.10.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.4.2",
+    "testcontainers>=4.13",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = [
+  "ignore:The @wait_container_is_ready decorator is deprecated:DeprecationWarning:testcontainers",
+]

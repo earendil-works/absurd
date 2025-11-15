@@ -10,7 +10,6 @@ dependencies = [
 ]
 
 [tool.pytest.ini_options]
-addopts = "-q"
 testpaths = ["."]
 filterwarnings = [
   "ignore:The @wait_container_is_ready decorator is deprecated:DeprecationWarning:testcontainers",
