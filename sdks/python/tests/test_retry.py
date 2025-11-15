@@ -4,7 +4,7 @@ import pytest
 from datetime import datetime, timezone, timedelta
 from psycopg import sql
 
-from absurd_sdk import Absurd, CancelledTask
+from absurd_sdk import Absurd
 
 
 def _set_fake_now(conn, fake_time):
@@ -14,6 +14,7 @@ def _set_fake_now(conn, fake_time):
     else:
         # SET doesn't support parameterized queries, need to format as string
         from psycopg import sql
+
         conn.execute(
             sql.SQL("set absurd.fake_now = '{}'").format(sql.SQL(fake_time.isoformat()))
         )
@@ -321,7 +322,9 @@ def test_cancel_blocks_checkpoint_writes(conn, queue_name):
             ),
         )
     # The error should indicate the task was cancelled
-    assert "cancelled" in str(exc_info.value).lower() or (hasattr(exc_info.value, "pgcode") and exc_info.value.pgcode == "AB001")
+    assert "cancelled" in str(exc_info.value).lower() or (
+        hasattr(exc_info.value, "pgcode") and exc_info.value.pgcode == "AB001"
+    )
 
 
 def test_cancel_is_idempotent(conn, queue_name):

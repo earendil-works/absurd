@@ -1,6 +1,5 @@
 """Tests for event system"""
 
-import pytest
 from datetime import datetime, timezone, timedelta
 from psycopg import sql
 

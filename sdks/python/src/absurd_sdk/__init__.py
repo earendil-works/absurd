@@ -559,50 +559,6 @@ class AsyncTaskContext:
         await self._persist_checkpoint(checkpoint_name, rv)
         return rv
 
-    @overload
-    def run_step(
-        self, name: Optional[str] = None
-    ) -> Callable[[Callable[[], Awaitable[R]]], Awaitable[R]]:
-        """Decorator to run an async function as a step and replace it with the return value"""
-        ...
-
-    @overload
-    def run_step(self, fn: Callable[[], Awaitable[R]]) -> Awaitable[R]:
-        """Decorator to run an async function as a step and replace it with the return value"""
-        ...
-
-    def run_step(
-        self, name_or_fn: Optional[Union[str, Callable[[], Awaitable[R]]]] = None
-    ) -> Union[Awaitable[R], Callable[[Callable[[], Awaitable[R]]], Awaitable[R]]]:
-        """Decorator to run an async function as a step and replace it with the return value.
-
-        Usage:
-            @ctx.run_step()
-            async def step_name():
-                return 42
-            # step_name is now an awaitable that returns 42
-
-            @ctx.run_step("custom_name")
-            async def step_name():
-                return 42
-            # step_name is now an awaitable that returns 42, stored as "custom_name"
-        """
-        # Case 1: @ctx.run_step (no arguments, no parentheses)
-        if callable(name_or_fn):
-            fn = cast(Callable[[], Awaitable[R]], name_or_fn)
-            return self.step(_get_callable_name(fn), fn)
-
-        # Case 2: @ctx.run_step() or @ctx.run_step("custom_name")
-        custom_name = name_or_fn if isinstance(name_or_fn, str) else None
-
-        def decorator(fn: Callable[[], Awaitable[R]]) -> Awaitable[R]:
-            step_name = (
-                custom_name if custom_name is not None else _get_callable_name(fn)
-            )
-            return self.step(step_name, fn)
-
-        return decorator
-
     async def sleep_for(self, step_name: str, duration: float) -> None:
         """Suspend the task for the given duration in seconds"""
         wake_at = _get_current_time() + timedelta(seconds=duration)
@@ -990,7 +946,6 @@ class Absurd(_AbsurdBase):
         concurrency: int = 1,
         batch_size: Optional[int] = None,
         poll_interval: float = 0.25,
-        on_error: Optional[Callable[[Exception], None]] = None,
     ) -> None:
         """Start a synchronous worker that continuously polls for tasks"""
         if worker_id is None:
@@ -1221,7 +1176,6 @@ class AsyncAbsurd(_AbsurdBase):
         concurrency: int = 1,
         batch_size: Optional[int] = None,
         poll_interval: float = 0.25,
-        on_error: Optional[Callable[[Exception], None]] = None,
     ) -> None:
         """Start an asynchronous worker that continuously polls for tasks"""
         import asyncio
