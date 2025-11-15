@@ -388,24 +388,6 @@ export class TaskContext {
       JSON.stringify(payload ?? null),
     ]);
   }
-
-  async complete(result?: any): Promise<void> {
-    await this.con.query(`SELECT absurd.complete_run($1, $2, $3)`, [
-      this.queueName,
-      this.task.run_id,
-      JSON.stringify(result ?? null),
-    ]);
-  }
-
-  async fail(err: unknown): Promise<void> {
-    this.log.error("[absurd] task execution failed:", err);
-    await this.con.query(`SELECT absurd.fail_run($1, $2, $3, $4)`, [
-      this.queueName,
-      this.task.run_id,
-      JSON.stringify(serializeError(err)),
-      null,
-    ]);
-  }
 }
 
 /**
@@ -856,13 +838,14 @@ export class Absurd {
         throw new Error("Misconfigured task (queue mismatch)");
       }
       const result = await registration.handler(task.params, ctx);
-      await ctx.complete(result);
+      await completeTaskRun(this.con, this.queueName, task.run_id, result);
     } catch (err) {
       if (err instanceof SuspendTask || err instanceof CancelledTask) {
         // Task suspended or cancelled (sleep or await), don't complete or fail
         return;
       }
-      await ctx.fail(err);
+      this.log.error("[absurd] task execution failed:", err);
+      await failTaskRun(this.con, this.queueName, task.run_id, err);
     } finally {
       if (warnTimer) {
         clearTimeout(warnTimer);
@@ -891,6 +874,33 @@ function serializeError(err: unknown): JsonValue {
     };
   }
   return { message: String(err) };
+}
+
+async function completeTaskRun(
+  con: Queryable,
+  queueName: string,
+  runID: string,
+  result?: any,
+): Promise<void> {
+  await con.query(`SELECT absurd.complete_run($1, $2, $3)`, [
+    queueName,
+    runID,
+    JSON.stringify(result ?? null),
+  ]);
+}
+
+async function failTaskRun(
+  con: Queryable,
+  queueName: string,
+  runID: string,
+  err: unknown,
+): Promise<void> {
+  await con.query(`SELECT absurd.fail_run($1, $2, $3, $4)`, [
+    queueName,
+    runID,
+    JSON.stringify(serializeError(err)),
+    null,
+  ]);
 }
 
 function normalizeSpawnOptions(options: SpawnOptions): JsonObject {

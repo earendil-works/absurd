@@ -81,9 +81,7 @@ describe("Retry and cancellation", () => {
     expect(task?.attempts).toBe(3);
 
     // Advance time past second backoff (80 seconds from second failure)
-    await ctx.setFakeNow(
-      new Date(baseTime.getTime() + 40 * 1000 + 80 * 1000),
-    );
+    await ctx.setFakeNow(new Date(baseTime.getTime() + 40 * 1000 + 80 * 1000));
 
     // Third attempt - succeeds
     await absurd.workBatch("worker1", 60, 1);
@@ -375,10 +373,14 @@ describe("Retry and cancellation", () => {
       claimTimeout: 60,
     });
 
-    await ctx.pool.query(
-      `SELECT absurd.await_event($1, $2, $3, $4, $5, $6)`,
-      [ctx.queueName, taskID, claim.run_id, "wait-step", eventName, 300],
-    );
+    await ctx.pool.query(`SELECT absurd.await_event($1, $2, $3, $4, $5, $6)`, [
+      ctx.queueName,
+      taskID,
+      claim.run_id,
+      "wait-step",
+      eventName,
+      300,
+    ]);
 
     const sleepingTask = await ctx.getTask(taskID);
     expect(sleepingTask?.state).toBe("sleeping");
