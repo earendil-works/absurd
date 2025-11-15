@@ -132,7 +132,7 @@ export async function createTestAbsurd(
 
 async function setFakeNow(ts: Date | null): Promise<void> {
   if (ts === null) {
-    await pool.query("SELECT set_config('absurd.fake_now', NULL, false)");
+    await pool.query("SET absurd.fake_now = DEFAULT");
   } else {
     await pool.query("SELECT set_config('absurd.fake_now', $1, false)", [
       ts.toISOString(),
