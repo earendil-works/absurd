@@ -58,7 +58,7 @@ export interface WorkerOptions {
   fatalOnLeaseTimeout?: boolean;
 }
 
-export interface Worker {
+interface Worker {
   close(): Promise<void>;
 }
 
