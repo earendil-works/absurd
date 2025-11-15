@@ -13,6 +13,7 @@ This contains the changes between releases.
 * Added `heartbeat` to extend a claim between checkpoints.  #39
 * Added explicit task cancellations.  #40
 * Ensure that timeouts on events do not re-trigger the event awaiting.  #45
+* Add tests to TypeScript SDK and make `complete`/`fail` internal.  #25
 
 # 0.0.4
 
