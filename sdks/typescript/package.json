@@ -1,6 +1,6 @@
 {
   "name": "absurd-sdk",
-  "version": "0.0.4",
+  "version": "0.0.5",
   "description": "TypeScript SDK for Absurd - PostgreSQL-based durable task execution",
   "type": "module",
   "main": "./dist/cjs/index.js",
@@ -17,10 +17,13 @@
     "README.md"
   ],
   "scripts": {
-    "build": "tsc --project tsconfig.json && tsc --project tsconfig.cjs.json && echo '{\"type\":\"commonjs\"}' > dist/cjs/package.json",
+    "build": "tsc --project tsconfig.build.json && tsc --project tsconfig.cjs.json && echo '{\"type\":\"commonjs\"}' > dist/cjs/package.json",
     "type-check": "tsc --noEmit",
     "prepare": "npm run build",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "vitest --silent --run",
+    "test:watch": "vitest",
+    "test:ui": "vitest --ui",
+    "docs": "typedoc"
   },
   "keywords": [
     "absurd",
@@ -32,7 +35,7 @@
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/earendil-works/absurd"
+    "url": "git+https://github.com/earendil-works/absurd.git"
   },
   "author": "",
   "license": "Apache-2.0",
@@ -40,9 +43,12 @@
     "pg": "^8.0.0"
   },
   "devDependencies": {
+    "@testcontainers/postgresql": "^11.7.2",
     "@types/node": "^22.10.2",
     "@types/pg": "^8.11.10",
-    "typescript": "^5.9.3"
+    "typedoc": "^0.28.14",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.7"
   },
   "engines": {
     "node": ">=18.0.0"

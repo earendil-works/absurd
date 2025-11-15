@@ -42,7 +42,8 @@ read and reason about.
 Absurd just needs a single `.sql` file ([`absurd.sql`](sql/absurd.sql)) which
 needs to be applied to a database of your choice.  You can plug it into your
 favorite migration system of choice.  Additionally if that file changes, we
-also release [migrations](sql/migrations) which should make upgrading easy.
+also release [migrations](sql/migrations) which should make upgrading easy. 
+See [[Getting Started]] for a short tutorial.
 
 ## Comparison
 
@@ -218,8 +219,8 @@ as checkpoints. Retries therefore happen at the task level. When a worker starts
 on a task it "claims" it, reserving the task for a configured duration. Each time
 the task stores a checkpoint, the claim is extended. If the worker crashes or does
 not make progress before the claim times out, the task resets and is handed to
-another worker. This overlap can lead to two workers running the same task, so
-write tasks so they always make observable progress well inside the claim timeout,
+another worker. This overlap can lead to two workers running the same task. Write 
+tasks so that they always make observable progress well inside the claim timeout,
 with ample headroom.
 
 ## Cleanup
@@ -249,6 +250,72 @@ absurdctl agent-help >> AGENTS.md
 ```
 
 You might have to tweak the outputs afterwards to work best for your setup.
+
+## Getting Started
+
+To get the Absurd running locally, you'll need:
+
+1. nodejs & postgres - to spawn and process tasks.
+2. go-lang toolchain - to build and run habitat
+3. python - to use `absurdctl`
+
+First install create a new postgres database and install the absurd schema:
+
+```bash
+export PGDATABASE="postgres://apps:sekrets@localhost:5432"
+./absurdctl init
+./absurdctl create-queue reports
+```
+This will create the a schema for `absurd` and install the initial tables and stored procedures,
+and then create our first queue. Queues give you a way to create logical groups of tasks, and scale
+workers. Next, we can create a simple task, schedule it and then run it.
+
+```typescript
+import { Absurd } from '../sdks/typescript/dist/index.js';
+
+const app = new Absurd({
+  db: process.env.PGDATABASE,
+  queueName: 'reports',
+});
+
+// A task represents a series of operations.  It can be decomposed into
+// steps, which act as checkpoints.  Once a step has been passed
+// successfully, the return value is retained and it won't execute again.
+// If it fails, the entire task is retried.  Code that runs outside of
+// steps will potentially be executed multiple times.
+app.registerTask({ name: 'hello-world' }, async (params, ctx) => {
+  console.log('Hello');
+  let result = await ctx.step('step-1', async () => {
+    console.log('World');
+    return 'done';
+  });
+  console.log('step-1 result:', result);
+  result = await ctx.step('step-2', async () => {
+    console.log('From Absurd');
+    return 'done too';
+  });
+  console.log('step-2 result:', result);
+});
+
+// Start a worker that pulls tasks from Postgres
+await app.startWorker();
+```
+Save this file into `examples/hello.ts`. Next, we can spawn our task with:
+
+```bash
+./absurdctl spawn-task --queue reports hello-world -P name=Lily
+```
+
+With a task enqueued, we can run our tasks by starting our worker:
+
+```bash
+pushd sdks/typescript
+npm install
+npm run build
+popd
+
+node --experimental-strip-types examples/hello.ts
+```
 
 ## AI Use Disclaimer
 

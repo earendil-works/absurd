@@ -1,4 +1,4 @@
--- Migration from version 0.0.3 to main
+-- Migration from version 0.0.3 and earlier to 0.0.4
 -- This migration updates the claim_task, complete_run, and fail_run functions
 -- to improve claim timeout handling and add state validation.
 

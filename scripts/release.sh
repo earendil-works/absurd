@@ -112,12 +112,12 @@ cd "$PROJECT_ROOT"
 # Check for pending migration (migration with -main.sql suffix) and rename automatically
 info "Checking for pending migrations..."
 if ls "$PROJECT_ROOT"/sql/migrations/*-main.sql 1> /dev/null 2>&1; then
-    info "Found pending migration(s) with -main.sql suffix, renaming to $NEW_VERSION.sql..."
+    info "Found pending migration(s) with -main.sql suffix, renaming to $CURRENT_VERSION-$NEW_VERSION.sql..."
     for migration in "$PROJECT_ROOT"/sql/migrations/*-main.sql; do
-        new_name="${migration%-main.sql}.sql"
-        # Extract just the filename for the new version-based name
+        # Extract the base name (e.g., "0.0.4-main.sql" -> "0.0.4")
+        base_name=$(basename "$migration" -main.sql)
         dir_name=$(dirname "$migration")
-        new_versioned="$dir_name/$NEW_VERSION.sql"
+        new_versioned="$dir_name/$base_name-$NEW_VERSION.sql"
         info "Renaming: $(basename "$migration") -> $(basename "$new_versioned")"
         mv "$migration" "$new_versioned"
     done
@@ -137,10 +137,10 @@ fi
 
 # Check if there's a migration for this version
 info "Checking for migration..."
-MIGRATION_FILE="$PROJECT_ROOT/sql/migrations/$NEW_VERSION.sql"
+MIGRATION_FILE="$PROJECT_ROOT/sql/migrations/$CURRENT_VERSION-$NEW_VERSION.sql"
 if [[ ! -f "$MIGRATION_FILE" ]]; then
     echo ""
-    info "Warning: No migration file found at sql/migrations/$NEW_VERSION.sql"
+    info "Warning: No migration file found at sql/migrations/$CURRENT_VERSION-$NEW_VERSION.sql"
     read -p "Is this expected (no schema changes in this release)? (y/N) " -n 1 -r
     echo
     if [[ ! $REPLY =~ ^[Yy]$ ]]; then

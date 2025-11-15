@@ -721,22 +721,29 @@ declare
   v_new_attempt integer;
   v_existing_attempt integer;
   v_existing_owner uuid;
+  v_task_state text;
 begin
   if p_step_name is null or length(trim(p_step_name)) = 0 then
     raise exception 'step_name must be provided';
   end if;
 
   execute format(
-    'select attempt
-       from absurd.%I
-      where run_id = $1',
-    'r_' || p_queue_name
+    'select r.attempt, t.state
+       from absurd.%I r
+       join absurd.%I t on t.task_id = r.task_id
+      where r.run_id = $1',
+    'r_' || p_queue_name,
+    't_' || p_queue_name
   )
-  into v_new_attempt
+  into v_new_attempt, v_task_state
   using p_owner_run;
 
   if v_new_attempt is null then
     raise exception 'Run "%" not found for checkpoint', p_owner_run;
+  end if;
+
+  if v_task_state = 'cancelled' then
+    raise exception sqlstate 'AB001' using message = 'Task has been cancelled';
   end if;
 
   -- Extend the claim if requested
@@ -777,6 +784,48 @@ begin
       'c_' || p_queue_name
     ) using p_task_id, p_step_name, p_state, p_owner_run, v_now;
   end if;
+end;
+$$;
+
+create function absurd.extend_claim (
+  p_queue_name text,
+  p_run_id uuid,
+  p_extend_by integer
+)
+  returns void
+  language plpgsql
+as $$
+declare
+  v_now timestamptz := absurd.current_time();
+  v_extend_by integer;
+  v_claim_timeout integer;
+  v_rows_updated integer;
+  v_task_state text;
+begin
+  execute format(
+    'select t.state
+       from absurd.%I r
+       join absurd.%I t on t.task_id = r.task_id
+      where r.run_id = $1',
+    'r_' || p_queue_name,
+    't_' || p_queue_name
+  )
+  into v_task_state
+  using p_run_id;
+
+  if v_task_state = 'cancelled' then
+    raise exception sqlstate 'AB001' using message = 'Task has been cancelled';
+  end if;
+
+  execute format(
+    'update absurd.%I
+        set claim_expires_at = $2 + make_interval(secs => $3)
+      where run_id = $1
+        and state = ''running''
+        and claim_expires_at is not null',
+    'r_' || p_queue_name
+  )
+  using p_run_id, v_now, p_extend_by;
 end;
 $$;
 
@@ -854,6 +903,8 @@ declare
   v_timeout_at timestamptz;
   v_available_at timestamptz;
   v_now timestamptz := absurd.current_time();
+  v_task_state text;
+  v_wake_event text;
 begin
   if p_event_name is null or length(trim(p_event_name)) = 0 then
     raise exception 'event_name must be provided';
@@ -884,17 +935,23 @@ begin
   end if;
 
   execute format(
-    'select state, event_payload
-       from absurd.%I
-      where run_id = $1
+    'select r.state, r.event_payload, r.wake_event, t.state
+       from absurd.%I r
+       join absurd.%I t on t.task_id = r.task_id
+      where r.run_id = $1
       for update',
-    'r_' || p_queue_name
+    'r_' || p_queue_name,
+    't_' || p_queue_name
   )
-  into v_run_state, v_existing_payload
+  into v_run_state, v_existing_payload, v_wake_event, v_task_state
   using p_run_id;
 
   if v_run_state is null then
     raise exception 'Run "%" not found while awaiting event', p_run_id;
+  end if;
+
+  if v_task_state = 'cancelled' then
+    raise exception sqlstate 'AB001' using message = 'Task has been cancelled';
   end if;
 
   execute format(
@@ -939,6 +996,17 @@ begin
       'c_' || p_queue_name
     ) using p_task_id, p_step_name, v_resolved_payload, p_run_id, v_now;
     return query select false, v_resolved_payload;
+    return;
+  end if;
+
+  -- Detect if we resumed due to timeout: wake_event matches and payload is null
+  if v_resolved_payload is null and v_wake_event = p_event_name and v_existing_payload is null then
+    -- Resumed due to timeout; don't re-sleep and don't create a new wait
+    execute format(
+      'update absurd.%I set wake_event = null where run_id = $1',
+      'r_' || p_queue_name
+    ) using p_run_id;
+    return query select false, null::jsonb;
     return;
   end if;
 
@@ -1053,6 +1121,63 @@ begin
     't_' || p_queue_name,
     'w_' || p_queue_name
   ) using p_event_name, v_now, v_payload;
+end;
+$$;
+
+-- Manually cancels a task by its task_id.
+-- Sets the task state to 'cancelled' and prevents any future runs.
+-- Currently running code will detect cancellation at the next checkpoint or heartbeat.
+create function absurd.cancel_task (
+  p_queue_name text,
+  p_task_id uuid
+)
+  returns void
+  language plpgsql
+as $$
+declare
+  v_now timestamptz := absurd.current_time();
+  v_task_state text;
+begin
+  execute format(
+    'select state
+       from absurd.%I
+      where task_id = $1
+      for update',
+    't_' || p_queue_name
+  )
+  into v_task_state
+  using p_task_id;
+
+  if v_task_state is null then
+    raise exception 'Task "%" not found in queue "%"', p_task_id, p_queue_name;
+  end if;
+
+  if v_task_state in ('completed', 'failed', 'cancelled') then
+    return;
+  end if;
+
+  execute format(
+    'update absurd.%I
+        set state = ''cancelled'',
+            cancelled_at = coalesce(cancelled_at, $2)
+      where task_id = $1',
+    't_' || p_queue_name
+  ) using p_task_id, v_now;
+
+  execute format(
+    'update absurd.%I
+        set state = ''cancelled'',
+            claimed_by = null,
+            claim_expires_at = null
+      where task_id = $1
+        and state not in (''completed'', ''failed'', ''cancelled'')',
+    'r_' || p_queue_name
+  ) using p_task_id;
+
+  execute format(
+    'delete from absurd.%I where task_id = $1',
+    'w_' || p_queue_name
+  ) using p_task_id;
 end;
 $$;
 
