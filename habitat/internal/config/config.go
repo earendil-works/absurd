@@ -17,6 +17,9 @@ const (
 	defaultDBName        = "absurd"
 	defaultDBPort        = 5432
 	defaultDBSSLMode     = "disable"
+	defaultDBSSLCert     = ""
+	defaultDBSSLRootCert = ""
+	defaultDBSSLKey      = ""
 )
 
 // Config captures runtime configuration for the dashboard server.
@@ -34,6 +37,9 @@ type DBConfig struct {
 	Password string
 	Name     string
 	SSLMode  string
+	SSLCert  string
+	SSLKey   string
+	SSLRootCert string
 }
 
 // FromArgs parses command-line arguments and environment variables to produce
@@ -51,6 +57,9 @@ func FromArgs(args []string) (Config, error) {
 			Password: envDefault("DB_PASSWORD", ""),
 			Name:     envDefault("DB_NAME", defaultDBName),
 			SSLMode:  envDefault("DB_SSLMODE", defaultDBSSLMode),
+			SSLCert:  envDefault("DB_SSLCERT", defaultDBSSLCert),
+			SSLKey:  envDefault("DB_SSLKEY", defaultDBSSLKey),
+			SSLRootCert:  envDefault("DB_SSLROOTCERT", defaultDBSSLRootCert),
 		},
 	}
 
@@ -62,6 +71,9 @@ func FromArgs(args []string) (Config, error) {
 	fs.StringVar(&cfg.DB.Password, "db-password", cfg.DB.Password, "Postgres password")
 	fs.StringVar(&cfg.DB.Name, "db-name", cfg.DB.Name, "Postgres database name")
 	fs.StringVar(&cfg.DB.SSLMode, "db-sslmode", cfg.DB.SSLMode, "Postgres sslmode")
+	fs.StringVar(&cfg.DB.SSLCert, "db-sslcert", cfg.DB.SSLCert, "Postgres sslcert")
+	fs.StringVar(&cfg.DB.SSLKey, "db-sslkey", cfg.DB.SSLKey, "Postgres sslkey")
+	fs.StringVar(&cfg.DB.SSLRootCert, "db-sslrootcert", cfg.DB.SSLRootCert, "Postgres sslrootcert")
 
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
@@ -111,6 +123,15 @@ func (c DBConfig) ConnectionString() (string, error) {
 	if c.SSLMode != "" {
 		query.Set("sslmode", c.SSLMode)
 	}
+    if c.SSLCert != "" {
+        query.Set("sslcert", c.SSLCert)
+    }
+    if c.SSLKey != "" {
+        query.Set("sslkey", c.SSLKey)
+    }
+    if c.SSLRootCert != "" {
+        query.Set("sslrootcert", c.SSLRootCert)
+    }
 	u.RawQuery = query.Encode()
 
 	return u.String(), nil
