@@ -904,6 +904,7 @@ declare
   v_available_at timestamptz;
   v_now timestamptz := absurd.current_time();
   v_task_state text;
+  v_wake_event text;
 begin
   if p_event_name is null or length(trim(p_event_name)) = 0 then
     raise exception 'event_name must be provided';
@@ -934,7 +935,7 @@ begin
   end if;
 
   execute format(
-    'select r.state, r.event_payload, t.state
+    'select r.state, r.event_payload, r.wake_event, t.state
        from absurd.%I r
        join absurd.%I t on t.task_id = r.task_id
       where r.run_id = $1
@@ -942,7 +943,7 @@ begin
     'r_' || p_queue_name,
     't_' || p_queue_name
   )
-  into v_run_state, v_existing_payload, v_task_state
+  into v_run_state, v_existing_payload, v_wake_event, v_task_state
   using p_run_id;
 
   if v_run_state is null then
@@ -995,6 +996,17 @@ begin
       'c_' || p_queue_name
     ) using p_task_id, p_step_name, v_resolved_payload, p_run_id, v_now;
     return query select false, v_resolved_payload;
+    return;
+  end if;
+
+  -- Detect if we resumed due to timeout: wake_event matches and payload is null
+  if v_resolved_payload is null and v_wake_event = p_event_name and v_existing_payload is null then
+    -- Resumed due to timeout; don't re-sleep and don't create a new wait
+    execute format(
+      'update absurd.%I set wake_event = null where run_id = $1',
+      'r_' || p_queue_name
+    ) using p_run_id;
+    return query select false, null::jsonb;
     return;
   end if;
 
