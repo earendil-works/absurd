@@ -685,7 +685,7 @@ export class Absurd {
       concurrency = 1,
       batchSize,
       pollInterval = 0.25,
-      onError = (err) => console.error("Worker error:", err),
+      onError = (err) => this.log.error("Worker error:", err),
       fatalOnLeaseTimeout = true,
     } = options;
     const effectiveBatchSize = batchSize ?? concurrency;

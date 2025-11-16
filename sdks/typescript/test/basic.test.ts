@@ -1,6 +1,15 @@
-import { describe, test, assert, expect, beforeAll, afterEach } from "vitest";
+import {
+  describe,
+  test,
+  assert,
+  expect,
+  beforeAll,
+  afterEach,
+  vi,
+} from "vitest";
 import { createTestAbsurd, randomName, type TestContext } from "./setup.js";
 import type { Absurd } from "../src/index.js";
+import { EventEmitter, once } from "events";
 
 describe("Basic SDK Operations", () => {
   let ctx: TestContext;
@@ -478,6 +487,52 @@ describe("Basic SDK Operations", () => {
 
       expect((await ctx.getTask(bad.taskID))?.state).toBe("failed");
       expect((await ctx.getTask(ok.taskID))?.state).toBe("completed");
+    });
+  });
+
+  describe("Heartbeat", () => {
+    test("heartbeat extends claim timeout", async () => {
+      const gate = new EventEmitter();
+      const baseTime = new Date("2025-01-01T00:00:00Z");
+      await ctx.setFakeNow(baseTime);
+
+      const claimTimeout = 60;
+      const extension = 120;
+
+      absurd.registerTask(
+        { name: "heartbeat-extends" },
+        async (params: { extension: number }, taskCtx) => {
+          gate.emit("task-started");
+          await once(gate, "heartbeat");
+          await taskCtx.heartbeat(params.extension);
+        },
+      );
+
+      const { runID } = await absurd.spawn("heartbeat-extends", {
+        extension,
+      });
+
+      const getExpiresAt = async (runID: string) => {
+        const run = await ctx.getRun(runID);
+        return run?.claim_expires_at ? run.claim_expires_at.getTime() : 0;
+      };
+
+      absurd.workBatch("test-worker", claimTimeout);
+
+      await once(gate, "task-started");
+      await vi.waitFor(async () => {
+        expect(await getExpiresAt(runID)).toBe(
+          baseTime.getTime() + claimTimeout * 1000,
+        );
+      });
+
+      gate.emit("heartbeat");
+
+      await vi.waitFor(async () => {
+        expect(await getExpiresAt(runID)).toBe(
+          baseTime.getTime() + extension * 1000,
+        );
+      });
     });
   });
 });
