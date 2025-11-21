@@ -16,6 +16,8 @@ needing any other services to run in addition to Postgres.
 It's an exploration of whether such a system can be built in a way that the majority
 of the complexity sits with the database and not the client SDKs.*
 
+More about it can be found [in the announcement post](https://lucumr.pocoo.org/2025/11/3/absurd-workflows/).
+
 ## What is Durable Execution?
 
 Durable execution (or durable workflows) is a way to run long-lived, reliable
