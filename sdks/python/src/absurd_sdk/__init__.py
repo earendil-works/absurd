@@ -830,7 +830,7 @@ class Absurd(_AbsurdBase):
             )
 
         if isinstance(conn_or_url, str):
-            self._conn: Connection[Any] = Connection.connect(conn_or_url)
+            self._conn: Connection[Any] = Connection.connect(conn_or_url, autocommit=True)
             self._owned_conn = True
         else:
             self._conn = conn_or_url
@@ -1050,7 +1050,7 @@ class AsyncAbsurd(_AbsurdBase):
     async def _ensure_connected(self) -> None:
         """Ensure the connection is established"""
         if self._conn is None and self._conn_string:
-            self._conn = await AsyncConnection.connect(self._conn_string)
+            self._conn = await AsyncConnection.connect(self._conn_string, autocommit=True)
 
     async def create_queue(self, queue_name: Optional[str] = None) -> None:
         """Create a queue (defaults to this client's queue)"""
