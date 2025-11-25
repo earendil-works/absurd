@@ -126,7 +126,7 @@ to get a JS-only build or use the TypeScript code right away.
 Here's what that looks like in TypeScript.
 
 ```typescript
-import { Absurd } from 'absurd';
+import { Absurd } from 'absurd-sdk';
 
 const app = new Absurd();
 
