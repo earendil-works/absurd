@@ -48,19 +48,14 @@ jobs:
 
       - name: Build UI
         working-directory: habitat
-        run: |
-          cd ui
-          npm install
-          npm run build
+        run: make build-ui
 
       - name: Build Habitat binary
         working-directory: habitat
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
-        run: |
-          mkdir -p bin
-          go build -o bin/habitat ./cmd/habitat
+        run: make build-backend
 
       - name: Create artifact name
         id: artifact
@@ -125,7 +120,7 @@ jobs:
           fi
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@a06a81a03ee405af7f2048a818ed3f03bbf83c7b # v2.5.0
         with:
           files: release/*
           draft: false
