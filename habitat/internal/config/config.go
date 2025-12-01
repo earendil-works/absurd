@@ -30,15 +30,15 @@ type Config struct {
 
 // DBConfig describes how to connect to Postgres.
 type DBConfig struct {
-	URL      string
-	Host     string
-	Port     int
-	User     string
-	Password string
-	Name     string
-	SSLMode  string
-	SSLCert  string
-	SSLKey   string
+	URL         string
+	Host        string
+	Port        int
+	User        string
+	Password    string
+	Name        string
+	SSLMode     string
+	SSLCert     string
+	SSLKey      string
 	SSLRootCert string
 }
 
@@ -50,16 +50,16 @@ func FromArgs(args []string) (Config, error) {
 	cfg := Config{
 		ListenAddress: envDefault("LISTEN", defaultListenAddress),
 		DB: DBConfig{
-			URL:      envDefault("DB_URL", defaultDBURL),
-			Host:     envDefault("DB_HOST", defaultDBHost),
-			Port:     envDefaultInt("DB_PORT", defaultDBPort),
-			User:     envDefault("DB_USER", ""),
-			Password: envDefault("DB_PASSWORD", ""),
-			Name:     envDefault("DB_NAME", defaultDBName),
-			SSLMode:  envDefault("DB_SSLMODE", defaultDBSSLMode),
-			SSLCert:  envDefault("DB_SSLCERT", defaultDBSSLCert),
-			SSLKey:  envDefault("DB_SSLKEY", defaultDBSSLKey),
-			SSLRootCert:  envDefault("DB_SSLROOTCERT", defaultDBSSLRootCert),
+			URL:         envDefault("DB_URL", defaultDBURL),
+			Host:        envDefault("DB_HOST", defaultDBHost),
+			Port:        envDefaultInt("DB_PORT", defaultDBPort),
+			User:        envDefault("DB_USER", ""),
+			Password:    envDefault("DB_PASSWORD", ""),
+			Name:        envDefault("DB_NAME", defaultDBName),
+			SSLMode:     envDefault("DB_SSLMODE", defaultDBSSLMode),
+			SSLCert:     envDefault("DB_SSLCERT", defaultDBSSLCert),
+			SSLKey:      envDefault("DB_SSLKEY", defaultDBSSLKey),
+			SSLRootCert: envDefault("DB_SSLROOTCERT", defaultDBSSLRootCert),
 		},
 	}
 
@@ -123,15 +123,15 @@ func (c DBConfig) ConnectionString() (string, error) {
 	if c.SSLMode != "" {
 		query.Set("sslmode", c.SSLMode)
 	}
-    if c.SSLCert != "" {
-        query.Set("sslcert", c.SSLCert)
-    }
-    if c.SSLKey != "" {
-        query.Set("sslkey", c.SSLKey)
-    }
-    if c.SSLRootCert != "" {
-        query.Set("sslrootcert", c.SSLRootCert)
-    }
+	if c.SSLCert != "" {
+		query.Set("sslcert", c.SSLCert)
+	}
+	if c.SSLKey != "" {
+		query.Set("sslkey", c.SSLKey)
+	}
+	if c.SSLRootCert != "" {
+		query.Set("sslrootcert", c.SSLRootCert)
+	}
 	u.RawQuery = query.Encode()
 
 	return u.String(), nil

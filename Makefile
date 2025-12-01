@@ -1,10 +1,11 @@
 .PHONY: format test test-core test-typescript test-python
 
-# Format TypeScript files only
+# Format all code
 format:
 	@cd sdks/typescript && npx prettier -w .
 	@cd habitat/ui && npx prettier -w .
 	@uvx ruff format tests
+	@gofmt -w habitat
 
 # Run all tests
 test: test-core test-typescript test-python
