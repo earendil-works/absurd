@@ -863,17 +863,17 @@ type waitStateRecord struct {
 
 // TaskSummary is the API representation for task list views
 type TaskSummary struct {
-	TaskID      string     `json:"taskId"`
-	RunID       string     `json:"runId"`
-	QueueName   string     `json:"queueName"`
-	TaskName    string     `json:"taskName"`
-	Status      string     `json:"status"`
-	Attempt     int        `json:"attempt"`
-	MaxAttempts *int       `json:"maxAttempts,omitempty"`
-	CreatedAt   time.Time  `json:"createdAt"`
-	UpdatedAt   time.Time  `json:"updatedAt"`
-	CompletedAt *time.Time `json:"completedAt,omitempty"`
-	WorkerID    *string    `json:"workerId,omitempty"`
+	TaskID      string          `json:"taskId"`
+	RunID       string          `json:"runId"`
+	QueueName   string          `json:"queueName"`
+	TaskName    string          `json:"taskName"`
+	Status      string          `json:"status"`
+	Attempt     int             `json:"attempt"`
+	MaxAttempts *int            `json:"maxAttempts,omitempty"`
+	CreatedAt   time.Time       `json:"createdAt"`
+	UpdatedAt   time.Time       `json:"updatedAt"`
+	CompletedAt *time.Time      `json:"completedAt,omitempty"`
+	WorkerID    *string         `json:"workerId,omitempty"`
 	Params      json.RawMessage `json:"params,omitempty"`
 }
 

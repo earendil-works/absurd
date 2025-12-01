@@ -25,7 +25,10 @@ function splitBySearch(text: string, search: string): HighlightPart[] {
     if (index > lastIndex) {
       parts.push({ text: text.slice(lastIndex, index), isMatch: false });
     }
-    parts.push({ text: text.slice(index, index + search.length), isMatch: true });
+    parts.push({
+      text: text.slice(index, index + search.length),
+      isMatch: true,
+    });
     lastIndex = index + search.length;
     index = lowerText.indexOf(lowerSearch, lastIndex);
   }

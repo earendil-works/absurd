@@ -89,7 +89,9 @@ function resolveSelectedOption(
 function findParamsMatch(params: any, search: string): string | null {
   console.log("[DEBUG] findParamsMatch called:", { params, search });
   if (!search || !params) {
-    console.log("[DEBUG] findParamsMatch: early return, search or params missing");
+    console.log(
+      "[DEBUG] findParamsMatch: early return, search or params missing",
+    );
     return null;
   }
   const paramsStr = JSON.stringify(params);
@@ -586,10 +588,16 @@ export default function Tasks() {
                                 <IdDisplay value={task.taskId} />
                               </td>
                               <td class="px-3 py-2 font-medium">
-                                <Highlight text={task.taskName} search={searchTerm()} />
+                                <Highlight
+                                  text={task.taskName}
+                                  search={searchTerm()}
+                                />
                               </td>
                               <td class="px-3 py-2">
-                                <Highlight text={task.queueName} search={searchTerm()} />
+                                <Highlight
+                                  text={task.queueName}
+                                  search={searchTerm()}
+                                />
                               </td>
                               <td class="px-3 py-2">
                                 <TaskStatusBadge status={task.status} />
@@ -612,7 +620,9 @@ export default function Tasks() {
                                 </span>
                               </td>
                             </tr>
-                            <Show when={findParamsMatch(task.params, searchTerm())}>
+                            <Show
+                              when={findParamsMatch(task.params, searchTerm())}
+                            >
                               {(match) => (
                                 <tr class="bg-yellow-50 dark:bg-yellow-900/20">
                                   <td colspan="8" class="px-3 py-1">
@@ -620,7 +630,10 @@ export default function Tasks() {
                                       Match in params:{" "}
                                     </span>
                                     <code class="text-xs font-mono">
-                                      <Highlight text={match()} search={searchTerm()} />
+                                      <Highlight
+                                        text={match()}
+                                        search={searchTerm()}
+                                      />
                                     </code>
                                   </td>
                                 </tr>
