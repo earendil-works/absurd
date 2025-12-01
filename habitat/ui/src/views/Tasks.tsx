@@ -21,6 +21,7 @@ import { TaskStatusBadge } from "@/components/TaskStatusBadge";
 import { IdDisplay } from "@/components/IdDisplay";
 import { AutoRefreshToggle } from "@/components/AutoRefreshToggle";
 import { TaskDetailView } from "@/components/TaskDetailView";
+import { Highlight } from "@/components/Highlight";
 import {
   TextField,
   TextFieldLabel,
@@ -85,6 +86,31 @@ function resolveSelectedOption(
   return options.find((option) => option.value === value) ?? options[0];
 }
 
+function findParamsMatch(params: any, search: string): string | null {
+  console.log("[DEBUG] findParamsMatch called:", { params, search });
+  if (!search || !params) {
+    console.log("[DEBUG] findParamsMatch: early return, search or params missing");
+    return null;
+  }
+  const paramsStr = JSON.stringify(params);
+  console.log("[DEBUG] findParamsMatch: paramsStr=", paramsStr);
+  const lowerParams = paramsStr.toLowerCase();
+  const lowerSearch = search.toLowerCase();
+  const index = lowerParams.indexOf(lowerSearch);
+  console.log("[DEBUG] findParamsMatch: index=", index);
+  if (index === -1) return null;
+
+  // Extract a snippet around the match (30 chars before and after)
+  const contextSize = 30;
+  const start = Math.max(0, index - contextSize);
+  const end = Math.min(paramsStr.length, index + search.length + contextSize);
+  let snippet = paramsStr.slice(start, end);
+  if (start > 0) snippet = "..." + snippet;
+  if (end < paramsStr.length) snippet = snippet + "...";
+  console.log("[DEBUG] findParamsMatch: returning snippet=", snippet);
+  return snippet;
+}
+
 export default function Tasks() {
   const [searchParams, setSearchParams] = useSearchParams();
 
@@ -103,6 +129,7 @@ export default function Tasks() {
   };
 
   const [searchTerm, setSearchTerm] = createSignal(getParam("search") ?? "");
+  const [searchInput, setSearchInput] = createSignal(getParam("search") ?? "");
   const [queueFilter, setQueueFilter] = createSignal<string | null>(
     normalizeNullableParam(getParam("queue")),
   );
@@ -161,6 +188,7 @@ export default function Tasks() {
     const nextSearch = getParam("search") ?? "";
     if (nextSearch !== searchTerm()) {
       setSearchTerm(nextSearch);
+      setSearchInput(nextSearch);
     }
 
     const nextQueue = normalizeNullableParam(getParam("queue"));
@@ -367,23 +395,24 @@ export default function Tasks() {
                 <TextFieldRoot>
                   <TextFieldLabel>Search</TextFieldLabel>
                   <TextField
-                    value={searchTerm()}
+                    value={searchInput()}
                     onInput={(event) => {
-                      const value = event.currentTarget.value;
-                      if (value === searchTerm()) {
-                        return;
-                      }
-
-                      setSearchTerm(value);
-                      if (page() !== 1) {
-                        setPage(1);
-                      }
-                      syncSearchParams(
-                        { search: value, page: 1 },
-                        { replace: true },
-                      );
+                      setSearchInput(event.currentTarget.value);
                     }}
-                    placeholder="Run ID, task ID, queue, task name"
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") {
+                        const value = searchInput();
+                        setSearchTerm(value);
+                        if (page() !== 1) {
+                          setPage(1);
+                        }
+                        syncSearchParams(
+                          { search: value, page: 1 },
+                          { replace: true },
+                        );
+                      }
+                    }}
+                    placeholder="Search IDs, names, queue, or params... (Enter to search)"
                   />
                 </TextFieldRoot>
                 <div class="space-y-1">
@@ -557,9 +586,11 @@ export default function Tasks() {
                                 <IdDisplay value={task.taskId} />
                               </td>
                               <td class="px-3 py-2 font-medium">
-                                {task.taskName}
+                                <Highlight text={task.taskName} search={searchTerm()} />
                               </td>
-                              <td class="px-3 py-2">{task.queueName}</td>
+                              <td class="px-3 py-2">
+                                <Highlight text={task.queueName} search={searchTerm()} />
+                              </td>
                               <td class="px-3 py-2">
                                 <TaskStatusBadge status={task.status} />
                               </td>
@@ -581,6 +612,20 @@ export default function Tasks() {
                                 </span>
                               </td>
                             </tr>
+                            <Show when={findParamsMatch(task.params, searchTerm())}>
+                              {(match) => (
+                                <tr class="bg-yellow-50 dark:bg-yellow-900/20">
+                                  <td colspan="8" class="px-3 py-1">
+                                    <span class="text-xs text-muted-foreground">
+                                      Match in params:{" "}
+                                    </span>
+                                    <code class="text-xs font-mono">
+                                      <Highlight text={match()} search={searchTerm()} />
+                                    </code>
+                                  </td>
+                                </tr>
+                              )}
+                            </Show>
                             <Show when={expandedRunId() === task.runId}>
                               <tr>
                                 <td colspan="8" class="bg-muted/20 p-0">
