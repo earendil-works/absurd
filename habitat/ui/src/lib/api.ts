@@ -81,6 +81,7 @@ export interface TaskSummary {
   updatedAt: string;
   completedAt?: string | null;
   workerId?: string;
+  params?: string;
 }
 
 export interface CheckpointState {

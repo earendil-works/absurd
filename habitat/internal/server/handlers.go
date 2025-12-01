@@ -212,7 +212,8 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 				r.created_at,
 				COALESCE(r.completed_at, r.failed_at, r.started_at, r.created_at) AS updated_at,
 				r.completed_at,
-				r.claimed_by
+				r.claimed_by,
+				t.params
 			FROM absurd.%s t
 			JOIN absurd.%s r ON r.task_id = t.task_id
 			ORDER BY r.created_at DESC
@@ -238,6 +239,7 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 				&record.UpdatedAt,
 				&record.CompletedAt,
 				&record.ClaimedBy,
+				&record.Params,
 			); err != nil {
 				log.Printf("handleTasks: failed to scan task in queue %s: %v", queueName, err)
 				rows.Close()
@@ -826,6 +828,7 @@ type taskSummaryRecord struct {
 	UpdatedAt   time.Time
 	CompletedAt sql.NullTime
 	ClaimedBy   sql.NullString
+	Params      []byte
 }
 
 type taskDetailRecord struct {
@@ -871,6 +874,7 @@ type TaskSummary struct {
 	UpdatedAt   time.Time  `json:"updatedAt"`
 	CompletedAt *time.Time `json:"completedAt,omitempty"`
 	WorkerID    *string    `json:"workerId,omitempty"`
+	Params      json.RawMessage `json:"params,omitempty"`
 }
 
 // TaskDetail is the API representation for expanded task details
@@ -997,6 +1001,7 @@ func (r taskSummaryRecord) AsAPI() TaskSummary {
 		UpdatedAt:   r.UpdatedAt,
 		CompletedAt: nullableTime(r.CompletedAt),
 		WorkerID:    nullableString(r.ClaimedBy),
+		Params:      nullableBytes(r.Params),
 	}
 }
 
@@ -1083,10 +1088,13 @@ func matchesTaskFilters(task TaskSummary, search string, status string, queue st
 
 	if search != "" {
 		searchLower := strings.ToLower(search)
+		paramsStr := string(task.Params)
+		matchInParams := strings.Contains(strings.ToLower(paramsStr), searchLower)
 		if !strings.Contains(strings.ToLower(task.TaskID), searchLower) &&
 			!strings.Contains(strings.ToLower(task.RunID), searchLower) &&
 			!strings.Contains(strings.ToLower(task.QueueName), searchLower) &&
-			!strings.Contains(strings.ToLower(task.TaskName), searchLower) {
+			!strings.Contains(strings.ToLower(task.TaskName), searchLower) &&
+			!matchInParams {
 			return false
 		}
 	}
