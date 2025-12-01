@@ -87,37 +87,7 @@ jobs:
           path: artifacts
 
       - name: Prepare release assets
-        run: |
-          mkdir -p release
-
-          # Copy habitat binaries and rename them
-          cp artifacts/habitat-linux-x86_64/habitat release/habitat-linux-x86_64
-          cp artifacts/habitat-linux-arm64/habitat release/habitat-linux-arm64
-          cp artifacts/habitat-macos-arm64/habitat release/habitat-macos-arm64
-
-          # Make binaries executable
-          chmod +x release/habitat-*
-
-          # Copy absurdctl
-          cp absurdctl release/absurdctl
-          chmod +x release/absurdctl
-
-          # Copy SQL file
-          cp sql/absurd.sql release/absurd.sql
-
-          # Extract version from tag and find migration files
-          VERSION=${GITHUB_REF#refs/tags/}
-          echo "Release version: $VERSION"
-
-          # Copy migration files for this release
-          # This includes migrations like 0.0.3-0.0.4.sql and potentially 0.0.1-0.0.4.sql
-          if ls sql/migrations/*-${VERSION}.sql 1> /dev/null 2>&1; then
-            cp sql/migrations/*-${VERSION}.sql release/
-            echo "Copied migration files:"
-            ls -la sql/migrations/*-${VERSION}.sql
-          else
-            echo "No migration files found for version $VERSION"
-          fi
+        run: ./scripts/prepare-release.sh ${GITHUB_REF#refs/tags/}
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@a06a81a03ee405af7f2048a818ed3f03bbf83c7b # v2.5.0
