@@ -169,7 +169,7 @@ func nullableInt64(v sql.NullInt64) *int64 {
 }
 
 func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second)
 	defer cancel()
 
 	queryValues := r.URL.Query()

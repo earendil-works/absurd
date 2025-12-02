@@ -7,6 +7,7 @@ import {
   createEffect,
   onCleanup,
 } from "solid-js";
+import { createStore, reconcile } from "solid-js/store";
 import { useSearchParams, type NavigateOptions } from "@solidjs/router";
 import {
   Card,
@@ -16,7 +17,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { type TaskDetail, fetchTasks, fetchTask } from "@/lib/api";
+import { type TaskDetail, type TaskSummary, fetchTasks, fetchTask } from "@/lib/api";
 import { TaskStatusBadge } from "@/components/TaskStatusBadge";
 import { IdDisplay } from "@/components/IdDisplay";
 import { AutoRefreshToggle } from "@/components/AutoRefreshToggle";
@@ -234,7 +235,16 @@ export default function Tasks() {
     Record<string, TaskDetail>
   >({});
 
-  const allTasks = createMemo(() => taskList()?.items ?? []);
+  // Use a store with reconcile for fine-grained updates - only changed items re-render
+  const [tasks, setTasks] = createStore<{ items: TaskSummary[] }>({ items: [] });
+
+  // Reconcile tasks when taskList changes - this diffs by runId
+  createEffect(() => {
+    const newItems = taskList()?.items ?? [];
+    setTasks("items", reconcile(newItems, { key: "runId" }));
+  });
+
+  const allTasks = () => tasks.items;
   const totalTasks = createMemo(() => taskList()?.total ?? 0);
   const totalPages = createMemo(() => {
     const total = totalTasks();
