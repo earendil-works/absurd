@@ -77,7 +77,8 @@ begin
         attempts integer not null default 0,
         last_attempt_run uuid,
         completed_payload jsonb,
-        cancelled_at timestamptz
+        cancelled_at timestamptz,
+        idempotency_key text unique
      ) with (fillfactor=70)',
     't_' || p_queue_name
   );
@@ -220,6 +221,11 @@ as $$
 $$;
 
 -- Spawns a given task in a queue.
+--
+-- If an idempotency_key is provided in p_options, the function will check if a task
+-- with that key already exists. If so, it returns the existing task_id with run_id
+-- and attempt set to NULL to signal "already exists". This is race-safe via
+-- INSERT ... ON CONFLICT DO NOTHING.
 create function absurd.spawn_task (
   p_queue_name text,
   p_task_name text,
@@ -229,7 +235,8 @@ create function absurd.spawn_task (
   returns table (
     task_id uuid,
     run_id uuid,
-    attempt integer
+    attempt integer,
+    created boolean
   )
   language plpgsql
 as $$
@@ -241,6 +248,9 @@ declare
   v_retry_strategy jsonb;
   v_max_attempts integer;
   v_cancellation jsonb;
+  v_idempotency_key text;
+  v_existing_task_id uuid;
+  v_row_count integer;
   v_now timestamptz := absurd.current_time();
   v_params jsonb := coalesce(p_params, 'null'::jsonb);
 begin
@@ -258,14 +268,42 @@ begin
       end if;
     end if;
     v_cancellation := p_options->'cancellation';
+    v_idempotency_key := p_options->>'idempotency_key';
   end if;
 
-  execute format(
-    'insert into absurd.%I (task_id, task_name, params, headers, retry_strategy, max_attempts, cancellation, enqueue_at, first_started_at, state, attempts, last_attempt_run, completed_payload, cancelled_at)
-     values ($1, $2, $3, $4, $5, $6, $7, $8, null, ''pending'', $9, $10, null, null)',
-    't_' || p_queue_name
-  )
-  using v_task_id, p_task_name, v_params, v_headers, v_retry_strategy, v_max_attempts, v_cancellation, v_now, v_attempt, v_run_id;
+  -- If idempotency_key is provided, use INSERT ... ON CONFLICT DO NOTHING
+  if v_idempotency_key is not null then
+    execute format(
+      'insert into absurd.%I (task_id, task_name, params, headers, retry_strategy, max_attempts, cancellation, enqueue_at, first_started_at, state, attempts, last_attempt_run, completed_payload, cancelled_at, idempotency_key)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, null, ''pending'', $9, $10, null, null, $11)
+       on conflict (idempotency_key) do nothing',
+      't_' || p_queue_name
+    )
+    using v_task_id, p_task_name, v_params, v_headers, v_retry_strategy, v_max_attempts, v_cancellation, v_now, v_attempt, v_run_id, v_idempotency_key;
+
+    get diagnostics v_row_count = row_count;
+
+    if v_row_count = 0 then
+      -- Task already exists, look up existing task info
+      execute format(
+        'select task_id, last_attempt_run, attempts from absurd.%I where idempotency_key = $1',
+        't_' || p_queue_name
+      )
+      into v_existing_task_id, v_run_id, v_attempt
+      using v_idempotency_key;
+
+      return query select v_existing_task_id, v_run_id, v_attempt, false;
+      return;
+    end if;
+  else
+    -- No idempotency key, insert normally
+    execute format(
+      'insert into absurd.%I (task_id, task_name, params, headers, retry_strategy, max_attempts, cancellation, enqueue_at, first_started_at, state, attempts, last_attempt_run, completed_payload, cancelled_at, idempotency_key)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, null, ''pending'', $9, $10, null, null, null)',
+      't_' || p_queue_name
+    )
+    using v_task_id, p_task_name, v_params, v_headers, v_retry_strategy, v_max_attempts, v_cancellation, v_now, v_attempt, v_run_id;
+  end if;
 
   execute format(
     'insert into absurd.%I (run_id, task_id, attempt, state, available_at, wake_event, event_payload, result, failure_reason)
@@ -274,7 +312,7 @@ begin
   )
   using v_run_id, v_task_id, v_attempt, v_now;
 
-  return query select v_task_id, v_run_id, v_attempt;
+  return query select v_task_id, v_run_id, v_attempt, true;
 end;
 $$;
 
