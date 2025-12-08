@@ -4,6 +4,8 @@ This contains the changes between releases.
 
 # Unreleased
 
+# 0.0.6
+
 * Added Python SDK.  #26
 * Added idempotent task spawning support via `idempotencyKey` parameter.  #58
 * Added parameter search/filtering in Habitat task list.  #54
