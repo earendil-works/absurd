@@ -75,6 +75,7 @@ class SpawnOptions(TypedDict, total=False):
     headers: JsonObject
     queue: str
     cancellation: CancellationPolicy
+    idempotency_key: str
 
 
 class ClaimedTask(TypedDict):
@@ -197,6 +198,7 @@ def _normalize_spawn_options(
     retry_strategy: Optional[RetryStrategy] = None,
     headers: Optional[JsonObject] = None,
     cancellation: Optional[CancellationPolicy] = None,
+    idempotency_key: Optional[str] = None,
 ) -> JsonObject:
     normalized: JsonObject = {}
 
@@ -210,6 +212,9 @@ def _normalize_spawn_options(
     cancel = _normalize_cancellation(cancellation)
     if cancel:
         normalized["cancellation"] = cancel
+
+    if idempotency_key is not None:
+        normalized["idempotency_key"] = idempotency_key
 
     return normalized
 
@@ -771,6 +776,7 @@ class _AbsurdBase:
         headers: Optional[JsonObject] = None,
         queue: Optional[str] = None,
         cancellation: Optional[CancellationPolicy] = None,
+        idempotency_key: Optional[str] = None,
     ) -> tuple[str, JsonObject]:
         """Prepare spawn options for a task"""
         registration = self._registry.get(task_name)
@@ -810,6 +816,7 @@ class _AbsurdBase:
             retry_strategy=retry_strategy,
             headers=headers,
             cancellation=effective_cancellation,
+            idempotency_key=idempotency_key,
         )
 
         return actual_queue, options
@@ -864,6 +871,7 @@ class Absurd(_AbsurdBase):
         headers: Optional[JsonObject] = None,
         queue: Optional[str] = None,
         cancellation: Optional[CancellationPolicy] = None,
+        idempotency_key: Optional[str] = None,
     ) -> SpawnResult:
         """Spawn a task execution by enqueueing it for processing"""
         actual_queue, options = self._prepare_spawn(
@@ -873,6 +881,7 @@ class Absurd(_AbsurdBase):
             headers=headers,
             queue=queue,
             cancellation=cancellation,
+            idempotency_key=idempotency_key,
         )
         cursor = self._conn.cursor(row_factory=dict_row)
         cursor.execute(
@@ -1086,6 +1095,7 @@ class AsyncAbsurd(_AbsurdBase):
         headers: Optional[JsonObject] = None,
         queue: Optional[str] = None,
         cancellation: Optional[CancellationPolicy] = None,
+        idempotency_key: Optional[str] = None,
     ) -> SpawnResult:
         """Spawn a task execution by enqueueing it for processing"""
         await self._ensure_connected()
@@ -1097,6 +1107,7 @@ class AsyncAbsurd(_AbsurdBase):
             headers=headers,
             queue=queue,
             cancellation=cancellation,
+            idempotency_key=idempotency_key,
         )
         cursor = self._conn.cursor(row_factory=dict_row)
         await cursor.execute(
