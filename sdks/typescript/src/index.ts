@@ -33,6 +33,7 @@ export interface SpawnOptions {
   headers?: JsonObject;
   queue?: string;
   cancellation?: CancellationPolicy;
+  idempotencyKey?: string;
 }
 
 export interface ClaimedTask {
@@ -70,10 +71,11 @@ interface CheckpointRow {
   updated_at: Date;
 }
 
-interface SpawnResult {
+export interface SpawnResult {
   taskID: string;
   runID: string;
   attempt: number;
+  created: boolean;
 }
 
 export type TaskHandler<P = any, R = any> = (
@@ -564,8 +566,9 @@ export class Absurd {
       task_id: string;
       run_id: string;
       attempt: number;
+      created: boolean;
     }>(
-      `SELECT task_id, run_id, attempt
+      `SELECT task_id, run_id, attempt, created
        FROM absurd.spawn_task($1, $2, $3, $4)`,
       [
         queue,
@@ -584,6 +587,7 @@ export class Absurd {
       taskID: row.task_id,
       runID: row.run_id,
       attempt: row.attempt,
+      created: row.created,
     };
   }
 
@@ -917,6 +921,9 @@ function normalizeSpawnOptions(options: SpawnOptions): JsonObject {
   const cancellation = normalizeCancellation(options.cancellation);
   if (cancellation) {
     normalized.cancellation = cancellation;
+  }
+  if (options.idempotencyKey !== undefined) {
+    normalized.idempotency_key = options.idempotencyKey;
   }
   return normalized;
 }
