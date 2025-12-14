@@ -74,10 +74,6 @@ Official SDKs:
 * [TypeScript/JavaScript](sdks/typescript) — `npm install absurd-sdk`
 * [Python](sdks/python) — `pip install absurd_sdk` (sync and async APIs)
 
-Community SDK:
-
-* [python-absurd-client](https://github.com/rodmena-limited/python-absurd-client) — `pip install absurd` (alternative Python client by [@ourway](https://github.com/ourway))
-
 **Design goal:** SDKs should be under 1000 lines of code.  All durable execution
 complexity lives in Postgres stored procedures, making SDKs lightweight and easy
 to port.  A Go SDK is [under discussion](https://github.com/earendil-works/absurd/issues/49).
@@ -121,7 +117,7 @@ absurdctl init -d database-name
 absurdctl create-queue -d database-name default
 ```
 
-Pre-built binaries for `absurdctl` and `habitat` are available in the
+`absurdctl` (a Python script) and pre-built `habitat` binaries are available in the
 [releases](https://github.com/earendil-works/absurd/releases).
 
 <div style="text-align: center" align="center">
@@ -286,7 +282,7 @@ You might have to tweak the outputs afterwards to work best for your setup.
 
 ## Getting Started
 
-Requirements: Node.js or Python, and Postgres.
+Requirements: Python 3 (for `absurdctl`), Postgres, and Node.js or Python for your workers.
 
 **1. Set up the database:**
 
@@ -300,8 +296,11 @@ absurdctl create-queue default
 **2. Install an SDK and write a task:**
 
 ```bash
-npm install absurd-sdk pg
+npm install absurd-sdk pg    # TypeScript/JavaScript
+pip install absurd_sdk       # Python
 ```
+
+TypeScript example:
 
 ```typescript
 import { Absurd } from 'absurd-sdk';
@@ -326,8 +325,8 @@ absurdctl spawn-task --queue default hello-world -P name=World
 node --experimental-strip-types hello.ts
 ```
 
-See the [TypeScript examples](sdks/typescript/examples) for more patterns including
-event-driven workflows and [agent loops](sdks/typescript/examples/agent-loop).
+See the [TypeScript examples](sdks/typescript/examples) and [Python SDK](sdks/python)
+for more patterns including event-driven workflows and [agent loops](sdks/typescript/examples/agent-loop).
 
 ## AI Use Disclaimer
 
