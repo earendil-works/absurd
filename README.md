@@ -69,10 +69,18 @@ might want to look at if you think you need more:
 
 ## Client SDKs
 
-Currently SDKs exist for the following languages:
+Official SDKs:
 
-* [TypeScript](sdks/typescript) (and JavaScript)
-* [Python](sdks/python) (unpublished)
+* [TypeScript/JavaScript](sdks/typescript) — `npm install absurd-sdk`
+* [Python](sdks/python) — `pip install absurd_sdk` (sync and async APIs)
+
+Community SDK:
+
+* [python-absurd-client](https://github.com/rodmena-limited/python-absurd-client) — `pip install absurd` (alternative Python client by [@ourway](https://github.com/ourway))
+
+**Design goal:** SDKs should be under 1000 lines of code.  All durable execution
+complexity lives in Postgres stored procedures, making SDKs lightweight and easy
+to port.  A Go SDK is [under discussion](https://github.com/earendil-works/absurd/issues/49).
 
 ## Push vs Pull
 
@@ -113,9 +121,8 @@ absurdctl init -d database-name
 absurdctl create-queue -d database-name default
 ```
 
-Right now, there is only a TypeScript SDK, which isn't published yet, so you
-need to use the SDK from the repository.  You can run `npm run build`
-to get a JS-only build or use the TypeScript code right away.
+Pre-built binaries for `absurdctl` and `habitat` are available in the
+[releases](https://github.com/earendil-works/absurd/releases).
 
 <div style="text-align: center" align="center">
   <img src="habitat/screenshot.png" width="550" alt="Screenshot of habitat">
@@ -185,14 +192,31 @@ app.spawn('order-fulfillment', {
 });
 ```
 
-## Idempotency Keys
+## Idempotency
 
-Because steps have their return values cached, for all intents and purposes
-they simulate "exactly-once" semantics.  However, all the code outside of steps
-will run multiple times.  Sometimes you want to integrate into systems that
-themselves have some sort of idempotency mechanism (like the `idempotency-key`
-HTTP header).  In that case, it's recommended to use `taskID` from the
-context to derive one:
+### Idempotent Task Spawning
+
+When using cron systems or event-driven architectures, the same task may be
+spawned multiple times.  Use an `idempotencyKey` to ensure a task is only
+created once:
+
+```typescript
+const result = await app.spawn('daily-report', params, {
+  idempotencyKey: 'daily-report:2025-01-15'
+});
+
+if (result.created) {
+  console.log('New task spawned:', result.taskId);
+} else {
+  console.log('Task already exists:', result.taskId);
+}
+```
+
+### Idempotency Keys for External APIs
+
+Steps have their return values cached, simulating "exactly-once" semantics.
+However, code outside of steps may run multiple times.  For external APIs that
+support idempotency, derive a key from `taskID`:
 
 ```typescript
 const payment = await ctx.step('process-payment', async () => {
@@ -262,69 +286,48 @@ You might have to tweak the outputs afterwards to work best for your setup.
 
 ## Getting Started
 
-To get the Absurd running locally, you'll need:
+Requirements: Node.js or Python, and Postgres.
 
-1. nodejs & postgres - to spawn and process tasks.
-2. go-lang toolchain - to build and run habitat
-3. python - to use `absurdctl`
-
-First install create a new postgres database and install the absurd schema:
+**1. Set up the database:**
 
 ```bash
-export PGDATABASE="postgres://apps:sekrets@localhost:5432"
-./absurdctl init
-./absurdctl create-queue reports
+# Download absurdctl from https://github.com/earendil-works/absurd/releases
+export PGDATABASE="postgres://user:pass@localhost:5432/mydb"
+absurdctl init
+absurdctl create-queue default
 ```
-This will create the a schema for `absurd` and install the initial tables and stored procedures,
-and then create our first queue. Queues give you a way to create logical groups of tasks, and scale
-workers. Next, we can create a simple task, schedule it and then run it.
+
+**2. Install an SDK and write a task:**
+
+```bash
+npm install absurd-sdk pg
+```
 
 ```typescript
-import { Absurd } from '../sdks/typescript/dist/index.js';
+import { Absurd } from 'absurd-sdk';
 
-const app = new Absurd({
-  db: process.env.PGDATABASE,
-  queueName: 'reports',
-});
+const app = new Absurd({ db: process.env.PGDATABASE });
 
-// A task represents a series of operations.  It can be decomposed into
-// steps, which act as checkpoints.  Once a step has been passed
-// successfully, the return value is retained and it won't execute again.
-// If it fails, the entire task is retried.  Code that runs outside of
-// steps will potentially be executed multiple times.
 app.registerTask({ name: 'hello-world' }, async (params, ctx) => {
-  console.log('Hello');
-  let result = await ctx.step('step-1', async () => {
-    console.log('World');
+  const result = await ctx.step('greet', async () => {
+    console.log(`Hello, ${params.name}!`);
     return 'done';
   });
-  console.log('step-1 result:', result);
-  result = await ctx.step('step-2', async () => {
-    console.log('From Absurd');
-    return 'done too';
-  });
-  console.log('step-2 result:', result);
+  return result;
 });
 
-// Start a worker that pulls tasks from Postgres
 await app.startWorker();
 ```
-Save this file into `examples/hello.ts`. Next, we can spawn our task with:
+
+**3. Spawn a task and run the worker:**
 
 ```bash
-./absurdctl spawn-task --queue reports hello-world -P name=Lily
+absurdctl spawn-task --queue default hello-world -P name=World
+node --experimental-strip-types hello.ts
 ```
 
-With a task enqueued, we can run our tasks by starting our worker:
-
-```bash
-pushd sdks/typescript
-npm install
-npm run build
-popd
-
-node --experimental-strip-types examples/hello.ts
-```
+See the [TypeScript examples](sdks/typescript/examples) for more patterns including
+event-driven workflows and [agent loops](sdks/typescript/examples/agent-loop).
 
 ## AI Use Disclaimer
 
