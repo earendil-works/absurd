@@ -155,9 +155,9 @@ jobs:
         working-directory: sdks/typescript
         run: npm run build
 
-      - name: Test package (dry-run)
+      - name: Test package
         working-directory: sdks/typescript
-        run: npm publish --dry-run
+        run: npm pack
 
   publish-npm:
     name: Publish to npm
