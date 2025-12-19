@@ -115,3 +115,49 @@ def test_await_event_timeout_does_not_recreate_wait(client):
         sql.SQL("select count(*) from absurd.{t}").format(t=wtbl)
     ).fetchone()[0]
     assert wait_count_final == 0
+
+
+def test_event_emitted_before_await(client):
+    """
+    Verify that if an event is emitted BEFORE await_event is called,
+    the task immediately receives the event without suspending.
+    This tests one side of the race condition fix.
+    """
+    queue = "emit-first"
+    client.create_queue(queue)
+
+    now = datetime(2024, 6, 1, 10, 0, tzinfo=timezone.utc)
+    client.set_fake_now(now)
+
+    # Emit event BEFORE spawning/awaiting
+    event_name = "early-bird"
+    payload = {"data": "already-here"}
+    client.emit_event(queue, event_name, payload)
+
+    # Now spawn a task that will await this event
+    spawn = client.spawn_task(queue, "waiter", {"step": 1})
+    claim = client.claim_tasks(queue)[0]
+
+    # await_event should find the event immediately and NOT suspend
+    response = client.await_event(
+        queue,
+        spawn.task_id,
+        claim["run_id"],
+        step_name="wait",
+        event_name=event_name,
+        timeout_seconds=None,
+    )
+
+    # Should NOT suspend - event already exists
+    assert response["should_suspend"] is False
+    assert response["payload"] == payload
+
+    # Run should still be running (not sleeping)
+    run = client.get_run(queue, claim["run_id"])
+    assert run is not None
+    assert run["state"] == "running"
+
+    # Checkpoint should exist with the payload
+    checkpoint = client.get_checkpoint(queue, spawn.task_id, "wait")
+    assert checkpoint is not None
+    assert checkpoint["state"] == payload

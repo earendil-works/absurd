@@ -918,6 +918,19 @@ begin
 end;
 $$;
 
+-- Acquires an advisory lock for the given queue and event name combination.
+-- This prevents race conditions between await_event and emit_event operations.
+-- The lock is transaction-scoped and automatically released on commit/rollback.
+create function absurd.lock_event (
+  p_queue_name text,
+  p_event_name text
+)
+  returns void
+  language sql
+as $$
+  select pg_advisory_xact_lock(hashtext(p_queue_name), hashtext(p_event_name));
+$$;
+
 create function absurd.await_event (
   p_queue_name text,
   p_task_id uuid,
@@ -956,6 +969,9 @@ begin
   end if;
 
   v_available_at := coalesce(v_timeout_at, 'infinity'::timestamptz);
+
+  -- Acquire advisory lock to prevent race with emit_event
+  perform absurd.lock_event(p_queue_name, p_event_name);
 
   execute format(
     'select state
@@ -1097,6 +1113,9 @@ begin
   if p_event_name is null or length(trim(p_event_name)) = 0 then
     raise exception 'event_name must be provided';
   end if;
+
+  -- Acquire advisory lock to prevent race with await_event
+  perform absurd.lock_event(p_queue_name, p_event_name);
 
   execute format(
     'insert into absurd.%I (event_name, payload, emitted_at)
