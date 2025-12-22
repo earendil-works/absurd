@@ -972,6 +972,29 @@ begin
     return;
   end if;
 
+  -- Ensure a row exists for this event so we can take a row-level lock.
+  --
+  -- We use payload IS NULL as the sentinel for "not emitted yet".  emit_event
+  -- always writes a non-NULL payload (at minimum JSON null).
+  --
+  -- Lock ordering is important to avoid deadlocks: await_event locks the event
+  -- row first (FOR SHARE) and then the run row (FOR UPDATE).  emit_event
+  -- naturally locks the event row via its UPSERT before touching waits/runs.
+  execute format(
+    'insert into absurd.%I (event_name, payload, emitted_at)
+     values ($1, null, ''epoch''::timestamptz)
+     on conflict (event_name) do nothing',
+    'e_' || p_queue_name
+  ) using p_event_name;
+
+  execute format(
+    'select 1
+       from absurd.%I
+      where event_name = $1
+      for share',
+    'e_' || p_queue_name
+  ) using p_event_name;
+
   execute format(
     'select r.state, r.event_payload, r.wake_event, t.state
        from absurd.%I r

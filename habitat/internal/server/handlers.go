@@ -430,6 +430,8 @@ func (s *Server) handleTaskDetail(w http.ResponseWriter, r *http.Request) {
 			e.emitted_at
 		FROM absurd.%[1]s r
 		LEFT JOIN absurd.%[2]s w ON w.run_id = r.run_id
+		-- XXX: e_<queue> may include "gate" rows (payload NULL) created by await_event() to synchronize
+		-- with emit_event(); Habitat currently treats all e_<queue> rows as emitted events.
 		LEFT JOIN absurd.%[3]s e ON e.event_name = r.wake_event
 		WHERE r.run_id = $1 AND r.state = 'sleeping'
 		ORDER BY w.created_at DESC
@@ -668,6 +670,8 @@ func (s *Server) fetchQueueEvents(ctx context.Context, queueName string, limit i
 			payload,
 			emitted_at,
 			emitted_at as created_at
+		-- XXX: e_<queue> may include "gate" rows (payload NULL) created by await_event() to synchronize
+		-- with emit_event(); Habitat currently treats all e_<queue> rows as emitted events.
 		FROM absurd.%s
 		%s
 		ORDER BY emitted_at DESC
