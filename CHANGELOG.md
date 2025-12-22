@@ -4,6 +4,9 @@ This contains the changes between releases.
 
 # Unreleased
 
+* Added hooks support to the TypeScript SDK.  #62
+* Fixed race condition in event handling that could cause lost wakeups.  #61
+
 # 0.0.6
 
 * Added Python SDK.  #26
