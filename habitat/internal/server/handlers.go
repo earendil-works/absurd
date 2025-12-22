@@ -415,27 +415,25 @@ func (s *Server) handleTaskDetail(w http.ResponseWriter, r *http.Request) {
 	}
 
 	waitQuery := fmt.Sprintf(`
-		SELECT
-			CASE
-				WHEN r.wake_event IS NOT NULL THEN 'event'
+			SELECT
+				CASE
+					WHEN r.wake_event IS NOT NULL THEN 'event'
 				WHEN r.available_at > NOW() THEN 'timer'
 				ELSE 'none'
 			END AS wait_type,
 			r.available_at,
 			r.wake_event,
 			w.step_name,
-			NULL::jsonb AS payload,
-			r.event_payload,
-			w.created_at,
-			e.emitted_at
-		FROM absurd.%[1]s r
-		LEFT JOIN absurd.%[2]s w ON w.run_id = r.run_id
-		-- XXX: e_<queue> may include "gate" rows (payload NULL) created by await_event() to synchronize
-		-- with emit_event(); Habitat currently treats all e_<queue> rows as emitted events.
-		LEFT JOIN absurd.%[3]s e ON e.event_name = r.wake_event
-		WHERE r.run_id = $1 AND r.state = 'sleeping'
-		ORDER BY w.created_at DESC
-	`, rtable, wtable, etable)
+				NULL::jsonb AS payload,
+				r.event_payload,
+				w.created_at,
+				e.emitted_at
+			FROM absurd.%[1]s r
+			LEFT JOIN absurd.%[2]s w ON w.run_id = r.run_id
+			LEFT JOIN absurd.%[3]s e ON e.event_name = r.wake_event AND e.payload IS NOT NULL
+			WHERE r.run_id = $1 AND r.state = 'sleeping'
+			ORDER BY w.created_at DESC
+		`, rtable, wtable, etable)
 
 	waitRows, err := s.db.QueryContext(ctx, waitQuery, runID)
 	if err == nil {
@@ -648,7 +646,7 @@ func (s *Server) fetchQueueEvents(ctx context.Context, queueName string, limit i
 
 	var (
 		params  []any
-		clauses []string
+		clauses = []string{"payload IS NOT NULL"}
 	)
 
 	if eventName != "" {
@@ -665,18 +663,16 @@ func (s *Server) fetchQueueEvents(ctx context.Context, queueName string, limit i
 	}
 
 	query := fmt.Sprintf(`
-		SELECT
-			event_name,
-			payload,
-			emitted_at,
-			emitted_at as created_at
-		-- XXX: e_<queue> may include "gate" rows (payload NULL) created by await_event() to synchronize
-		-- with emit_event(); Habitat currently treats all e_<queue> rows as emitted events.
-		FROM absurd.%s
-		%s
-		ORDER BY emitted_at DESC
-		LIMIT $%d
-	`, etable, whereClause, limitPos)
+			SELECT
+				event_name,
+				payload,
+				emitted_at,
+				emitted_at as created_at
+			FROM absurd.%s
+			%s
+			ORDER BY emitted_at DESC
+			LIMIT $%d
+		`, etable, whereClause, limitPos)
 
 	rows, err := s.db.QueryContext(ctx, query, params...)
 	if err != nil {

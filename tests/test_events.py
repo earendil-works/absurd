@@ -283,7 +283,9 @@ def test_await_emit_event_race_does_not_lose_wakeup(db_dsn):
             set_application_name(check_conn, "absurd-check")
 
             state = check_conn.execute(
-                sql.SQL("select state from absurd.{r} where run_id = %s").format(r=rtbl),
+                sql.SQL("select state from absurd.{r} where run_id = %s").format(
+                    r=rtbl
+                ),
                 (run_id,),
             ).fetchone()[0]
             assert state == "pending"
