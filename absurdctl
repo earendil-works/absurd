@@ -1308,7 +1308,7 @@ def cmd_dump_task(args):
                 COALESCE(w.created_at, r.started_at) as updated_at
             FROM absurd.r_{target_queue} r
             LEFT JOIN absurd.w_{target_queue} w ON w.run_id = r.run_id
-            LEFT JOIN absurd.e_{target_queue} e ON e.event_name = r.wake_event
+            LEFT JOIN absurd.e_{target_queue} e ON e.event_name = r.wake_event AND e.payload IS NOT NULL
             WHERE r.run_id = '{run['run_id']}' AND r.state = 'sleeping'
         """
 
