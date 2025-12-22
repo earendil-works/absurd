@@ -17,7 +17,12 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { type TaskDetail, type TaskSummary, fetchTasks, fetchTask } from "@/lib/api";
+import {
+  type TaskDetail,
+  type TaskSummary,
+  fetchTasks,
+  fetchTask,
+} from "@/lib/api";
 import { TaskStatusBadge } from "@/components/TaskStatusBadge";
 import { IdDisplay } from "@/components/IdDisplay";
 import { AutoRefreshToggle } from "@/components/AutoRefreshToggle";
@@ -236,7 +241,9 @@ export default function Tasks() {
   >({});
 
   // Use a store with reconcile for fine-grained updates - only changed items re-render
-  const [tasks, setTasks] = createStore<{ items: TaskSummary[] }>({ items: [] });
+  const [tasks, setTasks] = createStore<{ items: TaskSummary[] }>({
+    items: [],
+  });
 
   // Reconcile tasks when taskList changes - this diffs by runId
   createEffect(() => {

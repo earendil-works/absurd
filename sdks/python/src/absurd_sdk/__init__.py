@@ -4,6 +4,7 @@ Absurd SDK for Python
 
 from __future__ import annotations
 
+import contextvars
 import json
 import os
 import socket
@@ -17,6 +18,7 @@ from typing import (
     Dict,
     List,
     Literal,
+    Mapping,
     Optional,
     TypedDict,
     TypeVar,
@@ -40,7 +42,24 @@ __all__ = [
     "CancellationPolicy",
     "SpawnOptions",
     "ClaimedTask",
+    "AbsurdHooks",
+    "get_current_context",
 ]
+
+
+# Context variable for accessing the current task context
+_current_task_context: contextvars.ContextVar[
+    Optional[Union["TaskContext", "AsyncTaskContext"]]
+] = contextvars.ContextVar("current_task_context", default=None)
+
+
+def get_current_context() -> Optional[Union["TaskContext", "AsyncTaskContext"]]:
+    """Get the current task context if running inside a task handler.
+
+    Returns None if called outside of a task execution.
+    This works with both sync and async task handlers.
+    """
+    return _current_task_context.get()
 
 JsonValue = Union[
     str, int, float, bool, None, List["JsonValue"], Dict[str, "JsonValue"]
@@ -99,6 +118,55 @@ class SpawnResult(TypedDict):
     task_id: str
     run_id: str
     attempt: int
+
+
+# Type aliases for hook callbacks
+BeforeSpawnHook = Callable[[str, JsonValue, SpawnOptions], SpawnOptions]
+AsyncBeforeSpawnHook = Callable[[str, JsonValue, SpawnOptions], Awaitable[SpawnOptions]]
+WrapTaskExecutionHook = Callable[
+    [Union["TaskContext", "AsyncTaskContext"], Callable[[], Any]], Any
+]
+AsyncWrapTaskExecutionHook = Callable[
+    [Union["TaskContext", "AsyncTaskContext"], Callable[[], Awaitable[Any]]],
+    Awaitable[Any],
+]
+
+
+class AbsurdHooks(TypedDict, total=False):
+    """Hooks for customizing Absurd behavior.
+
+    These hooks enable integration with tracing, logging, and context propagation
+    systems like OpenTelemetry or custom correlation ID tracking.
+    """
+
+    before_spawn: Union[BeforeSpawnHook, AsyncBeforeSpawnHook]
+    """Called before spawning a task. Can modify spawn options (including headers).
+
+    Use this to inject trace IDs, correlation IDs, or other context from
+    contextvars into the task headers.
+
+    Args:
+        task_name: Name of the task being spawned
+        params: Parameters being passed to the task
+        options: Current spawn options (may be modified and returned)
+
+    Returns:
+        Modified spawn options
+    """
+
+    wrap_task_execution: Union[WrapTaskExecutionHook, AsyncWrapTaskExecutionHook]
+    """Wraps task execution. Must call and return the result of execute().
+
+    Use this to restore context (e.g., into contextvars) before the task handler
+    runs, ensuring all code within the task has access to it.
+
+    Args:
+        ctx: The task context
+        execute: Function to call to execute the task handler
+
+    Returns:
+        Result of calling execute()
+    """
 
 
 TaskHandler = Callable[[Any, "TaskContext"], Any]
@@ -323,6 +391,11 @@ class TaskContext:
 
     def __init__(self):
         raise TypeError("Cannot create TaskContext instances")
+
+    @property
+    def headers(self) -> Mapping[str, JsonValue]:
+        """Returns all headers attached to this task."""
+        return self._task.get("headers") or {}
 
     def step(self, name: str, fn: Callable[[], R]) -> R:
         """Execute an idempotent step identified by name"""
@@ -553,6 +626,11 @@ class AsyncTaskContext:
     def __init__(self):
         raise TypeError("Cannot create AsyncTaskContext instances")
 
+    @property
+    def headers(self) -> Mapping[str, JsonValue]:
+        """Returns all headers attached to this task."""
+        return self._task.get("headers") or {}
+
     async def step(self, name: str, fn: Callable[[], Awaitable[R]]) -> R:
         """Execute an idempotent step identified by name"""
         checkpoint_name = self._get_checkpoint_name(name)
@@ -734,10 +812,14 @@ class _AbsurdBase:
     """Base class for Absurd clients"""
 
     def __init__(
-        self, queue_name: str = "default", default_max_attempts: int = 5
+        self,
+        queue_name: str = "default",
+        default_max_attempts: int = 5,
+        hooks: Optional[AbsurdHooks] = None,
     ) -> None:
         self._queue_name = queue_name
         self._default_max_attempts = default_max_attempts
+        self._hooks: AbsurdHooks = hooks or {}
         self._registry: Dict[str, Dict[str, Any]] = {}
         self._worker_running = False
 
@@ -830,6 +912,7 @@ class Absurd(_AbsurdBase):
         conn_or_url: Optional[Union[Connection[Any], str]] = None,
         queue_name: str = "default",
         default_max_attempts: int = 5,
+        hooks: Optional[AbsurdHooks] = None,
     ) -> None:
         if conn_or_url is None:
             conn_or_url = os.environ.get(
@@ -842,7 +925,7 @@ class Absurd(_AbsurdBase):
         else:
             self._conn = conn_or_url
             self._owned_conn = False
-        super().__init__(queue_name, default_max_attempts)
+        super().__init__(queue_name, default_max_attempts, hooks)
 
     def create_queue(self, queue_name: Optional[str] = None) -> None:
         """Create a queue (defaults to this client's queue)"""
@@ -874,14 +957,28 @@ class Absurd(_AbsurdBase):
         idempotency_key: Optional[str] = None,
     ) -> SpawnResult:
         """Spawn a task execution by enqueueing it for processing"""
+        # Build SpawnOptions and apply before_spawn hook if configured
+        spawn_options: SpawnOptions = {
+            "max_attempts": max_attempts,
+            "retry_strategy": retry_strategy,
+            "headers": headers,
+            "queue": queue,
+            "cancellation": cancellation,
+            "idempotency_key": idempotency_key,
+        }
+
+        before_spawn = self._hooks.get("before_spawn")
+        if before_spawn is not None:
+            spawn_options = before_spawn(task_name, params, spawn_options)
+
         actual_queue, options = self._prepare_spawn(
             task_name,
-            max_attempts=max_attempts,
-            retry_strategy=retry_strategy,
-            headers=headers,
-            queue=queue,
-            cancellation=cancellation,
-            idempotency_key=idempotency_key,
+            max_attempts=spawn_options.get("max_attempts"),
+            retry_strategy=spawn_options.get("retry_strategy"),
+            headers=spawn_options.get("headers"),
+            queue=spawn_options.get("queue"),
+            cancellation=spawn_options.get("cancellation"),
+            idempotency_key=spawn_options.get("idempotency_key"),
         )
         cursor = self._conn.cursor(row_factory=dict_row)
         cursor.execute(
@@ -1023,13 +1120,23 @@ class Absurd(_AbsurdBase):
             task["task_id"], self._conn, queue_name, task, claim_timeout
         )
 
+        # Set contextvar and execute with optional wrap hook
+        token = _current_task_context.set(ctx)
         try:
-            result = registration["handler"](task["params"], ctx)
+            wrap_hook = self._hooks.get("wrap_task_execution")
+            if wrap_hook is not None:
+                result = wrap_hook(
+                    ctx, lambda: registration["handler"](task["params"], ctx)
+                )
+            else:
+                result = registration["handler"](task["params"], ctx)
             _complete_task_run(self._conn, queue_name, task["run_id"], result)
         except (SuspendTask, CancelledTask):
             pass
         except Exception as err:
             _fail_task_run(self._conn, queue_name, task["run_id"], err)
+        finally:
+            _current_task_context.reset(token)
 
 
 class AsyncAbsurd(_AbsurdBase):
@@ -1040,6 +1147,7 @@ class AsyncAbsurd(_AbsurdBase):
         conn_or_url: Optional[Union[AsyncConnection[Any], str]] = None,
         queue_name: str = "default",
         default_max_attempts: int = 5,
+        hooks: Optional[AbsurdHooks] = None,
     ) -> None:
         if conn_or_url is None:
             conn_or_url = os.environ.get(
@@ -1054,7 +1162,7 @@ class AsyncAbsurd(_AbsurdBase):
             self._conn = conn_or_url
             self._conn_string = None
             self._owned_conn = False
-        super().__init__(queue_name, default_max_attempts)
+        super().__init__(queue_name, default_max_attempts, hooks)
 
     async def _ensure_connected(self) -> None:
         """Ensure the connection is established"""
@@ -1100,14 +1208,34 @@ class AsyncAbsurd(_AbsurdBase):
         """Spawn a task execution by enqueueing it for processing"""
         await self._ensure_connected()
         assert self._conn is not None
+
+        # Build SpawnOptions and apply before_spawn hook if configured
+        spawn_options: SpawnOptions = {
+            "max_attempts": max_attempts,
+            "retry_strategy": retry_strategy,
+            "headers": headers,
+            "queue": queue,
+            "cancellation": cancellation,
+            "idempotency_key": idempotency_key,
+        }
+
+        before_spawn = self._hooks.get("before_spawn")
+        if before_spawn is not None:
+            result = before_spawn(task_name, params, spawn_options)
+            # Handle both sync and async hooks
+            if hasattr(result, "__await__"):
+                spawn_options = await result
+            else:
+                spawn_options = result
+
         actual_queue, options = self._prepare_spawn(
             task_name,
-            max_attempts=max_attempts,
-            retry_strategy=retry_strategy,
-            headers=headers,
-            queue=queue,
-            cancellation=cancellation,
-            idempotency_key=idempotency_key,
+            max_attempts=spawn_options.get("max_attempts"),
+            retry_strategy=spawn_options.get("retry_strategy"),
+            headers=spawn_options.get("headers"),
+            queue=spawn_options.get("queue"),
+            cancellation=spawn_options.get("cancellation"),
+            idempotency_key=spawn_options.get("idempotency_key"),
         )
         cursor = self._conn.cursor(row_factory=dict_row)
         await cursor.execute(
@@ -1267,8 +1395,23 @@ class AsyncAbsurd(_AbsurdBase):
             task["task_id"], self._conn, queue_name, task, claim_timeout
         )
 
+        # Set contextvar and execute with optional wrap hook
+        token = _current_task_context.set(ctx)
         try:
-            result = await registration["handler"](task["params"], ctx)
+            wrap_hook = self._hooks.get("wrap_task_execution")
+            if wrap_hook is not None:
+
+                async def execute():
+                    return await registration["handler"](task["params"], ctx)
+
+                hook_result = wrap_hook(ctx, execute)
+                # Handle both sync and async wrap hooks
+                if hasattr(hook_result, "__await__"):
+                    result = await hook_result
+                else:
+                    result = hook_result
+            else:
+                result = await registration["handler"](task["params"], ctx)
             await _complete_task_run_async(
                 self._conn, queue_name, task["run_id"], result
             )
@@ -1281,3 +1424,5 @@ class AsyncAbsurd(_AbsurdBase):
                 task["run_id"],
                 err,
             )
+        finally:
+            _current_task_context.reset(token)
