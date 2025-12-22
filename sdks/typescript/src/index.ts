@@ -129,11 +129,41 @@ interface Log {
   error(...args: any[]): void;
 }
 
+/**
+ * Hooks for customizing Absurd behavior.
+ *
+ * These hooks allow integration with tracing systems, correlation ID propagation,
+ * and other cross-cutting concerns.
+ */
+export interface AbsurdHooks {
+  /**
+   * Called before spawning a task. Can modify spawn options (including headers).
+   * Use this to inject trace IDs, correlation IDs, or other context from
+   * AsyncLocalStorage into the task.
+   */
+  beforeSpawn?: (
+    taskName: string,
+    params: JsonValue,
+    options: SpawnOptions,
+  ) => SpawnOptions | Promise<SpawnOptions>;
+
+  /**
+   * Wraps task execution. Must call and return the result of execute().
+   * Use this to restore context (e.g., into AsyncLocalStorage) before the
+   * task handler runs, ensuring all code within the task has access to it.
+   */
+  wrapTaskExecution?: <T>(
+    ctx: TaskContext,
+    execute: () => Promise<T>,
+  ) => Promise<T>;
+}
+
 export interface AbsurdOptions {
   db?: pg.Pool | string;
   queueName?: string;
   defaultMaxAttempts?: number;
   log?: Log;
+  hooks?: AbsurdHooks;
 }
 
 interface RegisteredTask {
@@ -156,6 +186,13 @@ export class TaskContext {
     private readonly checkpointCache: Map<string, JsonValue>,
     private readonly claimTimeout: number,
   ) {}
+
+  /**
+   * Returns all headers attached to this task.
+   */
+  get headers(): Readonly<JsonObject> {
+    return this.task.headers ?? {};
+  }
 
   static async create(args: {
     log: Log;
@@ -405,6 +442,7 @@ export class Absurd {
   private registry = new Map<string, RegisteredTask>();
   private readonly log: Log;
   private worker: Worker | null = null;
+  private readonly hooks: AbsurdHooks;
 
   constructor(options: AbsurdOptions | string | pg.Pool = {}) {
     if (typeof options === "string" || isQueryable(options)) {
@@ -425,6 +463,7 @@ export class Absurd {
     this.queueName = options?.queueName ?? "default";
     this.defaultMaxAttempts = options?.defaultMaxAttempts ?? 5;
     this.log = options?.log ?? console;
+    this.hooks = options?.hooks ?? {};
   }
 
   /**
@@ -438,6 +477,7 @@ export class Absurd {
       queueName: this.queueName,
       defaultMaxAttempts: this.defaultMaxAttempts,
       log: this.log,
+      hooks: this.hooks,
     });
     bound.registry = this.registry;
     bound.ownedPool = owned;
@@ -556,11 +596,22 @@ export class Absurd {
       options.cancellation !== undefined
         ? options.cancellation
         : registration?.defaultCancellation;
-    const normalizedOptions = normalizeSpawnOptions({
+
+    let effectiveOptions: SpawnOptions = {
       ...options,
       maxAttempts: effectiveMaxAttempts,
       cancellation: effectiveCancellation,
-    });
+    };
+
+    if (this.hooks.beforeSpawn) {
+      effectiveOptions = await this.hooks.beforeSpawn(
+        taskName,
+        params as JsonValue,
+        effectiveOptions,
+      );
+    }
+
+    const normalizedOptions = normalizeSpawnOptions(effectiveOptions);
 
     const result = await this.con.query<{
       task_id: string;
@@ -841,8 +892,17 @@ export class Absurd {
       } else if (registration.queue !== this.queueName) {
         throw new Error("Misconfigured task (queue mismatch)");
       }
-      const result = await registration.handler(task.params, ctx);
-      await completeTaskRun(this.con, this.queueName, task.run_id, result);
+
+      const execute = async () => {
+        const result = await registration.handler(task.params, ctx);
+        await completeTaskRun(this.con, this.queueName, task.run_id, result);
+      };
+
+      if (this.hooks.wrapTaskExecution) {
+        await this.hooks.wrapTaskExecution(ctx, execute);
+      } else {
+        await execute();
+      }
     } catch (err) {
       if (err instanceof SuspendTask || err instanceof CancelledTask) {
         // Task suspended or cancelled (sleep or await), don't complete or fail
