@@ -174,6 +174,55 @@ interface RegisteredTask {
   handler: TaskHandler<any, any>;
 }
 
+class LeaseTimerManager {
+  private warnTimer: NodeJS.Timeout | null = null;
+  private fatalTimer: NodeJS.Timeout | null = null;
+
+  constructor(
+    private readonly log: Log,
+    private readonly taskLabel: string,
+    private readonly fatalOnLeaseTimeout: boolean,
+  ) {}
+
+  update(leaseSeconds: number): void {
+    this.clear();
+    if (leaseSeconds <= 0) {
+      return;
+    }
+    this.warnTimer = setTimeout(() => {
+      this.log.warn(
+        `task ${this.taskLabel} exceeded claim timeout of ${leaseSeconds}s`,
+      );
+    }, leaseSeconds * 1000);
+    if (this.fatalOnLeaseTimeout) {
+      this.fatalTimer = setTimeout(
+        () => {
+          this.log.error(
+            `task ${this.taskLabel} exceeded claim timeout of ${leaseSeconds}s by more than 100%; terminating process`,
+          );
+          process.exit(1);
+        },
+        leaseSeconds * 1000 * 2,
+      );
+    }
+  }
+
+  stop(): void {
+    this.clear();
+  }
+
+  private clear(): void {
+    if (this.warnTimer) {
+      clearTimeout(this.warnTimer);
+      this.warnTimer = null;
+    }
+    if (this.fatalTimer) {
+      clearTimeout(this.fatalTimer);
+      this.fatalTimer = null;
+    }
+  }
+}
+
 export class TaskContext {
   private stepNameCounter: Map<string, number> = new Map();
 
@@ -185,6 +234,7 @@ export class TaskContext {
     private readonly task: ClaimedTask,
     private readonly checkpointCache: Map<string, JsonValue>,
     private readonly claimTimeout: number,
+    private readonly leaseTimer: LeaseTimerManager,
   ) {}
 
   /**
@@ -201,8 +251,10 @@ export class TaskContext {
     queueName: string;
     task: ClaimedTask;
     claimTimeout: number;
+    leaseTimer: LeaseTimerManager;
   }): Promise<TaskContext> {
-    const { log, taskID, con, queueName, task, claimTimeout } = args;
+    const { log, taskID, con, queueName, task, claimTimeout, leaseTimer } =
+      args;
     const result = await con.query<CheckpointRow>(
       `SELECT checkpoint_name, state, status, owner_run_id, updated_at
        FROM absurd.get_task_checkpoint_states($1, $2, $3)`,
@@ -212,7 +264,7 @@ export class TaskContext {
     for (const row of result.rows) {
       cache.set(row.checkpoint_name, row.state);
     }
-    return new TaskContext(
+    const ctx = new TaskContext(
       log,
       taskID,
       con,
@@ -220,7 +272,9 @@ export class TaskContext {
       task,
       cache,
       claimTimeout,
+      leaseTimer,
     );
+    return ctx;
   }
 
   private async queryWithCancelCheck(sql: string, params: any[]): Promise<any> {
@@ -326,6 +380,7 @@ export class TaskContext {
       ],
     );
     this.checkpointCache.set(checkpointName, value);
+    this.recordLeaseExtension(this.claimTimeout);
   }
 
   private async scheduleRun(wakeAt: Date): Promise<void> {
@@ -405,11 +460,17 @@ export class TaskContext {
    * @param seconds Lease extension in seconds.
    */
   async heartbeat(seconds?: number): Promise<void> {
+    const leaseSeconds = seconds ?? this.claimTimeout;
     await this.queryWithCancelCheck(`SELECT absurd.extend_claim($1, $2, $3)`, [
       this.queueName,
       this.task.run_id,
-      seconds ?? this.claimTimeout,
+      leaseSeconds,
     ]);
+    this.recordLeaseExtension(leaseSeconds);
+  }
+
+  private recordLeaseExtension(leaseSeconds: number): void {
+    this.leaseTimer.update(leaseSeconds);
   }
 
   /**
@@ -853,10 +914,13 @@ export class Absurd {
     claimTimeout: number,
     options?: { fatalOnLeaseTimeout?: boolean },
   ): Promise<void> {
-    let warnTimer: any;
-    let fatalTimer: any;
-
     const registration = this.registry.get(task.task_name);
+    const taskLabel = `${task.task_name} (${task.task_id})`;
+    const leaseTimer = new LeaseTimerManager(
+      this.log,
+      taskLabel,
+      options?.fatalOnLeaseTimeout ?? false,
+    );
     const ctx = await TaskContext.create({
       log: this.log,
       taskID: task.task_id,
@@ -864,29 +928,11 @@ export class Absurd {
       queueName: registration?.queue ?? "unknown",
       task: task,
       claimTimeout,
+      leaseTimer,
     });
+    leaseTimer.update(claimTimeout);
 
     try {
-      if (claimTimeout > 0) {
-        const taskLabel = `${task.task_name} (${task.task_id})`;
-        warnTimer = setTimeout(() => {
-          this.log.warn(
-            `task ${taskLabel} exceeded claim timeout of ${claimTimeout}s`,
-          );
-        }, claimTimeout * 1000);
-        if (options?.fatalOnLeaseTimeout) {
-          fatalTimer = setTimeout(
-            () => {
-              this.log.error(
-                `task ${taskLabel} exceeded claim timeout of ${claimTimeout}s by more than 100%; terminating process`,
-              );
-              process.exit(1);
-            },
-            claimTimeout * 1000 * 2,
-          );
-        }
-      }
-
       if (!registration) {
         throw new Error("Unknown task");
       } else if (registration.queue !== this.queueName) {
@@ -911,12 +957,7 @@ export class Absurd {
       this.log.error("[absurd] task execution failed:", err);
       await failTaskRun(this.con, this.queueName, task.run_id, err);
     } finally {
-      if (warnTimer) {
-        clearTimeout(warnTimer);
-      }
-      if (fatalTimer) {
-        clearTimeout(fatalTimer);
-      }
+      leaseTimer.stop();
     }
   }
 }
