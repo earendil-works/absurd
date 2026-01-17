@@ -1,20 +1,20 @@
 <?php declare(strict_types=1);
 
 /**
- * Simple producer example - spawns tasks for workers to process.
+ * Simple event emitter example - emits events to wake waiting tasks.
  *
- * Usage: php examples/simple-producer.php <user-id>
+ * Usage: php examples/simple-produce-event.php <id>
  *
  * Environment:
  *   ABSURD_DATABASE_URL - PostgreSQL connection string (default: pgsql:host=localhost;dbname=absurd)
  */
 
 if ($argc < 2) {
-    fprintf(STDERR, "Usage: php %s <user-id>\n", $argv[0]);
+    fprintf(STDERR, "Usage: php %s <id>\n", $argv[0]);
     exit(1);
 }
 
-$userId = $argv[1];
+$id = $argv[1];
 
 require __DIR__ . '/../vendor/autoload.php';
 
@@ -34,14 +34,7 @@ $absurd = new Absurd($pdo);
 echo "[" . date('c') . "] Creating queue...\n";
 $absurd->createQueue();
 
-// Spawn the task (must specify queue since task is not registered here)
-echo "[" . date('c') . "] Spawning task for user {$userId}...\n";
-$result = $absurd->spawn('greet-user', [
-    'userId' => $userId,
-    'name' => 'Alice'
-], [
-    'queue' => 'default'
-]);
-
-echo "[" . date('c') . "] Task spawned: {$result['taskID']}\n";
-echo "[" . date('c') . "] Run a worker with: php examples/simple-worker.php\n";
+echo "[" . date('c') . "] Emitting event greet:{$id}...\n";
+$absurd->emitEvent("greet:{$id}", [
+    'name' => 'Alice',
+], 'default');
