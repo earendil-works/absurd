@@ -3,6 +3,7 @@ import csv
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 import shutil
@@ -11,6 +12,29 @@ from urllib.request import urlopen
 from urllib.error import URLError
 from urllib.parse import urlparse
 from optparse import OptionParser, IndentedHelpFormatter
+
+
+# Pattern for validating SQL identifiers (used in table names, can't be parameterized)
+IDENTIFIER_PATTERN = re.compile(r"^[a-zA-Z][a-zA-Z0-9_-]*$")
+
+
+def validate_identifier(value, name="identifier"):
+    """Validate that a value is a safe SQL identifier (letters, numbers, underscores, hyphens).
+
+    This is required for values used in table/column names which can't use psql variables.
+    For regular values in WHERE clauses, use run_psql(..., variables={}) instead.
+    """
+    if not value or not IDENTIFIER_PATTERN.match(value):
+        print(
+            f"Error: Invalid {name} '{value}'. Must start with a letter and contain only "
+            "letters, numbers, underscores, and hyphens.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    if len(value) > 63:
+        print(f"Error: {name} '{value}' is too long (max 63 characters).", file=sys.stderr)
+        sys.exit(1)
+    return value
 
 
 SQL_URL = "https://raw.githubusercontent.com/earendil-works/absurd/refs/heads/main/sql/absurd.sql"
@@ -160,10 +184,15 @@ def run_psql(
     input_data=None,
     error_message=None,
     strip_output=True,
+    variables=None,
 ):
     """
     Execute a PostgreSQL command. Returns stripped stdout for queries and the
     CompletedProcess for other invocations.
+
+    Use `variables` dict to pass values safely. In the query, reference them as :'name'
+    for string values. Example:
+        run_psql(config, "SELECT * FROM t WHERE id = :'id'", variables={"id": user_input})
     """
     cmd_args = []
 
@@ -171,6 +200,9 @@ def run_psql(
         cmd_args.append("-t")
     if no_align:
         cmd_args.append("-A")
+    if variables:
+        for name, value in variables.items():
+            cmd_args.extend(["-v", f"{name}={value}"])
     if extra_args:
         cmd_args.extend(extra_args)
     if query is not None:
@@ -204,7 +236,7 @@ def run_psql(
     return result
 
 
-def run_psql_csv(config, query):
+def run_psql_csv(config, query, variables=None):
     """Execute a query and return rows parsed via CSV output."""
     output = run_psql(
         config,
@@ -212,6 +244,7 @@ def run_psql_csv(config, query):
         tuples_only=True,
         extra_args=["--csv"],
         strip_output=False,
+        variables=variables,
     )
     if not output:
         return []
@@ -224,9 +257,10 @@ def queue_exists(config, queue_name):
     """Check if a queue exists."""
     result = run_psql(
         config,
-        f"SELECT COUNT(*) FROM absurd.queues WHERE queue_name = '{queue_name}';",
+        "SELECT COUNT(*) FROM absurd.queues WHERE queue_name = :'queue_name';",
         tuples_only=True,
         no_align=True,
+        variables={"queue_name": queue_name},
     )
     return int(result) > 0
 
@@ -383,7 +417,7 @@ def cmd_cleanup(args):
         parser.print_help()
         sys.exit(1)
 
-    queue_name = args[0]
+    queue_name = validate_identifier(args[0], "queue name")
     try:
         ttl_days = int(args[1])
     except ValueError:
@@ -499,7 +533,7 @@ def cmd_create_queue(args):
         parser.print_help()
         sys.exit(1)
 
-    queue_name = args[0]
+    queue_name = validate_identifier(args[0], "queue name")
     config = config_from_options(options)
 
     print_verbose_configuration(
@@ -509,7 +543,7 @@ def cmd_create_queue(args):
     if options.verbose:
         print(f"Creating queue '{queue_name}'...")
 
-    run_psql(config, f"SELECT absurd.create_queue('{queue_name}');")
+    run_psql(config, "SELECT absurd.create_queue(:'queue_name');", variables={"queue_name": queue_name})
     print(f"Queue '{queue_name}' created successfully")
 
 
@@ -537,7 +571,7 @@ def cmd_drop_queue(args):
         parser.print_help()
         sys.exit(1)
 
-    queue_name = args[0]
+    queue_name = validate_identifier(args[0], "queue name")
     config = config_from_options(options)
 
     ensure_queue_exists(config, queue_name)
@@ -559,7 +593,7 @@ def cmd_drop_queue(args):
     if options.verbose:
         print(f"Dropping queue '{queue_name}'...")
 
-    run_psql(config, f"SELECT absurd.drop_queue('{queue_name}');")
+    run_psql(config, "SELECT absurd.drop_queue(:'queue_name');", variables={"queue_name": queue_name})
     print(f"Queue '{queue_name}' dropped successfully")
 
 
@@ -723,7 +757,7 @@ def cmd_spawn_task(args):
         parser.print_help()
         sys.exit(1)
 
-    task_name = args[0]
+    task_name = validate_identifier(args[0], "task name")
     config = config_from_options(options)
 
     params_json = build_json_params(options.params, options.base_params)
@@ -767,7 +801,7 @@ def cmd_spawn_task(args):
             cancellation["maxDelay"] = options.max_delay
         cancellation_json = f"'{json.dumps(cancellation)}'::jsonb"
 
-    queue = options.queue or "default"
+    queue = validate_identifier(options.queue or "default", "queue name")
 
     ensure_queue_exists(config, queue)
 
@@ -790,14 +824,18 @@ def cmd_spawn_task(args):
     query = f"""
         SELECT task_id, run_id, attempt
         FROM absurd.spawn_task(
-            '{queue}',
-            '{task_name}',
-            '{params_json}'::jsonb,
+            :'queue',
+            :'task_name',
+            :'params_json'::jsonb,
             {headers_json}
         );
     """
 
-    rows = run_psql_csv(config, query)
+    rows = run_psql_csv(config, query, variables={
+        "queue": queue,
+        "task_name": task_name,
+        "params_json": params_json,
+    })
 
     if rows:
         task_id, run_id, attempt = rows[0]
@@ -963,6 +1001,7 @@ def cmd_list_tasks(args):
 
     # Filter to specific queue if requested
     if options.queue:
+        validate_identifier(options.queue, "queue name")
         if options.queue not in queues:
             print(f"Queue '{options.queue}' does not exist", file=sys.stderr)
             sys.exit(1)
@@ -974,8 +1013,10 @@ def cmd_list_tasks(args):
     for queue in queues:
         # Build WHERE clause based on filters
         where_clauses = []
+        variables = {}
         if options.task_name:
-            where_clauses.append(f"t.task_name = '{options.task_name}'")
+            where_clauses.append("t.task_name = :'task_name'")
+            variables["task_name"] = options.task_name
         if options.status:
             where_clauses.append(f"t.state = '{options.status}'")
 
@@ -1000,7 +1041,7 @@ def cmd_list_tasks(args):
             LIMIT {options.limit}
         """
 
-        rows = run_psql_csv(config, query)
+        rows = run_psql_csv(config, query, variables=variables if variables else None)
 
         for parts in rows:
             if len(parts) >= 8:
@@ -1069,13 +1110,15 @@ def cmd_cancel_task(args):
         sys.exit(1)
 
     task_id = args[0]
-    queue = options.queue or "default"
+    queue = validate_identifier(options.queue or "default", "queue name")
     config = config_from_options(options)
 
-    sql = f"SELECT absurd.cancel_task('{queue}', '{task_id}');"
-
     try:
-        run_psql(config, sql)
+        run_psql(
+            config,
+            "SELECT absurd.cancel_task(:'queue', :'task_id');",
+            variables={"queue": queue, "task_id": task_id},
+        )
         print(f"Task {task_id} cancelled in queue '{queue}'")
     except subprocess.CalledProcessError as e:
         print(f"Error cancelling task: {e}", file=sys.stderr)
@@ -1141,9 +1184,10 @@ def cmd_dump_task(args):
         for queue in queues:
             result = run_psql(
                 config,
-                f"SELECT task_id FROM absurd.r_{queue} WHERE run_id = '{options.run_id}';",
+                f"SELECT task_id FROM absurd.r_{queue} WHERE run_id = :'run_id';",
                 tuples_only=True,
                 no_align=True,
+                variables={"run_id": options.run_id},
             )
             if result:
                 target_queue = queue
@@ -1159,9 +1203,10 @@ def cmd_dump_task(args):
         for queue in queues:
             result = run_psql(
                 config,
-                f"SELECT COUNT(*) FROM absurd.t_{queue} WHERE task_id = '{task_id}';",
+                f"SELECT COUNT(*) FROM absurd.t_{queue} WHERE task_id = :'task_id';",
                 tuples_only=True,
                 no_align=True,
+                variables={"task_id": task_id},
             )
             if result and int(result.strip()) > 0:
                 target_queue = queue
@@ -1196,8 +1241,9 @@ def cmd_dump_task(args):
                 r.claimed_by
             FROM absurd.t_{target_queue} t
             JOIN absurd.r_{target_queue} r ON r.task_id = t.task_id
-            WHERE r.run_id = '{options.run_id}'
+            WHERE r.run_id = :'run_id'
         """
+        runs_rows = run_psql_csv(config, runs_query, variables={"run_id": options.run_id})
     else:
         # Fetch all runs for task
         runs_query = f"""
@@ -1222,11 +1268,10 @@ def cmd_dump_task(args):
                 r.claimed_by
             FROM absurd.t_{target_queue} t
             JOIN absurd.r_{target_queue} r ON r.task_id = t.task_id
-            WHERE t.task_id = '{task_id}'
+            WHERE t.task_id = :'task_id'
             ORDER BY r.attempt
         """
-
-    runs_rows = run_psql_csv(config, runs_query)
+        runs_rows = run_psql_csv(config, runs_query, variables={"task_id": task_id})
 
     if not runs_rows:
         print("No data found", file=sys.stderr)
@@ -1270,11 +1315,13 @@ def cmd_dump_task(args):
                 owner_run_id,
                 updated_at
             FROM absurd.c_{target_queue}
-            WHERE task_id = '{run['task_id']}' AND owner_run_id = '{run['run_id']}'
+            WHERE task_id = :'task_id' AND owner_run_id = :'run_id'
             ORDER BY updated_at DESC
         """
 
-        checkpoint_rows = run_psql_csv(config, checkpoints_query)
+        checkpoint_rows = run_psql_csv(
+            config, checkpoints_query, variables={"task_id": run["task_id"], "run_id": run["run_id"]}
+        )
 
         checkpoints = []
         for parts in checkpoint_rows:
@@ -1309,10 +1356,10 @@ def cmd_dump_task(args):
             FROM absurd.r_{target_queue} r
             LEFT JOIN absurd.w_{target_queue} w ON w.run_id = r.run_id
             LEFT JOIN absurd.e_{target_queue} e ON e.event_name = r.wake_event AND e.payload IS NOT NULL
-            WHERE r.run_id = '{run['run_id']}' AND r.state = 'sleeping'
+            WHERE r.run_id = :'run_id' AND r.state = 'sleeping'
         """
 
-        waits_rows = run_psql_csv(config, waits_query)
+        waits_rows = run_psql_csv(config, waits_query, variables={"run_id": run["run_id"]})
 
         waits = []
         for parts in waits_rows:
