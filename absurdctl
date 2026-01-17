@@ -1444,6 +1444,74 @@ def cmd_dump_task(args):
                 print()
 
 
+def cmd_emit_event(args):
+    """Emit an event to wake waiting tasks."""
+    usage = "usage: %prog emit-event [options] EVENT_NAME"
+    parser = build_command_parser(usage)
+
+    parser.add_option(
+        "-q",
+        "--queue",
+        dest="queue",
+        metavar="NAME",
+        help="Queue name (default: default)",
+    )
+
+    parser.add_option(
+        "-P",
+        "--param",
+        dest="params",
+        action="append",
+        default=[],
+        metavar="K=V",
+        help="Event payload parameter. Use -P key=value for strings or -P key:=json for JSON values. "
+        "Supports dotted paths for nested objects (e.g., -P user.name=Alice)",
+    )
+    parser.add_option(
+        "--payload",
+        dest="base_payload",
+        metavar="JSON",
+        help="Base JSON object for payload (will be merged with -P flags)",
+    )
+
+    examples = [
+        "absurdctl emit-event order.completed",
+        "absurdctl emit-event order.completed -P orderId=123 -P status=shipped",
+        "absurdctl emit-event user.created -P user.id:=42 -P user.name=Alice",
+        'absurdctl emit-event order.completed --payload \'{"orderId":"123"}\'',
+        "absurdctl emit-event -q myqueue shipment.packed -P trackingNumber=ABC123",
+    ]
+
+    options, args = parse_args_with_help(parser, args, examples)
+
+    if len(args) != 1:
+        print("Error: Missing required argument EVENT_NAME", file=sys.stderr)
+        parser.print_help()
+        sys.exit(1)
+
+    event_name = args[0]
+    config = config_from_options(options)
+
+    payload_json = build_json_params(options.params, options.base_payload)
+
+    queue = options.queue or "default"
+
+    ensure_queue_exists(config, queue)
+
+    details = [
+        ("Event", event_name),
+        ("Queue", queue),
+        ("Payload", payload_json),
+    ]
+    details.extend(get_common_db_details(config))
+    print_verbose_configuration(options.verbose, details)
+
+    query = f"SELECT absurd.emit_event('{queue}', '{event_name}', '{payload_json}'::jsonb);"
+
+    run_psql(config, query)
+    print(f"Event '{event_name}' emitted successfully to queue '{queue}'")
+
+
 def cmd_agent_help(args):
     """Print quick guidance for automated agents."""
     if args:
@@ -1463,6 +1531,7 @@ def cmd_agent_help(args):
         - list-tasks: inspect recent activity in a queue (`absurdctl list-tasks --queue=default`)
         - dump-task: pull full details for a task or run (`absurdctl dump-task --task-id=<uuid>`)
         - spawn-task: enqueue new work (`absurdctl spawn-task my-task`)
+        - emit-event: emit an event to wake waiting tasks (`absurdctl emit-event order.completed -P orderId=123`)
 
         Use `absurdctl <command> --help` to see every option when you need more detail.
 
@@ -1486,6 +1555,7 @@ Commands:
   drop-queue      Drop an existing queue
   list-queues     List all existing queues
   spawn-task      Spawn a new task
+  emit-event      Emit an event to wake waiting tasks
   list-tasks      List tasks with optional filtering
   cancel-task     Cancel a running or pending task
   dump-task       Dump task or run details including checkpoints
@@ -1509,6 +1579,7 @@ Examples:
   absurdctl drop-queue myqueue --yes
   absurdctl list-queues
   absurdctl spawn-task my-task -P foo=bar -P count:=42
+  absurdctl emit-event order.completed -P orderId=123
   absurdctl list-tasks --queue=default --status=failed
   absurdctl cancel-task 019a32d3-8425-7ae2-a5af-2f17a6707666
   absurdctl dump-task --task-id=019a32d3-8425-7ae2-a5af-2f17a6707666
@@ -1537,6 +1608,8 @@ def main():
         cmd_init(args)
     elif command == "spawn-task":
         cmd_spawn_task(args)
+    elif command == "emit-event":
+        cmd_emit_event(args)
     elif command == "list-tasks":
         cmd_list_tasks(args)
     elif command == "cancel-task":
