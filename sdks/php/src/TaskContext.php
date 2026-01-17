@@ -150,7 +150,7 @@ final class TaskContext
             throw new TaskExecutionError('Failed to await event');
         }
 
-        if (!$row['should_suspend']) {
+        if ($row['should_suspend'] === 'f') {
             $payload = json_decode($row['payload'], true, 512, JSON_THROW_ON_ERROR);
             $this->checkpointCache[$checkpointName] = $payload;
             $this->task->event_payload = null;
