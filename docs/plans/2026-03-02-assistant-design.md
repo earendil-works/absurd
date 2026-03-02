@@ -2,6 +2,8 @@
 
 A nanoclaw-inspired AI personal assistant built on Absurd as the durable task
 management and message bus layer. Telegram is the primary communication channel.
+The assistant runs entirely inside a Docker container for security, and can
+extend its own capabilities by writing skill files and creating Absurd schedules.
 
 ## Design Decisions
 
@@ -10,146 +12,180 @@ management and message bus layer. Telegram is the primary communication channel.
 | Project location | Separate repository | Depends on Absurd TS SDK as a package |
 | LLM backend | Claude API (Anthropic SDK) | Direct tool use, aligns with ecosystem |
 | Architecture | Absurd-native | Every interaction is a durable task |
-| Plugin isolation | Containerized (Docker/Podman) | Security via container sandboxing |
-| Agent process | Runs on host | Agent needs broad access; only plugins are sandboxed |
+| Deployment | Entire agent in Docker | OS-level containment; no nested containers |
+| Extensibility | Skills (markdown) + tool scripts | Agent can self-extend without code deployments |
 | Agent notes | Markdown file on disk | Human-editable, LLM-native, git-trackable |
 | Conversation history | Postgres table | Queryable, transactional |
-| Plugin state | Postgres KV table | Simple get/set JSONB, promote to dedicated tables later |
+| State storage | Postgres KV table | Simple get/set JSONB for skills and tools |
 | Scheduling | Absurd's built-in cron system | No external scheduler needed |
 | Telegram library | grammY (long-polling) | No public endpoint required |
-| Slash commands | None | All interaction through natural language via agent loop |
-| Plugin hot-reload | File watcher on plugins/ directory | Reload tools without restarting worker |
+| Interaction model | All natural language | No slash commands; agent handles everything |
 | Multi-user | Single user only | Simplifies auth, memory, permissions |
-| Self-update | Agent notes self-modification (core) + code self-update (stretch) | Absurd tasks survive worker restarts |
+| Self-update | Agent writes skills, tool scripts, and notes | Capabilities compound over time |
 
 ## System Architecture
 
 ```
-+-----------------------------------------------------+
-|                    Process                            |
-|                                                       |
-|  +--------------+    +--------------------------+    |
-|  | Telegram Bot  |--->|  Absurd SDK (Worker)     |    |
-|  | (grammy)      |    |  - handle-message task   |    |
-|  | long-polling   |    |  - plugin:* tasks        |    |
-|  +--------------+    |  - scheduled tasks        |    |
-|                       +------------+-------------+    |
-|                                    |                  |
-|  +--------------+    +-------------v-----------+     |
-|  | Plugin Loader |--->|  Plugin Runtime         |     |
-|  | (hot-reload)  |    |  (container execution)  |     |
-|  +--------------+    +-------------------------+     |
-|                                                       |
-+---------------------+-------------------------------+
-                       |
-              +--------v--------+
-              |   PostgreSQL     |
-              |  - Absurd queues |
-              |  - Message log   |
-              |  - Plugin state  |
-              +-----------------+
+Host machine
+  |
+  +-- Docker container (absurd-assistant)
+  |     |
+  |     +-- Node.js process
+  |     |     +-- Telegram bot (grammY, long-polling)
+  |     |     +-- Absurd worker (claims and executes tasks)
+  |     |     +-- Agent loop (Claude API + tool dispatch)
+  |     |
+  |     +-- data/notes.md          (writable volume)
+  |     +-- skills/*.md            (writable volume)
+  |     +-- tools/*                (writable volume)
+  |     +-- Network: Telegram API, Claude API, Postgres
+  |
+  +-- PostgreSQL
+        +-- absurd schema (queues, tasks, runs, checkpoints, schedules)
+        +-- assistant schema (messages, state)
 ```
 
-Single Absurd queue (`assistant`) for all tasks. Per-task retry strategies and
-cancellation policies handle differentiation.
+Single Absurd queue (`assistant`) for all tasks. The container provides
+OS-level security -- the agent can modify its own skills and tools but
+cannot affect the host.
+
+## Core Concepts
+
+### Skills (Behavioral Instructions)
+
+Skills are markdown files that describe recurring or on-demand behaviors.
+The agent can read, create, modify, and delete them. Each skill has YAML
+frontmatter and markdown instructions.
+
+```markdown
+---
+name: daily-todo-summary
+description: Send a daily summary of active TODOs every morning
+schedule: "0 9 * * *"
+---
+
+# Daily TODO Summary
+
+When this skill's schedule fires:
+
+1. Read the TODO list from state (key: "todos")
+2. Format as a numbered list with priorities
+3. Send the summary to the user via Telegram
+4. Call out any overdue items
+```
+
+Skills with a `schedule` field automatically get an Absurd schedule that
+spawns an `execute-skill` task. Skills without a schedule are invoked
+on-demand during conversations when the agent determines they are relevant.
+
+### Tool Scripts (Executable Capabilities)
+
+Tool scripts are executable files (shell, Python, etc.) that the agent
+can create and invoke. They run inside the container with a timeout.
+
+```bash
+#!/bin/bash
+# tools/github-prs.sh
+# Input: JSON on stdin with { owner, repo }
+input=$(cat)
+owner=$(echo "$input" | jq -r '.owner')
+repo=$(echo "$input" | jq -r '.repo')
+gh pr list --repo "$owner/$repo" --json title,url,author --limit 10
+```
+
+Tool scripts receive JSON on stdin and write results to stdout. They
+execute with `timeout 30s` inside the container.
+
+### Absurd Tasks (The Execution Engine)
+
+Every behavior is an Absurd task:
+
+| Task | Purpose |
+|------|---------|
+| `handle-message` | Process a Telegram message through the agent loop |
+| `execute-skill` | Run a skill's instructions via a mini agent loop |
+| `send-message` | Send a proactive Telegram message |
+
+The agent can spawn any of these via scheduling. A daily TODO summary
+is just a scheduled `execute-skill` task. A reminder is just a scheduled
+`send-message` task.
 
 ## Message Flow
 
 1. User sends a Telegram message
 2. grammY handler spawns `handle-message` task with message payload
 3. Absurd worker claims the task
-4. **Step "load-context"**: Read `data/notes.md`, query last N messages from
-   Postgres, gather active plugin tool definitions
-5. **Step "agent-loop-{i}"** (checkpointed per iteration):
+4. **Step "load-context"**: Read `data/notes.md`, query last N messages,
+   discover available skills and tools
+5. **Step "agent-turn-{i}"** (checkpointed per iteration):
    - Call Claude API with system prompt + history + tools
    - If Claude returns text: send to Telegram, done
-   - If Claude returns tool_use: execute plugin in container
+   - If Claude returns tool_use: execute the tool
    - Append tool result, loop back to Claude
-6. **Step "persist"**: Save outbound message to history, update agent notes if
-   the agent learned something
+6. **Step "persist"**: Save messages to history
 
 Each Claude API call is checkpointed. If the worker crashes mid-conversation,
 it resumes from the last completed LLM call (no duplicate API spend).
 
-## Plugin System
+## Scheduled Skill Execution
 
-### Plugin Structure
+When a skill has a `schedule` field:
 
-```
-plugins/
-  reminder/
-    plugin.json        # manifest: name, tools, permissions, schedule
-    Dockerfile         # container definition
-    index.ts           # entry point
-```
+1. On startup (and when skills change), the system creates an Absurd schedule:
+   `absurd.createSchedule("skill:daily-todo-summary", "execute-skill", "0 9 * * *")`
+2. Absurd's `tick_schedules()` fires on every `claim_task()`
+3. When due, it spawns an `execute-skill` task with `{ skillName, chatId }`
+4. The task reads the skill file, runs a mini agent loop with those instructions
+5. The agent loop can use any tools (send messages, run scripts, read state)
 
-### Plugin Manifest
+No external cron daemon. No polling loops. Just Absurd doing what it does.
 
-```json
-{
-  "name": "reminder",
-  "version": "1.0.0",
-  "description": "Set and manage reminders",
-  "tools": [
-    {
-      "name": "set_reminder",
-      "description": "Set a reminder for a specific time",
-      "input_schema": { "type": "object", "properties": { ... } }
-    }
-  ],
-  "permissions": {
-    "network": false,
-    "volumes": [],
-    "env": []
-  },
-  "schedules": [
-    {
-      "name": "check-reminders",
-      "cron": "* * * * *",
-      "task": "reminder:check-due"
-    }
-  ]
-}
-```
+## Agent Tools
 
-### Plugin Execution
+### Built-in Tools (always available)
 
-When Claude decides to use a tool:
+| Tool | Purpose |
+|------|---------|
+| `read_notes` | Read the agent notes file |
+| `update_notes` | Update the agent notes file |
+| `list_skills` | List all available skills |
+| `read_skill` | Read a skill's content |
+| `create_skill` | Write a new skill file (optionally with schedule) |
+| `update_skill` | Modify an existing skill |
+| `delete_skill` | Remove a skill and its schedule |
+| `list_schedules` | List active Absurd schedules |
+| `create_schedule` | Create an Absurd schedule directly |
+| `delete_schedule` | Remove a schedule |
+| `run_script` | Execute a tool script in the container |
+| `save_tool` | Save a new tool script for future use |
+| `get_state` / `set_state` | Read/write from the Postgres KV store |
+| `get_status` | Uptime, skill count, schedule count |
 
-1. Agent loop spawns a short-lived container from the plugin's Docker image
-2. Tool input is passed as JSON via stdin
-3. Container executes, writes result to stdout
-4. Container exits, result is captured and returned to Claude
+### How Self-Extension Works
 
-### Plugin Data Access
+**Example: "Give me a daily summary of my GitHub PRs every morning"**
 
-Plugins communicate with the core via a stdin/stdout JSON protocol:
+1. Agent writes `tools/github-prs.sh` (a shell script using `gh pr list`)
+2. Agent writes `skills/morning-pr-check.md`:
+   ```markdown
+   ---
+   name: morning-pr-check
+   description: Check GitHub PRs and send a morning summary
+   schedule: "0 9 * * *"
+   ---
+   Run the github-prs tool for my repos, summarize open PRs,
+   and notify me if any need review.
+   ```
+3. System creates Absurd schedule `skill:morning-pr-check`
+4. Every morning at 9am, the skill executes automatically
 
-```json
-{"action": "storage.get", "key": "active_reminders"}
-{"action": "storage.set", "key": "active_reminders", "value": [...]}
-```
+**Example: "Remind me to buy milk at 5pm"**
 
-All plugin state is stored in Postgres via the generic KV table. If a plugin
-needs more complex queries in the future, it can be promoted to a dedicated
-schema with migrations.
+1. Agent calls `create_schedule("reminder:buy-milk", "send-message", "0 17 * * *", { params: { chatId, text: "Reminder: buy milk!" } })`
+2. At 5pm, Absurd spawns `send-message` which sends the Telegram message
+3. If it's a one-shot reminder, the agent can use `sleepUntil` in a spawned task instead
 
-### Plugin Schedules
-
-Plugins declare recurring tasks in their manifest. On load, the system calls
-`absurd.createSchedule()` for each entry. Absurd's `tick_schedules()` fires
-automatically on every `claim_task()` -- no external cron daemon needed.
-
-### Hot Reload
-
-A file watcher (chokidar) monitors the `plugins/` directory:
-
-- **New plugin**: load manifest, register tools, build Docker image
-- **Modified plugin**: rebuild image, update tool definitions
-- **Removed plugin**: unregister tools, delete schedules
-
-Tool definitions are refreshed on the next `handle-message` task without
-restarting the worker.
+No plugins, no Docker images, no manifests. Just skills, scripts, and schedules.
 
 ## Memory & State
 
@@ -176,116 +212,94 @@ learns something meaningful. Human-editable and git-trackable.
 
 **Why a file, not Postgres?** Agent notes are read in full every time, never
 queried or filtered. A file read is simpler than a DB query for this access
-pattern. The user can edit notes with any text editor.
+pattern. The user can edit notes from the host via the mounted volume.
 
 ### Conversation History (Postgres)
 
 ```sql
-CREATE SCHEMA assistant;
+CREATE SCHEMA IF NOT EXISTS assistant;
 
-CREATE TABLE assistant.messages (
+CREATE TABLE IF NOT EXISTS assistant.messages (
   id          BIGSERIAL PRIMARY KEY,
   chat_id     BIGINT NOT NULL,
-  role        TEXT NOT NULL,        -- 'user', 'assistant', 'system'
+  role        TEXT NOT NULL CHECK (role IN ('user', 'assistant', 'tool')),
   content     TEXT NOT NULL,
   tool_use    JSONB,
-  created_at  TIMESTAMPTZ DEFAULT now()
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX idx_messages_chat
+CREATE INDEX IF NOT EXISTS idx_messages_chat
   ON assistant.messages(chat_id, created_at DESC);
 ```
 
-### Plugin State (Postgres KV)
+### State Store (Postgres KV)
+
+Generic key-value store for skills and tools to persist data.
 
 ```sql
-CREATE TABLE assistant.plugin_state (
-  plugin_name TEXT NOT NULL,
+CREATE TABLE IF NOT EXISTS assistant.state (
+  namespace   TEXT NOT NULL,
   key         TEXT NOT NULL,
   value       JSONB NOT NULL,
-  updated_at  TIMESTAMPTZ DEFAULT now(),
-  PRIMARY KEY (plugin_name, key)
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (namespace, key)
 );
 ```
+
+The `namespace` field scopes state by skill or tool name (e.g.,
+`"skill:daily-todo-summary"`, `"tool:github-prs"`).
 
 ### Context Window Strategy
 
 When building the Claude prompt:
 
 1. Always include: system instructions + agent notes + tool definitions
-2. Fill remaining context with recent messages (newest first)
-3. If history exceeds budget, summarize older messages into a "Previously..."
+2. Include relevant skill descriptions (one-liners for discovery)
+3. Fill remaining context with recent messages (newest first)
+4. If history exceeds budget, summarize older messages into a "Previously..."
    block (itself a checkpointed step)
 
-## Scheduling & Recurring Tasks
+## Security Model
 
-All scheduling uses Absurd's built-in cron system:
+### Container Isolation
 
-```typescript
-// Plugin-declared schedule (from plugin.json, registered on load)
-await absurd.createSchedule("reminder:check-due", "reminder:check", "* * * * *");
+The entire assistant runs inside a Docker container:
 
-// User-created via natural language
-// "Remind me every morning at 9am to check email"
-await absurd.createSchedule(
-  "user:morning-email",
-  "send-reminder",
-  "0 9 * * *",
-  { params: { chatId, text: "Time to check your email!" } }
-);
-```
+- **Non-root user** inside the container
+- **Mounted volumes** for `data/`, `skills/`, `tools/` (persistent, inspectable from host)
+- **Network access** limited to Telegram API, Claude API, and Postgres
+- **No Docker socket** mounted (no container-in-container)
+- **Read-only application code** (only data/, skills/, tools/ are writable)
 
-`tick_schedules()` fires on every `claim_task()` call. No external scheduler.
+### Blast Radius
 
-## Self-Update
+If the agent misbehaves, the worst case is:
+- It corrupts its own skills/notes → delete the volumes and restart
+- It sends unwanted Telegram messages → revoke the bot token
+- It writes garbage to Postgres → the assistant schema is isolated from absurd schema
 
-### Level 1: Agent Notes Self-Modification (Core)
+It cannot access the host filesystem, other services, or escape the container.
 
-The agent has tools to read and update its own notes file. After conversations
-where it learns something important, it appends to `data/notes.md`. A periodic
-consolidation step (agent rewrites notes to be more concise) prevents unbounded
-growth.
+### Tool Script Safety
 
-### Level 2: Code Self-Update (Stretch Goal)
-
-A `self-update` plugin that:
-
-1. Runs on a schedule (e.g., daily)
-2. Pulls latest code from git
-3. Compares against running version
-4. If changes detected, gracefully shuts down the worker (`worker.close()`)
-5. A process supervisor (systemd, Docker restart policy) restarts with new code
-6. Absurd's durability ensures no in-flight tasks are lost -- they are reclaimed
-   after restart
+- Scripts execute with `timeout 30s` (configurable)
+- Scripts run as the non-root container user
+- Network access within the container (same as the agent itself)
+- The user can inspect/edit tool scripts from the host via the mounted volume
 
 ## System Prompt Structure
 
 ```
 [Base personality and instructions]
 [Contents of data/notes.md]
-[Active plugin tool descriptions]
-[Current date/time, user timezone]
+[Available skill descriptions (one-liners)]
+[Available tool script descriptions]
+[Current date/time]
 ---
-[Dynamically queried plugin summaries (upcoming reminders, active todos)]
+[Dynamically queried state summaries]
 ---
 [Last N messages from conversation history]
 ```
-
-## Agent Introspection Tools
-
-Instead of slash commands, the agent has built-in tools for introspection:
-
-| Tool | Purpose |
-|------|---------|
-| `list_plugins` | Show loaded plugins and their tools |
-| `list_schedules` | Show active Absurd schedules |
-| `get_status` | Worker status, uptime, task counts |
-| `reload_plugins` | Trigger plugin hot-reload |
-| `read_notes` | Read current agent notes |
-| `update_notes` | Update agent notes file |
-
-The user interacts with these through natural language ("what plugins do you
-have?" or "reload your plugins").
 
 ## Project Structure
 
@@ -293,43 +307,37 @@ have?" or "reload your plugins").
 absurd-assistant/
   src/
     index.ts              # Entry: init Absurd, bot, worker
+    config.ts             # Config from env vars
     bot.ts                # grammY bot setup
     tasks/
       handle-message.ts   # Main agent loop task
+      execute-skill.ts    # Scheduled skill execution task
       send-message.ts     # Proactive outbound message task
     agent/
       loop.ts             # Claude API agent loop logic
       prompt.ts           # System prompt assembly
-      tools.ts            # Tool registry (from loaded plugins)
+      tools.ts            # Built-in tool definitions
+      executor.ts         # Tool dispatch (built-in + scripts)
     memory/
       history.ts          # Postgres message history CRUD
       notes.ts            # Agent notes file read/write
-      plugin-state.ts     # Plugin KV store
-    plugins/
-      loader.ts           # Plugin discovery, hot-reload, image build
-      runner.ts           # Container execution (docker/podman)
-      protocol.ts         # stdin/stdout JSON protocol
-    config.ts             # Config from env vars
-  plugins/                # Plugin directories
-    reminder/
-      plugin.json
-      Dockerfile
-      index.ts
-    web-search/
-      plugin.json
-      Dockerfile
-      index.ts
-    shell/
-      plugin.json
-      Dockerfile
-      index.ts
+      state.ts            # Postgres KV store
+    skills/
+      manager.ts          # Skill discovery, CRUD, schedule sync
+    scripts/
+      runner.ts           # Tool script execution (with timeout)
+  skills/                  # Skill files (writable volume)
+    (agent creates these at runtime)
+  tools/                   # Tool scripts (writable volume)
+    (agent creates these at runtime)
   data/
-    notes.md              # Agent notes (git-tracked)
+    notes.md              # Agent notes (writable volume)
   sql/
-    assistant.sql         # Schema for messages + plugin_state
+    assistant.sql         # Schema for messages + state
   package.json
   tsconfig.json
-  Dockerfile              # For deploying the assistant itself
+  Dockerfile
+  docker-compose.yml      # Assistant + Postgres
 ```
 
 ### Dependencies
@@ -337,16 +345,51 @@ absurd-assistant/
 - `absurd-sdk` -- Absurd TypeScript SDK
 - `grammy` -- Telegram Bot API
 - `@anthropic-ai/sdk` -- Claude API
-- `dockerode` -- Docker API for container management
-- `chokidar` -- File watching for plugin hot-reload
+
+No `dockerode` or `chokidar` needed. The agent runs inside Docker (managed
+externally) and tool scripts run via `child_process.execFile`.
+
+## Deployment
+
+```yaml
+# docker-compose.yml
+services:
+  assistant:
+    build: .
+    restart: unless-stopped
+    volumes:
+      - ./data:/app/data
+      - ./skills:/app/skills
+      - ./tools:/app/tools
+    environment:
+      - TELEGRAM_BOT_TOKEN
+      - ANTHROPIC_API_KEY
+      - DATABASE_URL=postgresql://postgres:postgres@db/absurd
+    depends_on:
+      - db
+
+  db:
+    image: postgres:17
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    environment:
+      - POSTGRES_DB=absurd
+      - POSTGRES_PASSWORD=postgres
+
+volumes:
+  pgdata:
+```
 
 ## Open Questions
 
-- **Plugin marketplace/registry**: Should plugins be installable from a URL/git
-  repo, or only local directories?
+- **Skill sharing**: Should skills be installable from a URL or git repo?
+  Could enable a community skill library.
 - **Multi-channel**: When adding channels beyond Telegram, should they be
-  separate bot processes or a unified adapter layer?
+  separate bot instances or a unified adapter layer?
 - **Context window management**: What's the right threshold for triggering
   conversation summarization? Token count vs message count?
 - **Agent notes consolidation**: Should this be automatic (periodic) or
   user-initiated?
+- **Skill approval flow**: Should the agent require user confirmation before
+  activating a new scheduled skill? (Send proposed skill via Telegram,
+  wait for thumbs-up before creating the schedule.)
