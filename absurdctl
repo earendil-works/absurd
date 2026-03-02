@@ -14,25 +14,26 @@ from urllib.parse import urlparse
 from optparse import OptionParser, IndentedHelpFormatter
 
 
-# Pattern for validating SQL identifiers (used in table names, can't be parameterized)
-IDENTIFIER_PATTERN = re.compile(r"^[a-zA-Z][a-zA-Z0-9_-]*$")
+# Queue names are interpolated into dynamic table names (t_<queue>, r_<queue>, ...)
+# so we must constrain characters to a safe subset.
+QUEUE_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]*$")
 
 
-def validate_identifier(value, name="identifier"):
-    """Validate that a value is a safe SQL identifier (letters, numbers, underscores, hyphens).
+def validate_queue_name(value):
+    """Validate queue names used in dynamic table names.
 
-    This is required for values used in table/column names which can't use psql variables.
-    For regular values in WHERE clauses, use run_psql(..., variables={}) instead.
+    Queue names may start with a letter or digit and may contain letters,
+    numbers, underscores, and hyphens.
     """
-    if not value or not IDENTIFIER_PATTERN.match(value):
+    if not value or not QUEUE_NAME_PATTERN.match(value):
         print(
-            f"Error: Invalid {name} '{value}'. Must start with a letter and contain only "
-            "letters, numbers, underscores, and hyphens.",
+            f"Error: Invalid queue name '{value}'. Must start with a letter or number "
+            "and contain only letters, numbers, underscores, and hyphens.",
             file=sys.stderr,
         )
         sys.exit(1)
     if len(value) > 63:
-        print(f"Error: {name} '{value}' is too long (max 63 characters).", file=sys.stderr)
+        print(f"Error: Queue name '{value}' is too long (max 63 characters).", file=sys.stderr)
         sys.exit(1)
     return value
 
@@ -417,7 +418,7 @@ def cmd_cleanup(args):
         parser.print_help()
         sys.exit(1)
 
-    queue_name = validate_identifier(args[0], "queue name")
+    queue_name = validate_queue_name(args[0])
     try:
         ttl_days = int(args[1])
     except ValueError:
@@ -545,7 +546,7 @@ def cmd_create_queue(args):
         parser.print_help()
         sys.exit(1)
 
-    queue_name = validate_identifier(args[0], "queue name")
+    queue_name = validate_queue_name(args[0])
     config = config_from_options(options)
 
     print_verbose_configuration(
@@ -583,7 +584,7 @@ def cmd_drop_queue(args):
         parser.print_help()
         sys.exit(1)
 
-    queue_name = validate_identifier(args[0], "queue name")
+    queue_name = validate_queue_name(args[0])
     config = config_from_options(options)
 
     ensure_queue_exists(config, queue_name)
@@ -813,7 +814,7 @@ def cmd_spawn_task(args):
             cancellation["maxDelay"] = options.max_delay
         cancellation_json = f"'{json.dumps(cancellation)}'::jsonb"
 
-    queue = validate_identifier(options.queue or "default", "queue name")
+    queue = validate_queue_name(options.queue or "default")
 
     ensure_queue_exists(config, queue)
 
@@ -1019,7 +1020,7 @@ def cmd_list_tasks(args):
 
     # Filter to specific queue if requested
     if options.queue:
-        validate_identifier(options.queue, "queue name")
+        validate_queue_name(options.queue)
         if options.queue not in queues:
             print(f"Queue '{options.queue}' does not exist", file=sys.stderr)
             sys.exit(1)
@@ -1129,7 +1130,7 @@ def cmd_cancel_task(args):
         sys.exit(1)
 
     task_id = args[0]
-    queue = validate_identifier(options.queue or "default", "queue name")
+    queue = validate_queue_name(options.queue or "default")
     config = config_from_options(options)
 
     try:
