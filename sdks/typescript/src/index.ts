@@ -166,6 +166,42 @@ export interface AbsurdOptions {
   hooks?: AbsurdHooks;
 }
 
+export interface ScheduleOptions {
+  params?: JsonValue;
+  headers?: JsonObject;
+  retryStrategy?: RetryStrategy;
+  maxAttempts?: number;
+  cancellation?: CancellationPolicy;
+  catchupPolicy?: "skip" | "all";
+  enabled?: boolean;
+}
+
+export interface Schedule {
+  scheduleName: string;
+  taskName: string;
+  params: JsonValue;
+  headers: JsonObject | null;
+  retryStrategy: JsonValue;
+  maxAttempts: number | null;
+  cancellation: JsonValue;
+  scheduleExpr: string;
+  enabled: boolean;
+  catchupPolicy: string;
+  lastTriggeredAt: Date | null;
+  nextRunAt: Date;
+  createdAt: Date;
+}
+
+export interface ScheduleSummary {
+  scheduleName: string;
+  taskName: string;
+  scheduleExpr: string;
+  enabled: boolean;
+  catchupPolicy: string;
+  lastTriggeredAt: Date | null;
+  nextRunAt: Date;
+}
+
 interface RegisteredTask {
   name: string;
   queue: string;
@@ -672,6 +708,136 @@ export class Absurd {
     await this.con.query(`SELECT absurd.cancel_task($1, $2)`, [
       queueName || this.queueName,
       taskID,
+    ]);
+  }
+
+  /**
+   * Creates a recurring schedule that automatically spawns tasks.
+   * @param scheduleName Unique name for this schedule.
+   * @param taskName Name of the task to spawn on each trigger.
+   * @param scheduleExpr Cron expression or interval string defining the schedule.
+   * @param options Schedule configuration (params, headers, retry, cancellation, etc.).
+   * @param queueName Queue name (defaults to this client's queue).
+   * @returns Object containing the schedule name and the next scheduled run time.
+   */
+  async createSchedule(
+    scheduleName: string,
+    taskName: string,
+    scheduleExpr: string,
+    options: ScheduleOptions = {},
+    queueName?: string,
+  ): Promise<{ scheduleName: string; nextRunAt: Date }> {
+    const queue = queueName ?? this.queueName;
+    const normalizedOptions: JsonObject = {};
+    if (options.params !== undefined) normalizedOptions.params = options.params as JsonValue;
+    if (options.headers !== undefined) normalizedOptions.headers = options.headers;
+    if (options.maxAttempts !== undefined) normalizedOptions.max_attempts = options.maxAttempts;
+    if (options.retryStrategy) normalizedOptions.retry_strategy = serializeRetryStrategy(options.retryStrategy);
+    if (options.cancellation) {
+      const c = normalizeCancellation(options.cancellation);
+      if (c) normalizedOptions.cancellation = c;
+    }
+    if (options.catchupPolicy !== undefined) normalizedOptions.catchup_policy = options.catchupPolicy;
+    if (options.enabled !== undefined) normalizedOptions.enabled = options.enabled;
+
+    const result = await this.con.query<{ schedule_name: string; next_run_at: Date }>(
+      `SELECT schedule_name, next_run_at FROM absurd.create_schedule($1, $2, $3, $4, $5)`,
+      [queue, scheduleName, taskName, scheduleExpr, JSON.stringify(normalizedOptions)],
+    );
+    const row = result.rows[0];
+    return { scheduleName: row.schedule_name, nextRunAt: row.next_run_at };
+  }
+
+  /**
+   * Retrieves a schedule by name, or null if not found.
+   * @param scheduleName Name of the schedule to retrieve.
+   * @param queueName Queue name (defaults to this client's queue).
+   * @returns The full schedule details, or null if not found.
+   */
+  async getSchedule(scheduleName: string, queueName?: string): Promise<Schedule | null> {
+    const queue = queueName ?? this.queueName;
+    const result = await this.con.query(
+      `SELECT * FROM absurd.get_schedule($1, $2)`,
+      [queue, scheduleName],
+    );
+    if (result.rows.length === 0) return null;
+    const r = result.rows[0] as any;
+    return {
+      scheduleName: r.schedule_name,
+      taskName: r.task_name,
+      params: r.params,
+      headers: r.headers,
+      retryStrategy: r.retry_strategy,
+      maxAttempts: r.max_attempts,
+      cancellation: r.cancellation,
+      scheduleExpr: r.schedule_expr,
+      enabled: r.enabled,
+      catchupPolicy: r.catchup_policy,
+      lastTriggeredAt: r.last_triggered_at,
+      nextRunAt: r.next_run_at,
+      createdAt: r.created_at,
+    };
+  }
+
+  /**
+   * Lists all schedules in a queue.
+   * @param queueName Queue name (defaults to this client's queue).
+   * @returns Array of schedule summaries.
+   */
+  async listSchedules(queueName?: string): Promise<ScheduleSummary[]> {
+    const queue = queueName ?? this.queueName;
+    const result = await this.con.query(
+      `SELECT * FROM absurd.list_schedules($1)`,
+      [queue],
+    );
+    return result.rows.map((r: any) => ({
+      scheduleName: r.schedule_name,
+      taskName: r.task_name,
+      scheduleExpr: r.schedule_expr,
+      enabled: r.enabled,
+      catchupPolicy: r.catchup_policy,
+      lastTriggeredAt: r.last_triggered_at,
+      nextRunAt: r.next_run_at,
+    }));
+  }
+
+  /**
+   * Deletes a schedule by name.
+   * @param scheduleName Name of the schedule to delete.
+   * @param queueName Queue name (defaults to this client's queue).
+   */
+  async deleteSchedule(scheduleName: string, queueName?: string): Promise<void> {
+    const queue = queueName ?? this.queueName;
+    await this.con.query(`SELECT absurd.delete_schedule($1, $2)`, [queue, scheduleName]);
+  }
+
+  /**
+   * Updates a schedule's configuration.
+   * @param scheduleName Name of the schedule to update.
+   * @param options Fields to update (params, headers, retry, cancellation, scheduleExpr, etc.).
+   * @param queueName Queue name (defaults to this client's queue).
+   */
+  async updateSchedule(
+    scheduleName: string,
+    options: Partial<ScheduleOptions> & { scheduleExpr?: string },
+    queueName?: string,
+  ): Promise<void> {
+    const queue = queueName ?? this.queueName;
+    const normalizedOptions: JsonObject = {};
+    if (options.params !== undefined) normalizedOptions.params = options.params as JsonValue;
+    if (options.headers !== undefined) normalizedOptions.headers = options.headers;
+    if (options.maxAttempts !== undefined) normalizedOptions.max_attempts = options.maxAttempts;
+    if (options.retryStrategy) normalizedOptions.retry_strategy = serializeRetryStrategy(options.retryStrategy);
+    if (options.cancellation) {
+      const c = normalizeCancellation(options.cancellation);
+      if (c) normalizedOptions.cancellation = c;
+    }
+    if (options.catchupPolicy !== undefined) normalizedOptions.catchup_policy = options.catchupPolicy;
+    if (options.enabled !== undefined) normalizedOptions.enabled = options.enabled;
+    if (options.scheduleExpr !== undefined) normalizedOptions.schedule_expr = options.scheduleExpr;
+
+    await this.con.query(`SELECT absurd.update_schedule($1, $2, $3)`, [
+      queue, scheduleName, JSON.stringify(normalizedOptions),
     ]);
   }
 

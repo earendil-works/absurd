@@ -11,6 +11,7 @@
 -- * `c_` for checkpoints (saved states)
 -- * `e_` for emitted events
 -- * `w_` for wait registrations
+-- * `s_` for schedules (recurring task definitions)
 --
 -- `create_queue`, `drop_queue`, and `list_queues` provide the management
 -- surface for provisioning queues safely.
@@ -28,6 +29,10 @@
 -- coordinate sleepers and external signals so that tasks can suspend and resume
 -- without losing context.  Events are uniquely indexed and can only be fired
 -- once per name.
+--
+-- Recurring work is managed through schedule definitions (`create_schedule`,
+-- `delete_schedule`, `list_schedules`, etc.) that are automatically ticked
+-- during `claim_task`, spawning tasks on cron or interval cadences.
 
 create extension if not exists "uuid-ossp";
 
@@ -167,6 +172,515 @@ begin
 end;
 $$;
 
+-- Given a cron expression and a reference timestamp, returns the next
+-- matching time strictly after p_after.  Handles standard 5-field cron,
+-- common shorthands (@daily, @hourly, etc.), and @every <seconds>.
+create function absurd.next_cron_time (
+  p_expr text,
+  p_after timestamptz
+)
+  returns timestamptz
+  language plpgsql
+  immutable
+as $$
+declare
+  v_expr text;
+  v_fields text[];
+  v_minutes integer[];
+  v_hours integer[];
+  v_doms integer[];
+  v_months integer[];
+  v_dows integer[];
+  v_dom_restricted boolean;
+  v_dow_restricted boolean;
+  v_candidate timestamptz;
+  v_year integer;
+  v_month integer;
+  v_day integer;
+  v_hour integer;
+  v_minute integer;
+  v_max_day integer;
+  v_dow integer;
+  v_found boolean;
+  v_limit_ts timestamptz;
+  v_val integer;
+begin
+  v_expr := trim(p_expr);
+
+  -- Handle @every <seconds> shorthand
+  if v_expr ~* '^@every\s+' then
+    return p_after + (regexp_replace(v_expr, '^@every\s+', '', 'i')::integer * interval '1 second');
+  end if;
+
+  -- Handle named shorthands
+  if v_expr ~* '^@yearly$' or v_expr ~* '^@annually$' then
+    v_expr := '0 0 1 1 *';
+  elsif v_expr ~* '^@monthly$' then
+    v_expr := '0 0 1 * *';
+  elsif v_expr ~* '^@weekly$' then
+    v_expr := '0 0 * * 0';
+  elsif v_expr ~* '^@daily$' or v_expr ~* '^@midnight$' then
+    v_expr := '0 0 * * *';
+  elsif v_expr ~* '^@hourly$' then
+    v_expr := '0 * * * *';
+  end if;
+
+  -- Split into 5 fields: minute hour dom month dow
+  v_fields := regexp_split_to_array(v_expr, '\s+');
+  if array_length(v_fields, 1) <> 5 then
+    raise exception 'Invalid cron expression: expected 5 fields, got %', array_length(v_fields, 1);
+  end if;
+
+  v_minutes := absurd.parse_cron_field(v_fields[1], 0, 59);
+  v_hours   := absurd.parse_cron_field(v_fields[2], 0, 23);
+  v_doms    := absurd.parse_cron_field(v_fields[3], 1, 31);
+  v_months  := absurd.parse_cron_field(v_fields[4], 1, 12);
+  v_dows    := absurd.parse_cron_field(v_fields[5], 0, 6);
+
+  -- Determine if dom/dow are restricted (not wildcards).
+  -- When both are restricted, we use union (OR) semantics per cron standard.
+  v_dom_restricted := (v_fields[3] <> '*');
+  v_dow_restricted := (v_fields[5] <> '*');
+
+  -- Start scanning from the minute after p_after, truncated to minute boundary
+  v_candidate := date_trunc('minute', p_after at time zone 'UTC') + interval '1 minute';
+  -- Safety limit: ~4 years from p_after
+  v_limit_ts := p_after + interval '4 years';
+
+  <<scan>>
+  loop
+    if v_candidate > v_limit_ts then
+      raise exception 'next_cron_time: no match found within 4 years for expression "%"', p_expr;
+    end if;
+
+    v_year   := extract(year from v_candidate);
+    v_month  := extract(month from v_candidate);
+    v_day    := extract(day from v_candidate);
+    v_hour   := extract(hour from v_candidate);
+    v_minute := extract(minute from v_candidate);
+
+    -- Check month
+    if not v_month = any(v_months) then
+      -- Advance to the next matching month
+      v_found := false;
+      foreach v_val in array v_months loop
+        if v_val > v_month then
+          v_candidate := make_timestamptz(v_year, v_val, 1, 0, 0, 0, 'UTC');
+          v_found := true;
+          exit;
+        end if;
+      end loop;
+      if not v_found then
+        -- Wrap to first matching month of next year
+        v_candidate := make_timestamptz(v_year + 1, v_months[1], 1, 0, 0, 0, 'UTC');
+      end if;
+      continue scan;
+    end if;
+
+    -- Check day (dom/dow logic)
+    -- Calculate max days in this month
+    v_max_day := extract(day from
+      (make_timestamptz(v_year, v_month, 1, 0, 0, 0, 'UTC') + interval '1 month' - interval '1 day')
+    );
+
+    if v_day > v_max_day then
+      -- Invalid day for this month, advance to next month
+      v_candidate := make_timestamptz(v_year, v_month, 1, 0, 0, 0, 'UTC') + interval '1 month';
+      continue scan;
+    end if;
+
+    -- Day-of-week: 0=Sunday in cron. Postgres extract(dow) is also 0=Sunday.
+    v_dow := extract(dow from v_candidate);
+
+    declare
+      v_day_match boolean := false;
+    begin
+      if v_dom_restricted and v_dow_restricted then
+        -- Both restricted: match EITHER (union)
+        v_day_match := (v_day = any(v_doms) and v_day <= v_max_day) or (v_dow = any(v_dows));
+      elsif v_dom_restricted then
+        v_day_match := (v_day = any(v_doms) and v_day <= v_max_day);
+      elsif v_dow_restricted then
+        v_day_match := (v_dow = any(v_dows));
+      else
+        -- Neither restricted: any day matches
+        v_day_match := true;
+      end if;
+
+      if not v_day_match then
+        -- Advance to next day, reset hour/minute
+        v_candidate := make_timestamptz(v_year, v_month, v_day, 0, 0, 0, 'UTC') + interval '1 day';
+        continue scan;
+      end if;
+    end;
+
+    -- Check hour
+    if not v_hour = any(v_hours) then
+      v_found := false;
+      foreach v_val in array v_hours loop
+        if v_val > v_hour then
+          v_candidate := make_timestamptz(v_year, v_month, v_day, v_val, 0, 0, 'UTC');
+          v_found := true;
+          exit;
+        end if;
+      end loop;
+      if not v_found then
+        -- No matching hour left today, advance to next day
+        v_candidate := make_timestamptz(v_year, v_month, v_day, 0, 0, 0, 'UTC') + interval '1 day';
+      end if;
+      continue scan;
+    end if;
+
+    -- Check minute
+    if not v_minute = any(v_minutes) then
+      v_found := false;
+      foreach v_val in array v_minutes loop
+        if v_val > v_minute then
+          v_candidate := make_timestamptz(v_year, v_month, v_day, v_hour, v_val, 0, 'UTC');
+          v_found := true;
+          exit;
+        end if;
+      end loop;
+      if not v_found then
+        -- No matching minute left this hour, advance to next hour
+        v_candidate := make_timestamptz(v_year, v_month, v_day, v_hour, 0, 0, 'UTC') + interval '1 hour';
+      end if;
+      continue scan;
+    end if;
+
+    -- All fields match
+    return v_candidate;
+  end loop;
+end;
+$$;
+
+-- Creates a new schedule in the given queue.
+-- Computes next_run_at from the cron expression and stores it alongside
+-- the schedule metadata.
+create function absurd.create_schedule (
+  p_queue_name text,
+  p_schedule_name text,
+  p_task_name text,
+  p_schedule_expr text,
+  p_options jsonb default '{}'::jsonb
+)
+  returns table (
+    schedule_name text,
+    next_run_at timestamptz
+  )
+  language plpgsql
+as $$
+declare
+  v_now timestamptz := absurd.current_time();
+  v_next_run timestamptz;
+  v_params jsonb;
+  v_headers jsonb;
+  v_retry_strategy jsonb;
+  v_max_attempts integer;
+  v_cancellation jsonb;
+  v_catchup_policy text;
+  v_enabled boolean;
+begin
+  if p_schedule_name is null or length(trim(p_schedule_name)) = 0 then
+    raise exception 'schedule_name must be provided';
+  end if;
+  if p_task_name is null or length(trim(p_task_name)) = 0 then
+    raise exception 'task_name must be provided';
+  end if;
+
+  v_next_run := absurd.next_cron_time(p_schedule_expr, v_now);
+  v_params := coalesce(p_options->'params', '{}'::jsonb);
+  v_headers := p_options->'headers';
+  v_retry_strategy := p_options->'retry_strategy';
+  if p_options ? 'max_attempts' then
+    v_max_attempts := (p_options->>'max_attempts')::int;
+  end if;
+  v_cancellation := p_options->'cancellation';
+  v_catchup_policy := coalesce(p_options->>'catchup_policy', 'skip');
+  v_enabled := coalesce((p_options->>'enabled')::boolean, true);
+
+  execute format(
+    'insert into absurd.%I (schedule_name, task_name, params, headers,
+       retry_strategy, max_attempts, cancellation, schedule_expr,
+       enabled, catchup_policy, last_triggered_at, next_run_at, created_at)
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, null, $11, $12)',
+    's_' || p_queue_name
+  ) using p_schedule_name, p_task_name, v_params, v_headers,
+          v_retry_strategy, v_max_attempts, v_cancellation, p_schedule_expr,
+          v_enabled, v_catchup_policy, v_next_run, v_now;
+
+  return query select p_schedule_name, v_next_run;
+end;
+$$;
+
+-- Retrieves a single schedule by name from the given queue.
+create function absurd.get_schedule (
+  p_queue_name text,
+  p_schedule_name text
+)
+  returns table (
+    schedule_name text,
+    task_name text,
+    params jsonb,
+    headers jsonb,
+    retry_strategy jsonb,
+    max_attempts integer,
+    cancellation jsonb,
+    schedule_expr text,
+    enabled boolean,
+    catchup_policy text,
+    last_triggered_at timestamptz,
+    next_run_at timestamptz,
+    created_at timestamptz
+  )
+  language plpgsql
+as $$
+begin
+  return query execute format(
+    'select schedule_name, task_name, params, headers,
+            retry_strategy, max_attempts, cancellation, schedule_expr,
+            enabled, catchup_policy, last_triggered_at, next_run_at, created_at
+       from absurd.%I
+      where schedule_name = $1',
+    's_' || p_queue_name
+  ) using p_schedule_name;
+end;
+$$;
+
+-- Lists all schedules in the given queue, ordered by name.
+create function absurd.list_schedules (
+  p_queue_name text
+)
+  returns table (
+    schedule_name text,
+    task_name text,
+    schedule_expr text,
+    enabled boolean,
+    catchup_policy text,
+    last_triggered_at timestamptz,
+    next_run_at timestamptz
+  )
+  language plpgsql
+as $$
+begin
+  return query execute format(
+    'select schedule_name, task_name, schedule_expr, enabled,
+            catchup_policy, last_triggered_at, next_run_at
+       from absurd.%I
+      order by schedule_name',
+    's_' || p_queue_name
+  );
+end;
+$$;
+
+-- Deletes a schedule by name from the given queue.
+create function absurd.delete_schedule (
+  p_queue_name text,
+  p_schedule_name text
+)
+  returns void
+  language plpgsql
+as $$
+begin
+  execute format(
+    'delete from absurd.%I where schedule_name = $1',
+    's_' || p_queue_name
+  ) using p_schedule_name;
+end;
+$$;
+
+-- Updates an existing schedule.  Only the keys present in p_options are
+-- modified; absent keys are left untouched.  When the schedule expression
+-- changes, next_run_at is recomputed.  Re-enabling a disabled schedule
+-- also fast-forwards next_run_at to the next future occurrence.
+create function absurd.update_schedule (
+  p_queue_name text,
+  p_schedule_name text,
+  p_options jsonb
+)
+  returns void
+  language plpgsql
+as $$
+declare
+  v_now timestamptz := absurd.current_time();
+  v_new_expr text;
+  v_next_run timestamptz;
+  v_current_enabled boolean;
+  v_new_enabled boolean;
+begin
+  execute format(
+    'select enabled from absurd.%I where schedule_name = $1 for update',
+    's_' || p_queue_name
+  ) into v_current_enabled using p_schedule_name;
+
+  if v_current_enabled is null then
+    raise exception 'Schedule "%" not found in queue "%"', p_schedule_name, p_queue_name;
+  end if;
+
+  if p_options ? 'schedule_expr' then
+    v_new_expr := p_options->>'schedule_expr';
+    v_next_run := absurd.next_cron_time(v_new_expr, v_now);
+    execute format(
+      'update absurd.%I set schedule_expr = $2, next_run_at = $3 where schedule_name = $1',
+      's_' || p_queue_name
+    ) using p_schedule_name, v_new_expr, v_next_run;
+  end if;
+
+  if p_options ? 'params' then
+    execute format(
+      'update absurd.%I set params = $2 where schedule_name = $1',
+      's_' || p_queue_name
+    ) using p_schedule_name, (p_options->'params');
+  end if;
+
+  if p_options ? 'headers' then
+    execute format(
+      'update absurd.%I set headers = $2 where schedule_name = $1',
+      's_' || p_queue_name
+    ) using p_schedule_name, (p_options->'headers');
+  end if;
+
+  if p_options ? 'max_attempts' then
+    execute format(
+      'update absurd.%I set max_attempts = $2 where schedule_name = $1',
+      's_' || p_queue_name
+    ) using p_schedule_name, (p_options->>'max_attempts')::integer;
+  end if;
+
+  if p_options ? 'retry_strategy' then
+    execute format(
+      'update absurd.%I set retry_strategy = $2 where schedule_name = $1',
+      's_' || p_queue_name
+    ) using p_schedule_name, (p_options->'retry_strategy');
+  end if;
+
+  if p_options ? 'cancellation' then
+    execute format(
+      'update absurd.%I set cancellation = $2 where schedule_name = $1',
+      's_' || p_queue_name
+    ) using p_schedule_name, (p_options->'cancellation');
+  end if;
+
+  if p_options ? 'catchup_policy' then
+    execute format(
+      'update absurd.%I set catchup_policy = $2 where schedule_name = $1',
+      's_' || p_queue_name
+    ) using p_schedule_name, (p_options->>'catchup_policy');
+  end if;
+
+  if p_options ? 'enabled' then
+    v_new_enabled := (p_options->>'enabled')::boolean;
+    execute format(
+      'update absurd.%I set enabled = $2 where schedule_name = $1',
+      's_' || p_queue_name
+    ) using p_schedule_name, v_new_enabled;
+
+    -- Re-enabling: skip to next future run from now
+    if v_new_enabled and not v_current_enabled then
+      execute format(
+        'select schedule_expr from absurd.%I where schedule_name = $1',
+        's_' || p_queue_name
+      ) into v_new_expr using p_schedule_name;
+      v_next_run := absurd.next_cron_time(v_new_expr, v_now);
+      execute format(
+        'update absurd.%I set next_run_at = $2 where schedule_name = $1',
+        's_' || p_queue_name
+      ) using p_schedule_name, v_next_run;
+    end if;
+  end if;
+end;
+$$;
+
+-- Ticks all due schedules in a queue, spawning tasks as needed.
+create function absurd.tick_schedules (
+  p_queue_name text
+)
+  returns void
+  language plpgsql
+as $$
+declare
+  v_now timestamptz := absurd.current_time();
+  v_sched record;
+  v_spawned integer;
+  v_next timestamptz;
+  v_trigger_at timestamptz;
+  v_idem_key text;
+  v_spawn_options jsonb;
+  v_max_per_tick integer := 5;
+begin
+  for v_sched in
+    execute format(
+      'select schedule_name, task_name, params, headers,
+              retry_strategy, max_attempts, cancellation,
+              schedule_expr, catchup_policy, next_run_at
+         from absurd.%I
+        where enabled = true
+          and next_run_at <= $1
+        for update skip locked',
+      's_' || p_queue_name
+    ) using v_now
+  loop
+    v_spawned := 0;
+    v_next := v_sched.next_run_at;
+
+    if v_sched.catchup_policy = 'skip' then
+      -- Spawn one task for the current next_run_at
+      v_trigger_at := v_next;
+      v_idem_key := 'sched:' || v_sched.schedule_name || ':' || v_trigger_at::text;
+      v_spawn_options := jsonb_strip_nulls(jsonb_build_object(
+        'idempotency_key', v_idem_key,
+        'headers', v_sched.headers,
+        'retry_strategy', v_sched.retry_strategy,
+        'max_attempts', v_sched.max_attempts,
+        'cancellation', v_sched.cancellation
+      ));
+      perform absurd.spawn_task(p_queue_name, v_sched.task_name, v_sched.params, v_spawn_options);
+
+      -- Jump to next future run
+      v_next := absurd.next_cron_time(v_sched.schedule_expr, v_next);
+      while v_next <= v_now loop
+        v_next := absurd.next_cron_time(v_sched.schedule_expr, v_next);
+      end loop;
+
+      -- Update schedule
+      execute format(
+        'update absurd.%I
+            set last_triggered_at = $2,
+                next_run_at = $3
+          where schedule_name = $1',
+        's_' || p_queue_name
+      ) using v_sched.schedule_name, v_trigger_at, v_next;
+
+    elsif v_sched.catchup_policy = 'all' then
+      -- Drip-feed: spawn up to max_per_tick
+      while v_next <= v_now and v_spawned < v_max_per_tick loop
+        v_trigger_at := v_next;
+        v_idem_key := 'sched:' || v_sched.schedule_name || ':' || v_trigger_at::text;
+        v_spawn_options := jsonb_strip_nulls(jsonb_build_object(
+          'idempotency_key', v_idem_key,
+          'headers', v_sched.headers,
+          'retry_strategy', v_sched.retry_strategy,
+          'max_attempts', v_sched.max_attempts,
+          'cancellation', v_sched.cancellation
+        ));
+        perform absurd.spawn_task(p_queue_name, v_sched.task_name, v_sched.params, v_spawn_options);
+        v_next := absurd.next_cron_time(v_sched.schedule_expr, v_next);
+        v_spawned := v_spawned + 1;
+      end loop;
+
+      -- Update schedule: last_triggered_at = last spawned time
+      execute format(
+        'update absurd.%I
+            set last_triggered_at = $2,
+                next_run_at = $3
+          where schedule_name = $1',
+        's_' || p_queue_name
+      ) using v_sched.schedule_name, v_trigger_at, v_next;
+    end if;
+  end loop;
+end;
+$$;
+
 create table if not exists absurd.queues (
   queue_name text primary key,
   created_at timestamptz not null default absurd.current_time()
@@ -255,6 +769,26 @@ begin
   );
 
   execute format(
+    'create table if not exists absurd.%I (
+        schedule_name text primary key,
+        task_name text not null,
+        params jsonb not null default ''{}''::jsonb,
+        headers jsonb,
+        retry_strategy jsonb,
+        max_attempts integer,
+        cancellation jsonb,
+        schedule_expr text not null,
+        enabled boolean not null default true,
+        catchup_policy text not null default ''skip''
+            check (catchup_policy in (''skip'', ''all'')),
+        last_triggered_at timestamptz,
+        next_run_at timestamptz not null,
+        created_at timestamptz not null default absurd.current_time()
+     )',
+    's_' || p_queue_name
+  );
+
+  execute format(
     'create index if not exists %I on absurd.%I (state, available_at)',
     ('r_' || p_queue_name) || '_sai',
     'r_' || p_queue_name
@@ -317,6 +851,7 @@ begin
     return;
   end if;
 
+  execute format('drop table if exists absurd.%I cascade', 's_' || p_queue_name);
   execute format('drop table if exists absurd.%I cascade', 'w_' || p_queue_name);
   execute format('drop table if exists absurd.%I cascade', 'e_' || p_queue_name);
   execute format('drop table if exists absurd.%I cascade', 'c_' || p_queue_name);
@@ -462,6 +997,9 @@ declare
   v_sql text;
   v_expired_run record;
 begin
+  -- Tick schedules before claiming work
+  perform absurd.tick_schedules(p_queue_name);
+
   if v_claim_timeout > 0 then
     v_claim_until := v_now + make_interval(secs => v_claim_timeout);
   end if;
