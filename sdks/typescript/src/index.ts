@@ -176,16 +176,31 @@ interface RegisteredTask {
 
 export class TaskContext {
   private stepNameCounter: Map<string, number> = new Map();
+  private readonly log: Log;
+  readonly taskID: string;
+  private readonly con: Queryable;
+  private readonly queueName: string;
+  private readonly task: ClaimedTask;
+  private readonly checkpointCache: Map<string, JsonValue>;
+  private readonly claimTimeout: number;
 
   private constructor(
-    private readonly log: Log,
-    readonly taskID: string,
-    private readonly con: Queryable,
-    private readonly queueName: string,
-    private readonly task: ClaimedTask,
-    private readonly checkpointCache: Map<string, JsonValue>,
-    private readonly claimTimeout: number,
-  ) {}
+    log: Log,
+    taskID: string,
+    con: Queryable,
+    queueName: string,
+    task: ClaimedTask,
+    checkpointCache: Map<string, JsonValue>,
+    claimTimeout: number,
+  ) {
+    this.log = log;
+    this.taskID = taskID;
+    this.con = con;
+    this.queueName = queueName;
+    this.task = task;
+    this.checkpointCache = checkpointCache;
+    this.claimTimeout = claimTimeout;
+  }
 
   /**
    * Returns all headers attached to this task.

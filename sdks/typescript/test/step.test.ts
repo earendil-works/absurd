@@ -1,6 +1,6 @@
-import { describe, test, expect, beforeAll, afterEach, vi } from "vitest";
-import { createTestAbsurd, randomName, type TestContext } from "./setup.js";
-import type { Absurd } from "../src/index.js";
+import { describe, test, expect, beforeAll, afterEach, vi } from "./testlib.ts";
+import { createTestAbsurd, randomName, type TestContext } from "./setup.ts";
+import type { Absurd } from "../src/index.ts";
 
 describe("Step functionality", () => {
   let ctx: TestContext;
