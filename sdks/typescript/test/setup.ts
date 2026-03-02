@@ -1,12 +1,13 @@
-import { afterAll, beforeAll } from "vitest";
+import { afterAll, beforeAll } from "./testlib.ts";
 import {
   PostgreSqlContainer,
   StartedPostgreSqlContainer,
 } from "@testcontainers/postgresql";
 import { Pool } from "pg";
 import { readFileSync } from "fs";
-import { join } from "path";
-import { Absurd, type JsonValue } from "../src/index.js";
+import { dirname, join } from "path";
+import { fileURLToPath } from "url";
+import { Absurd, type JsonValue } from "../src/index.ts";
 
 // Database row types matching the PostgreSQL schema
 export interface TaskRow {
@@ -59,6 +60,9 @@ export interface RunRow {
 export let container: StartedPostgreSqlContainer;
 export let pool: Pool;
 
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
 beforeAll(async () => {
   console.time("Test container startup");
   container = await new PostgreSqlContainer("postgres:16-alpine")
@@ -80,7 +84,7 @@ beforeAll(async () => {
   await pool.query(schema);
 
   console.log("✓ Test container started and schema loaded");
-}, 60000);
+}, { timeout: 60000 });
 
 afterAll(async () => {
   console.time("Test container cleanup");

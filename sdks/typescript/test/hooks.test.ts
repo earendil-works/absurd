@@ -1,7 +1,7 @@
-import { describe, test, expect, beforeAll, afterEach } from "vitest";
+import { describe, test, expect, beforeAll, afterEach } from "./testlib.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
-import { pool, randomName } from "./setup.js";
-import { Absurd, type SpawnOptions, type TaskContext } from "../src/index.js";
+import { pool, randomName } from "./setup.ts";
+import { Absurd, type SpawnOptions, type TaskContext } from "../src/index.ts";
 
 describe("Hooks", () => {
   let queueName: string;
@@ -140,8 +140,9 @@ describe("Hooks", () => {
         hooks: {
           wrapTaskExecution: async (_ctx, execute) => {
             executionOrder.push("before");
-            await execute();
+            const result = await execute();
             executionOrder.push("after");
+            return result;
           },
         },
       });
@@ -172,7 +173,7 @@ describe("Hooks", () => {
           wrapTaskExecution: async (ctx, execute) => {
             capturedTaskId = ctx.taskID;
             capturedHeaders = ctx.headers;
-            await execute();
+            return await execute();
           },
         },
       });
