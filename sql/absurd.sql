@@ -145,13 +145,23 @@ begin
       end if;
 
     elsif v_part ~ '^[0-9]+-[0-9]+$' then
-      -- Simple range: N-M
+      -- Simple range: N-M (supports wrap-around, e.g. FRI-MON -> 5-1)
       v_range_parts := string_to_array(v_part, '-');
       v_start := greatest(v_range_parts[1]::integer, p_min);
       v_end := least(v_range_parts[2]::integer, p_max);
-      for v_i in v_start..v_end loop
-        v_result := v_result || v_i;
-      end loop;
+      if v_start <= v_end then
+        for v_i in v_start..v_end loop
+          v_result := v_result || v_i;
+        end loop;
+      else
+        -- Wrap-around: e.g. 5-1 expands to 5,6,0,1
+        for v_i in v_start..p_max loop
+          v_result := v_result || v_i;
+        end loop;
+        for v_i in p_min..v_end loop
+          v_result := v_result || v_i;
+        end loop;
+      end if;
 
     elsif v_part ~ '^[0-9]+$' then
       -- Exact value: N
@@ -209,7 +219,14 @@ begin
 
   -- Handle @every <seconds> shorthand
   if v_expr ~* '^@every\s+' then
-    return p_after + (regexp_replace(v_expr, '^@every\s+', '', 'i')::integer * interval '1 second');
+    declare
+      v_secs_text text := regexp_replace(v_expr, '^@every\s+', '', 'i');
+    begin
+      if v_secs_text !~ '^\d+$' then
+        raise exception '@every requires a plain integer number of seconds, got: "%"', v_secs_text;
+      end if;
+      return p_after + (v_secs_text::integer * interval '1 second');
+    end;
   end if;
 
   -- Handle named shorthands
@@ -804,6 +821,12 @@ begin
     'create index if not exists %I on absurd.%I (event_name)',
     ('w_' || p_queue_name) || '_eni',
     'w_' || p_queue_name
+  );
+
+  execute format(
+    'create index if not exists %I on absurd.%I (enabled, next_run_at)',
+    ('s_' || p_queue_name) || '_enri',
+    's_' || p_queue_name
   );
 end;
 $$;

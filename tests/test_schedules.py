@@ -1,4 +1,7 @@
 from datetime import datetime, timedelta, timezone
+
+import psycopg.errors
+import pytest
 from psycopg.sql import SQL
 
 
@@ -63,6 +66,31 @@ def test_parse_cron_field_month_names(client):
         "select absurd.parse_cron_field('JAN,JUN,DEC', 1, 12)"
     ).fetchone()[0]
     assert result == [1, 6, 12]
+
+
+def test_parse_cron_field_wraparound_range(client):
+    """FRI-MON (5-1) should expand to {5, 6, 0, 1} via wrap-around."""
+    result = client.conn.execute(
+        "select absurd.parse_cron_field('5-1', 0, 6)"
+    ).fetchone()[0]
+    assert result == [0, 1, 5, 6]
+
+
+def test_next_cron_time_wraparound_dow(client):
+    """'0 9 * * FRI-MON' should match Friday through Monday.
+    2024-06-18 is Tuesday -> next match is Friday 2024-06-21."""
+    result = client.conn.execute(
+        "select absurd.next_cron_time('0 9 * * FRI-MON', '2024-06-18 10:00:00+00'::timestamptz)"
+    ).fetchone()[0]
+    assert result == datetime(2024, 6, 21, 9, 0, tzinfo=timezone.utc)
+
+
+def test_next_cron_time_every_invalid_suffix(client):
+    """'@every 300s' should raise a clear error, not a cryptic cast failure."""
+    with pytest.raises(psycopg.errors.RaiseException, match="plain integer"):
+        client.conn.execute(
+            "select absurd.next_cron_time('@every 300s', '2024-06-15 09:10:00+00'::timestamptz)"
+        )
 
 
 def test_next_cron_time_every_minute(client):
