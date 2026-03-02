@@ -453,18 +453,20 @@ def cmd_cleanup(args):
             f"""SELECT COUNT(*) FROM absurd.t_{queue_name} t
                 LEFT JOIN absurd.r_{queue_name} r ON r.run_id = t.last_attempt_run
                 WHERE t.state IN ('completed', 'failed', 'cancelled')
-                AND ((t.state = 'completed' AND r.completed_at < NOW() - INTERVAL '{ttl_seconds} seconds')
-                OR (t.state = 'failed' AND r.failed_at < NOW() - INTERVAL '{ttl_seconds} seconds')
-                OR (t.state = 'cancelled' AND t.cancelled_at < NOW() - INTERVAL '{ttl_seconds} seconds'));""",
+                AND ((t.state = 'completed' AND r.completed_at < NOW() - make_interval(secs => :'ttl_seconds'::int))
+                OR (t.state = 'failed' AND r.failed_at < NOW() - make_interval(secs => :'ttl_seconds'::int))
+                OR (t.state = 'cancelled' AND t.cancelled_at < NOW() - make_interval(secs => :'ttl_seconds'::int)));""",
             tuples_only=True,
             no_align=True,
+            variables={"ttl_seconds": ttl_seconds},
         )
 
         event_count = run_psql(
             config,
-            f"SELECT COUNT(*) FROM absurd.e_{queue_name} WHERE emitted_at < NOW() - INTERVAL '{ttl_seconds} seconds';",
+            f"SELECT COUNT(*) FROM absurd.e_{queue_name} WHERE emitted_at < NOW() - make_interval(secs => :'ttl_seconds'::int);",
             tuples_only=True,
             no_align=True,
+            variables={"ttl_seconds": ttl_seconds},
         )
 
         print(f"Would delete {task_count} tasks and {event_count} events")
@@ -485,9 +487,14 @@ def cmd_cleanup(args):
         tasks_deleted = int(
             run_psql(
                 config,
-                f"SELECT absurd.cleanup_tasks('{queue_name}', {ttl_seconds}, {options.limit});",
+                "SELECT absurd.cleanup_tasks(:'queue_name', :'ttl_seconds'::int, :'limit'::int);",
                 tuples_only=True,
                 no_align=True,
+                variables={
+                    "queue_name": queue_name,
+                    "ttl_seconds": ttl_seconds,
+                    "limit": options.limit,
+                },
             )
         )
         total_tasks_deleted += tasks_deleted
@@ -498,9 +505,14 @@ def cmd_cleanup(args):
         events_deleted = int(
             run_psql(
                 config,
-                f"SELECT absurd.cleanup_events('{queue_name}', {ttl_seconds}, {options.limit});",
+                "SELECT absurd.cleanup_events(:'queue_name', :'ttl_seconds'::int, :'limit'::int);",
                 tuples_only=True,
                 no_align=True,
+                variables={
+                    "queue_name": queue_name,
+                    "ttl_seconds": ttl_seconds,
+                    "limit": options.limit,
+                },
             )
         )
         total_events_deleted += events_deleted
@@ -757,12 +769,12 @@ def cmd_spawn_task(args):
         parser.print_help()
         sys.exit(1)
 
-    task_name = validate_identifier(args[0], "task name")
+    task_name = args[0]
     config = config_from_options(options)
 
     params_json = build_json_params(options.params, options.base_params)
 
-    headers_json = "NULL"
+    headers_payload = None
     if options.headers:
         headers_dict = {}
         for header in options.headers:
@@ -774,7 +786,7 @@ def cmd_spawn_task(args):
                 sys.exit(1)
             key, value = header.split("=", 1)
             headers_dict[key] = value
-        headers_json = f"'{json.dumps(headers_dict)}'::jsonb"
+        headers_payload = json.dumps(headers_dict)
 
     retry_json = "NULL"
     if (
@@ -810,8 +822,8 @@ def cmd_spawn_task(args):
         ("Queue", queue),
         ("Params", params_json),
     ]
-    if headers_json != "NULL":
-        details.append(("Headers", headers_json))
+    if headers_payload is not None:
+        details.append(("Headers", headers_payload))
     if options.max_attempts:
         details.append(("Max attempts", options.max_attempts))
     if retry_json != "NULL":
@@ -821,21 +833,27 @@ def cmd_spawn_task(args):
     details.extend(get_common_db_details(config))
     print_verbose_configuration(options.verbose, details)
 
+    headers_expr = "NULL"
+    variables = {
+        "queue": queue,
+        "task_name": task_name,
+        "params_json": params_json,
+    }
+    if headers_payload is not None:
+        headers_expr = ":'headers_json'::jsonb"
+        variables["headers_json"] = headers_payload
+
     query = f"""
         SELECT task_id, run_id, attempt
         FROM absurd.spawn_task(
             :'queue',
             :'task_name',
             :'params_json'::jsonb,
-            {headers_json}
+            {headers_expr}
         );
     """
 
-    rows = run_psql_csv(config, query, variables={
-        "queue": queue,
-        "task_name": task_name,
-        "params_json": params_json,
-    })
+    rows = run_psql_csv(config, query, variables=variables)
 
     if rows:
         task_id, run_id, attempt = rows[0]
@@ -1018,7 +1036,8 @@ def cmd_list_tasks(args):
             where_clauses.append("t.task_name = :'task_name'")
             variables["task_name"] = options.task_name
         if options.status:
-            where_clauses.append(f"t.state = '{options.status}'")
+            where_clauses.append("t.state = :'status'")
+            variables["status"] = options.status
 
         where_clause = ""
         if where_clauses:
