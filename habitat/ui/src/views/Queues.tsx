@@ -134,6 +134,12 @@ export default function Queues() {
                       >
                         Events →
                       </A>
+                      <A
+                        class="text-xs font-medium text-primary hover:underline"
+                        href={`/schedules?queue=${encodeURIComponent(queue.queueName)}`}
+                      >
+                        Schedules →
+                      </A>
                     </CardFooter>
                   </Card>
                 )}

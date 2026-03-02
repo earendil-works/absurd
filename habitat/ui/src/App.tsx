@@ -7,6 +7,7 @@ import Tasks from "@/views/Tasks";
 import TaskRuns from "@/views/TaskRuns";
 import Queues from "@/views/Queues";
 import EventLog from "@/views/EventLog";
+import Schedules from "@/views/Schedules";
 
 export default function App() {
   return (
@@ -41,6 +42,14 @@ export default function App() {
           component={() => (
             <Layout>
               <EventLog />
+            </Layout>
+          )}
+        />
+        <Route
+          path="/schedules"
+          component={() => (
+            <Layout>
+              <Schedules />
             </Layout>
           )}
         />
@@ -88,6 +97,14 @@ function Layout(props: { children: JSX.Element }) {
             >
               <span class="h-2 w-2 rounded-full bg-purple-500" />
               Events
+            </A>
+            <A
+              href="/schedules"
+              class="inline-flex items-center gap-2 rounded-md border border-transparent px-3 py-2 text-sm font-medium text-muted-foreground transition-colors hover:border-transparent hover:bg-background/60 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              activeClass="border-border bg-background text-foreground shadow-sm"
+            >
+              <span class="h-2 w-2 rounded-full bg-rose-500" />
+              Schedules
             </A>
             <A
               href="/queues"

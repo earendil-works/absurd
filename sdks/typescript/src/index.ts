@@ -729,20 +729,37 @@ export class Absurd {
   ): Promise<{ scheduleName: string; nextRunAt: Date }> {
     const queue = queueName ?? this.queueName;
     const normalizedOptions: JsonObject = {};
-    if (options.params !== undefined) normalizedOptions.params = options.params as JsonValue;
-    if (options.headers !== undefined) normalizedOptions.headers = options.headers;
-    if (options.maxAttempts !== undefined) normalizedOptions.max_attempts = options.maxAttempts;
-    if (options.retryStrategy) normalizedOptions.retry_strategy = serializeRetryStrategy(options.retryStrategy);
+    if (options.params !== undefined)
+      normalizedOptions.params = options.params as JsonValue;
+    if (options.headers !== undefined)
+      normalizedOptions.headers = options.headers;
+    if (options.maxAttempts !== undefined)
+      normalizedOptions.max_attempts = options.maxAttempts;
+    if (options.retryStrategy)
+      normalizedOptions.retry_strategy = serializeRetryStrategy(
+        options.retryStrategy,
+      );
     if (options.cancellation) {
       const c = normalizeCancellation(options.cancellation);
       if (c) normalizedOptions.cancellation = c;
     }
-    if (options.catchupPolicy !== undefined) normalizedOptions.catchup_policy = options.catchupPolicy;
-    if (options.enabled !== undefined) normalizedOptions.enabled = options.enabled;
+    if (options.catchupPolicy !== undefined)
+      normalizedOptions.catchup_policy = options.catchupPolicy;
+    if (options.enabled !== undefined)
+      normalizedOptions.enabled = options.enabled;
 
-    const result = await this.con.query<{ schedule_name: string; next_run_at: Date }>(
+    const result = await this.con.query<{
+      schedule_name: string;
+      next_run_at: Date;
+    }>(
       `SELECT schedule_name, next_run_at FROM absurd.create_schedule($1, $2, $3, $4, $5)`,
-      [queue, scheduleName, taskName, scheduleExpr, JSON.stringify(normalizedOptions)],
+      [
+        queue,
+        scheduleName,
+        taskName,
+        scheduleExpr,
+        JSON.stringify(normalizedOptions),
+      ],
     );
     const row = result.rows[0];
     return { scheduleName: row.schedule_name, nextRunAt: row.next_run_at };
@@ -754,7 +771,10 @@ export class Absurd {
    * @param queueName Queue name (defaults to this client's queue).
    * @returns The full schedule details, or null if not found.
    */
-  async getSchedule(scheduleName: string, queueName?: string): Promise<Schedule | null> {
+  async getSchedule(
+    scheduleName: string,
+    queueName?: string,
+  ): Promise<Schedule | null> {
     const queue = queueName ?? this.queueName;
     const result = await this.con.query(
       `SELECT * FROM absurd.get_schedule($1, $2)`,
@@ -806,9 +826,15 @@ export class Absurd {
    * @param scheduleName Name of the schedule to delete.
    * @param queueName Queue name (defaults to this client's queue).
    */
-  async deleteSchedule(scheduleName: string, queueName?: string): Promise<void> {
+  async deleteSchedule(
+    scheduleName: string,
+    queueName?: string,
+  ): Promise<void> {
     const queue = queueName ?? this.queueName;
-    await this.con.query(`SELECT absurd.delete_schedule($1, $2)`, [queue, scheduleName]);
+    await this.con.query(`SELECT absurd.delete_schedule($1, $2)`, [
+      queue,
+      scheduleName,
+    ]);
   }
 
   /**
@@ -824,20 +850,31 @@ export class Absurd {
   ): Promise<void> {
     const queue = queueName ?? this.queueName;
     const normalizedOptions: JsonObject = {};
-    if (options.params !== undefined) normalizedOptions.params = options.params as JsonValue;
-    if (options.headers !== undefined) normalizedOptions.headers = options.headers;
-    if (options.maxAttempts !== undefined) normalizedOptions.max_attempts = options.maxAttempts;
-    if (options.retryStrategy) normalizedOptions.retry_strategy = serializeRetryStrategy(options.retryStrategy);
+    if (options.params !== undefined)
+      normalizedOptions.params = options.params as JsonValue;
+    if (options.headers !== undefined)
+      normalizedOptions.headers = options.headers;
+    if (options.maxAttempts !== undefined)
+      normalizedOptions.max_attempts = options.maxAttempts;
+    if (options.retryStrategy)
+      normalizedOptions.retry_strategy = serializeRetryStrategy(
+        options.retryStrategy,
+      );
     if (options.cancellation) {
       const c = normalizeCancellation(options.cancellation);
       if (c) normalizedOptions.cancellation = c;
     }
-    if (options.catchupPolicy !== undefined) normalizedOptions.catchup_policy = options.catchupPolicy;
-    if (options.enabled !== undefined) normalizedOptions.enabled = options.enabled;
-    if (options.scheduleExpr !== undefined) normalizedOptions.schedule_expr = options.scheduleExpr;
+    if (options.catchupPolicy !== undefined)
+      normalizedOptions.catchup_policy = options.catchupPolicy;
+    if (options.enabled !== undefined)
+      normalizedOptions.enabled = options.enabled;
+    if (options.scheduleExpr !== undefined)
+      normalizedOptions.schedule_expr = options.scheduleExpr;
 
     await this.con.query(`SELECT absurd.update_schedule($1, $2, $3)`, [
-      queue, scheduleName, JSON.stringify(normalizedOptions),
+      queue,
+      scheduleName,
+      JSON.stringify(normalizedOptions),
     ]);
   }
 
