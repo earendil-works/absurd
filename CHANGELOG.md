@@ -4,6 +4,10 @@ This contains the changes between releases.
 
 # Unreleased
 
+# 0.0.8
+
+* Fixed Habitat sub-path deployment support and hardened prefix handling for UI/API routes.
+
 # 0.0.7
 
 * Added hooks support to the TypeScript SDK.  #62
