@@ -626,7 +626,7 @@ begin
     if v_sched.catchup_policy = 'skip' then
       -- Spawn one task for the current next_run_at
       v_trigger_at := v_next;
-      v_idem_key := 'sched:' || v_sched.schedule_name || ':' || v_trigger_at::text;
+      v_idem_key := 'sched:' || v_sched.schedule_name || ':' || extract(epoch from v_trigger_at)::bigint::text;
       v_spawn_options := jsonb_strip_nulls(jsonb_build_object(
         'idempotency_key', v_idem_key,
         'headers', v_sched.headers,
@@ -655,7 +655,7 @@ begin
       -- Drip-feed: spawn up to max_per_tick
       while v_next <= v_now and v_spawned < v_max_per_tick loop
         v_trigger_at := v_next;
-        v_idem_key := 'sched:' || v_sched.schedule_name || ':' || v_trigger_at::text;
+        v_idem_key := 'sched:' || v_sched.schedule_name || ':' || extract(epoch from v_trigger_at)::bigint::text;
         v_spawn_options := jsonb_strip_nulls(jsonb_build_object(
           'idempotency_key', v_idem_key,
           'headers', v_sched.headers,

@@ -12,7 +12,7 @@
 -- Expands a single cron field expression into a sorted, deduplicated
 -- integer array.  Supports *, exact values, ranges (N-M), steps (*/N,
 -- N-M/S), comma-separated lists, and named days/months.
-create function absurd.parse_cron_field (
+create or replace function absurd.parse_cron_field (
   p_field text,
   p_min integer,
   p_max integer
@@ -127,7 +127,7 @@ $$;
 -- Given a cron expression and a reference timestamp, returns the next
 -- matching time strictly after p_after.  Handles standard 5-field cron,
 -- common shorthands (@daily, @hourly, etc.), and @every <seconds>.
-create function absurd.next_cron_time (
+create or replace function absurd.next_cron_time (
   p_expr text,
   p_after timestamptz
 )
@@ -309,7 +309,7 @@ $$;
 -- Creates a new schedule in the given queue.
 -- Computes next_run_at from the cron expression and stores it alongside
 -- the schedule metadata.
-create function absurd.create_schedule (
+create or replace function absurd.create_schedule (
   p_queue_name text,
   p_schedule_name text,
   p_task_name text,
@@ -366,7 +366,7 @@ end;
 $$;
 
 -- Retrieves a single schedule by name from the given queue.
-create function absurd.get_schedule (
+create or replace function absurd.get_schedule (
   p_queue_name text,
   p_schedule_name text
 )
@@ -400,7 +400,7 @@ end;
 $$;
 
 -- Lists all schedules in the given queue, ordered by name.
-create function absurd.list_schedules (
+create or replace function absurd.list_schedules (
   p_queue_name text
 )
   returns table (
@@ -426,7 +426,7 @@ end;
 $$;
 
 -- Deletes a schedule by name from the given queue.
-create function absurd.delete_schedule (
+create or replace function absurd.delete_schedule (
   p_queue_name text,
   p_schedule_name text
 )
@@ -445,7 +445,7 @@ $$;
 -- modified; absent keys are left untouched.  When the schedule expression
 -- changes, next_run_at is recomputed.  Re-enabling a disabled schedule
 -- also fast-forwards next_run_at to the next future occurrence.
-create function absurd.update_schedule (
+create or replace function absurd.update_schedule (
   p_queue_name text,
   p_schedule_name text,
   p_options jsonb
@@ -544,7 +544,7 @@ end;
 $$;
 
 -- Ticks all due schedules in a queue, spawning tasks as needed.
-create function absurd.tick_schedules (
+create or replace function absurd.tick_schedules (
   p_queue_name text
 )
   returns void
@@ -578,7 +578,7 @@ begin
     if v_sched.catchup_policy = 'skip' then
       -- Spawn one task for the current next_run_at
       v_trigger_at := v_next;
-      v_idem_key := 'sched:' || v_sched.schedule_name || ':' || v_trigger_at::text;
+      v_idem_key := 'sched:' || v_sched.schedule_name || ':' || extract(epoch from v_trigger_at)::bigint::text;
       v_spawn_options := jsonb_strip_nulls(jsonb_build_object(
         'idempotency_key', v_idem_key,
         'headers', v_sched.headers,
@@ -607,7 +607,7 @@ begin
       -- Drip-feed: spawn up to max_per_tick
       while v_next <= v_now and v_spawned < v_max_per_tick loop
         v_trigger_at := v_next;
-        v_idem_key := 'sched:' || v_sched.schedule_name || ':' || v_trigger_at::text;
+        v_idem_key := 'sched:' || v_sched.schedule_name || ':' || extract(epoch from v_trigger_at)::bigint::text;
         v_spawn_options := jsonb_strip_nulls(jsonb_build_object(
           'idempotency_key', v_idem_key,
           'headers', v_sched.headers,
