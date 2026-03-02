@@ -142,7 +142,8 @@ export interface QueueEvent {
 
 export interface TaskListResponse {
   items: TaskSummary[];
-  total: number;
+  total: number; // -1 when the backend skips expensive exact counts
+  hasMore: boolean;
   page: number;
   perPage: number;
   availableStatuses: string[];

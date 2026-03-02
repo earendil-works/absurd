@@ -37,34 +37,38 @@ export default function TaskRuns() {
   );
 
   const RUNS_PAGE_SIZE = 200;
+  const MAX_RUNS_PAGE_FETCH = 1000;
 
   const fetchRunsForTask = async (id: string): Promise<TaskSummary[]> => {
     if (!id) {
       return [];
     }
 
-    const firstPage = await fetchTasks({
-      taskId: id,
-      page: 1,
-      perPage: RUNS_PAGE_SIZE,
-    });
-    let results = firstPage.items;
+    let currentPage = 1;
+    const perPage = RUNS_PAGE_SIZE;
+    let hasMore = true;
+    let results: TaskSummary[] = [];
 
-    const total = firstPage.total;
-    const perPage = firstPage.perPage || RUNS_PAGE_SIZE;
-    const totalPages = perPage > 0 ? Math.ceil(total / perPage) : 1;
+    while (hasMore) {
+      if (currentPage > MAX_RUNS_PAGE_FETCH) {
+        throw new Error(
+          `Task run history exceeds ${MAX_RUNS_PAGE_FETCH} pages (${MAX_RUNS_PAGE_FETCH * perPage} runs). Refine filters or use direct database queries for full history.`,
+        );
+      }
 
-    if (totalPages <= 1) {
-      return results;
-    }
-
-    for (let currentPage = 2; currentPage <= totalPages; currentPage += 1) {
       const pageResult = await fetchTasks({
         taskId: id,
         page: currentPage,
         perPage,
       });
       results = results.concat(pageResult.items);
+
+      hasMore = pageResult.hasMore;
+      if (hasMore && pageResult.items.length === 0) {
+        throw new Error("Task run pagination stalled: backend reported more pages but returned no rows.");
+      }
+
+      currentPage += 1;
     }
 
     return results;
