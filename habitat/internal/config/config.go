@@ -7,11 +7,13 @@ import (
 	"net/url"
 	"os"
 	"strconv"
+	"strings"
 )
 
 const (
 	envPrefix            = "HABITAT_"
 	defaultListenAddress = ":7890"
+	defaultBasePath      = ""
 	defaultDBURL         = ""
 	defaultDBHost        = "localhost"
 	defaultDBName        = "absurd"
@@ -25,6 +27,7 @@ const (
 // Config captures runtime configuration for the dashboard server.
 type Config struct {
 	ListenAddress string
+	BasePath      string
 	DB            DBConfig
 }
 
@@ -49,6 +52,7 @@ func FromArgs(args []string) (Config, error) {
 
 	cfg := Config{
 		ListenAddress: envDefault("LISTEN", defaultListenAddress),
+		BasePath:      envDefault("BASE_PATH", defaultBasePath),
 		DB: DBConfig{
 			URL:         envDefault("DB_URL", defaultDBURL),
 			Host:        envDefault("DB_HOST", defaultDBHost),
@@ -64,6 +68,7 @@ func FromArgs(args []string) (Config, error) {
 	}
 
 	fs.StringVar(&cfg.ListenAddress, "listen", cfg.ListenAddress, "address to listen on (e.g. :7890)")
+	fs.StringVar(&cfg.BasePath, "base-path", cfg.BasePath, "URL path prefix to serve under (e.g. /habitat)")
 	fs.StringVar(&cfg.DB.URL, "db-url", cfg.DB.URL, "Postgres connection URL")
 	fs.StringVar(&cfg.DB.Host, "db-host", cfg.DB.Host, "Postgres host")
 	fs.IntVar(&cfg.DB.Port, "db-port", cfg.DB.Port, "Postgres port")
@@ -78,6 +83,12 @@ func FromArgs(args []string) (Config, error) {
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
 	}
+
+	normalizedBasePath, err := normalizeBasePath(cfg.BasePath)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.BasePath = normalizedBasePath
 
 	if cfg.DB.URL == "" {
 		if cfg.DB.Host == "" {
@@ -135,6 +146,27 @@ func (c DBConfig) ConnectionString() (string, error) {
 	u.RawQuery = query.Encode()
 
 	return u.String(), nil
+}
+
+func normalizeBasePath(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" || value == "/" {
+		return "", nil
+	}
+	if strings.ContainsAny(value, "?#") {
+		return "", fmt.Errorf("invalid base path %q: query strings and fragments are not allowed", value)
+	}
+	if !strings.HasPrefix(value, "/") {
+		value = "/" + value
+	}
+	if strings.HasPrefix(value, "//") {
+		return "", fmt.Errorf("invalid base path %q: must not start with //", value)
+	}
+	value = strings.TrimRight(value, "/")
+	if value == "" {
+		return "", nil
+	}
+	return value, nil
 }
 
 func envDefault(name, fallback string) string {

@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"html"
 	"log"
 	"net/http"
 	"sort"
@@ -26,8 +27,124 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte("ok"))
 }
 
-func (s *Server) handleConfig(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{})
+type uiRuntimeConfig struct {
+	BasePath       string `json:"basePath"`
+	APIBasePath    string `json:"apiBasePath"`
+	StaticBasePath string `json:"staticBasePath"`
+}
+
+func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.runtimeConfig(r))
+}
+
+func (s *Server) runtimeConfig(r *http.Request) uiRuntimeConfig {
+	basePath := s.publicBasePath(r)
+	return uiRuntimeConfig{
+		BasePath:       basePath,
+		APIBasePath:    joinPathPrefixes(basePath, "/api"),
+		StaticBasePath: joinPathPrefixes(basePath, "/_static"),
+	}
+}
+
+func (s *Server) publicBasePath(r *http.Request) string {
+	basePath := s.cfg.BasePath
+	forwardedPrefix := normalizePathPrefix(extractForwardedPrefix(r))
+	if forwardedPrefix == "" {
+		return basePath
+	}
+	if basePath == "" {
+		return forwardedPrefix
+	}
+	if strings.HasSuffix(forwardedPrefix, basePath) {
+		return forwardedPrefix
+	}
+	return joinPathPrefixes(forwardedPrefix, basePath)
+}
+
+func extractForwardedPrefix(r *http.Request) string {
+	for _, headerName := range []string{"X-Forwarded-Prefix", "X-Forwarded-Path", "X-Script-Name"} {
+		raw := strings.TrimSpace(r.Header.Get(headerName))
+		if raw == "" {
+			continue
+		}
+
+		parts := strings.Split(raw, ",")
+		for i := len(parts) - 1; i >= 0; i-- {
+			value := strings.TrimSpace(parts[i])
+			if value != "" {
+				return value
+			}
+		}
+	}
+	return ""
+}
+
+func normalizePathPrefix(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" || value == "/" {
+		return ""
+	}
+	if idx := strings.IndexAny(value, "?#"); idx >= 0 {
+		value = value[:idx]
+	}
+	if !strings.HasPrefix(value, "/") {
+		value = "/" + value
+	}
+	value = "/" + strings.TrimLeft(value, "/")
+	value = strings.TrimRight(value, "/")
+	if value == "/" {
+		return ""
+	}
+	return value
+}
+
+func joinPathPrefixes(parts ...string) string {
+	result := ""
+	for _, part := range parts {
+		normalized := normalizePathPrefix(part)
+		if normalized == "" {
+			continue
+		}
+		if result == "" {
+			result = normalized
+			continue
+		}
+		result += normalized
+	}
+	if result == "" {
+		return ""
+	}
+	return result
+}
+
+func (s *Server) renderIndexHTML(runtimeCfg uiRuntimeConfig) []byte {
+	if len(s.indexHTML) == 0 {
+		return nil
+	}
+
+	baseHref := runtimeCfg.BasePath
+	if baseHref == "" {
+		baseHref = "/"
+	} else {
+		baseHref += "/"
+	}
+
+	payload, err := json.Marshal(runtimeCfg)
+	if err != nil {
+		payload = []byte("{}")
+	}
+
+	injection := fmt.Sprintf("<base href=\"%s\"><script>window.__HABITAT_RUNTIME_CONFIG__=%s;</script>", html.EscapeString(baseHref), payload)
+	document := string(s.indexHTML)
+	staticPrefix := runtimeCfg.StaticBasePath + "/"
+	document = strings.ReplaceAll(document, "\"/_static/", fmt.Sprintf("\"%s", staticPrefix))
+	document = strings.ReplaceAll(document, "'/_static/", fmt.Sprintf("'%s", staticPrefix))
+	if idx := strings.Index(document, "</head>"); idx >= 0 {
+		document = document[:idx] + injection + document[idx:]
+	} else {
+		document = injection + document
+	}
+	return []byte(document)
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
@@ -52,12 +169,14 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	indexHTML := s.renderIndexHTML(s.runtimeConfig(r))
+
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	if r.Method == http.MethodHead {
 		return
 	}
-	_, _ = w.Write(s.indexHTML)
+	_, _ = w.Write(indexHTML)
 }
 
 func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
