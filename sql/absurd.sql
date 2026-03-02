@@ -52,6 +52,121 @@ begin
 end;
 $$;
 
+-- Expands a single cron field expression into a sorted, deduplicated
+-- integer array.  Supports *, exact values, ranges (N-M), steps (*/N,
+-- N-M/S), comma-separated lists, and named days/months.
+create function absurd.parse_cron_field (
+  p_field text,
+  p_min integer,
+  p_max integer
+)
+  returns integer[]
+  language plpgsql
+  immutable
+as $$
+declare
+  v_field text;
+  v_parts text[];
+  v_part text;
+  v_result integer[] := '{}';
+  v_range_parts text[];
+  v_step integer;
+  v_start integer;
+  v_end integer;
+  v_val integer;
+  v_i integer;
+begin
+  -- Normalize: upper-case for name matching, strip whitespace
+  v_field := upper(trim(p_field));
+
+  -- Replace named days (must come before month names to avoid conflicts)
+  v_field := replace(v_field, 'SUN', '0');
+  v_field := replace(v_field, 'MON', '1');
+  v_field := replace(v_field, 'TUE', '2');
+  v_field := replace(v_field, 'WED', '3');
+  v_field := replace(v_field, 'THU', '4');
+  v_field := replace(v_field, 'FRI', '5');
+  v_field := replace(v_field, 'SAT', '6');
+
+  -- Replace named months
+  v_field := replace(v_field, 'JAN', '1');
+  v_field := replace(v_field, 'FEB', '2');
+  v_field := replace(v_field, 'MAR', '3');
+  v_field := replace(v_field, 'APR', '4');
+  v_field := replace(v_field, 'MAY', '5');
+  v_field := replace(v_field, 'JUN', '6');
+  v_field := replace(v_field, 'JUL', '7');
+  v_field := replace(v_field, 'AUG', '8');
+  v_field := replace(v_field, 'SEP', '9');
+  v_field := replace(v_field, 'OCT', '10');
+  v_field := replace(v_field, 'NOV', '11');
+  v_field := replace(v_field, 'DEC', '12');
+
+  -- Split by comma to handle lists
+  v_parts := string_to_array(v_field, ',');
+
+  foreach v_part in array v_parts loop
+    v_part := trim(v_part);
+
+    if v_part = '*' then
+      -- Wildcard: all values in range
+      for v_i in p_min..p_max loop
+        v_result := v_result || v_i;
+      end loop;
+
+    elsif v_part ~ '^\*/[0-9]+$' then
+      -- Step from min: */N
+      v_step := split_part(v_part, '/', 2)::integer;
+      if v_step > 0 then
+        v_i := p_min;
+        while v_i <= p_max loop
+          v_result := v_result || v_i;
+          v_i := v_i + v_step;
+        end loop;
+      end if;
+
+    elsif v_part ~ '^[0-9]+-[0-9]+/[0-9]+$' then
+      -- Range with step: N-M/S
+      v_range_parts := string_to_array(split_part(v_part, '/', 1), '-');
+      v_start := greatest(v_range_parts[1]::integer, p_min);
+      v_end := least(v_range_parts[2]::integer, p_max);
+      v_step := split_part(v_part, '/', 2)::integer;
+      if v_step > 0 then
+        v_i := v_start;
+        while v_i <= v_end loop
+          v_result := v_result || v_i;
+          v_i := v_i + v_step;
+        end loop;
+      end if;
+
+    elsif v_part ~ '^[0-9]+-[0-9]+$' then
+      -- Simple range: N-M
+      v_range_parts := string_to_array(v_part, '-');
+      v_start := greatest(v_range_parts[1]::integer, p_min);
+      v_end := least(v_range_parts[2]::integer, p_max);
+      for v_i in v_start..v_end loop
+        v_result := v_result || v_i;
+      end loop;
+
+    elsif v_part ~ '^[0-9]+$' then
+      -- Exact value: N
+      v_val := v_part::integer;
+      if v_val >= p_min and v_val <= p_max then
+        v_result := v_result || v_val;
+      end if;
+
+    end if;
+  end loop;
+
+  -- Sort and deduplicate
+  select array_agg(distinct val order by val)
+    into v_result
+    from unnest(v_result) as val;
+
+  return coalesce(v_result, '{}');
+end;
+$$;
+
 create table if not exists absurd.queues (
   queue_name text primary key,
   created_at timestamptz not null default absurd.current_time()
