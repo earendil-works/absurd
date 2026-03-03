@@ -50,30 +50,31 @@ async fn test_basic_task_execution() -> Result<(), Box<dyn std::error::Error>> {
 #[ignore]
 async fn test_idempotency() -> Result<(), Box<dyn std::error::Error>> {
     let absurd = Absurd::with_queue(&get_test_db_url(), "test").await?;
+    absurd.create_queue(None).await?; // ensure queue exists
 
-    // Spawn with idempotency key
     let result1 = absurd.spawn(
         "test-task",
         json!({ "value": 42 }),
         SpawnOptions {
             idempotency_key: Some("unique-key-123".to_string()),
+            queue: Some("test".to_string()),
             ..Default::default()
         }
     ).await?;
 
-    // Spawn again with same key
     let result2 = absurd.spawn(
         "test-task",
         json!({ "value": 42 }),
         SpawnOptions {
             idempotency_key: Some("unique-key-123".to_string()),
+            queue: Some("test".to_string()),
             ..Default::default()
         }
     ).await?;
 
     assert_eq!(result1.task_id, result2.task_id);
     assert!(result1.created);
-    assert!(!result2.created); // Second spawn was deduplicated
+    assert!(!result2.created);
 
     Ok(())
 }
@@ -82,8 +83,8 @@ async fn test_idempotency() -> Result<(), Box<dyn std::error::Error>> {
 #[ignore]
 async fn test_event_emission() -> Result<(), Box<dyn std::error::Error>> {
     let absurd = Absurd::with_queue(&get_test_db_url(), "test").await?;
+    absurd.create_queue(None).await?;
 
-    // Emit event
     absurd.emit_event(
         "test.event",
         Some(json!({ "data": "test" })),
