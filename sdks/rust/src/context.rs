@@ -1,12 +1,12 @@
 use crate::error::{Error, Result};
 use crate::types::{ClaimedTask, Json};
 use chrono::{DateTime, Utc};
+use deadpool_postgres::Pool;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::{ Arc, LazyLock };
-use tokio_postgres::Client;
+use std::sync::{LazyLock};
 use uuid::Uuid;
 
 type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
@@ -15,42 +15,39 @@ type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 pub struct TaskContext {
     /// Unique task identifier
     pub task_id: Uuid,
-    
-    /// Database client
-    client: Arc<Client>,
-    
+
+    /// Database client (single connection held for the lifetime of this task execution)
+    client: deadpool_postgres::Object,
+
     /// Queue name
     queue_name: String,
-    
+
     /// Current task details
     task: ClaimedTask,
-    
+
     /// Checkpoint cache
     checkpoint_cache: HashMap<String, Json>,
-    
+
     /// Step name counter for automatic deduplication
     step_counter: HashMap<String, usize>,
-    
+
     /// Claim timeout in seconds
     claim_timeout: i32,
 }
 
-// #[derive(Debug, Deserialize)]
-// struct CheckpointRow {
-//     checkpoint_name: String,
-//     state: Json,
-// }
-
 impl TaskContext {
     /// Create a new task context
     pub(crate) async fn new(
-        client: Arc<Client>,
+        pool: Pool,
         queue_name: String,
         task: ClaimedTask,
         claim_timeout: i32,
     ) -> Result<Self> {
         let task_id = task.task_id;
-        
+
+        // Deref to the underlying tokio_postgres::Client and wrap in Arc
+        let client = pool.get().await?;
+
         // Load existing checkpoints
         let rows = client
             .query(
@@ -59,7 +56,7 @@ impl TaskContext {
                 &[&queue_name, &task.task_id, &task.run_id],
             )
             .await?;
-        
+
         let checkpoint_cache: HashMap<String, Json> = rows
             .iter()
             .map(|row| {
@@ -68,7 +65,7 @@ impl TaskContext {
                 (name, state)
             })
             .collect();
-        
+
         Ok(Self {
             task_id,
             client,
@@ -79,13 +76,13 @@ impl TaskContext {
             claim_timeout,
         })
     }
-    
+
     /// Get headers attached to this task
     pub fn headers(&self) -> &HashMap<String, Json> {
         self.task.headers.as_ref().unwrap_or(&DEFAULT_HEADERS)
     }
-    
-    /// Execute an idempotent step with checkpointing
+
+    /// Execute an idempotent step with checkpointing.
     ///
     /// If this step has been executed before, returns the cached result.
     /// Otherwise, executes the function and saves the result.
@@ -94,55 +91,56 @@ impl TaskContext {
         F: FnOnce() -> BoxFuture<'static, Result<T>>,
         T: Serialize + for<'de> Deserialize<'de>,
     {
-        let checkpoint_name = self.get_checkpoint_name(name);
-        
-        // Check cache first
+        // Peek without advancing so cache hits don't shift subsequent step names
+        let checkpoint_name = self.peek_checkpoint_name(name);
+
         if let Some(cached) = self.checkpoint_cache.get(&checkpoint_name) {
-            return Ok(serde_json::from_value(cached.clone())?);
+            let cached_clone = cached.clone();
+            // Advance counter to stay in sync even on a cache hit
+            self.advance_checkpoint_name(name);
+            return Ok(serde_json::from_value(cached_clone)?);
         }
-        
-        // Execute the step
+
+        // Advance counter for the write path
+        let checkpoint_name = self.advance_checkpoint_name(name);
         let result = f().await?;
-        
-        // Persist checkpoint
         let value = serde_json::to_value(&result)?;
         self.persist_checkpoint(&checkpoint_name, &value).await?;
-        
+
         Ok(result)
     }
-    
+
     /// Sleep for a duration in seconds
     pub async fn sleep_for(&mut self, name: &str, duration_secs: u64) -> Result<()> {
         let wake_at = Utc::now() + chrono::Duration::seconds(duration_secs as i64);
         self.sleep_until(name, wake_at).await
     }
-    
+
     /// Sleep until a specific time
     pub async fn sleep_until(&mut self, name: &str, wake_at: DateTime<Utc>) -> Result<()> {
-        let checkpoint_name = self.get_checkpoint_name(name);
-        
-        // Check if we already slept
-        if let Some(cached) = self.checkpoint_cache.get(&checkpoint_name) {
-            let stored_time: DateTime<Utc> = serde_json::from_value(cached.clone())?;
+        let checkpoint_name = self.peek_checkpoint_name(name);
+
+        if let Some(cached) = self.checkpoint_cache.get(&checkpoint_name).cloned() {
+            self.advance_checkpoint_name(name);
+            let stored_time: DateTime<Utc> = serde_json::from_value(cached)?;
             if Utc::now() >= stored_time {
                 return Ok(());
             }
         } else {
-            // Store the wake time
+            let checkpoint_name = self.advance_checkpoint_name(name);
             let value = serde_json::to_value(&wake_at)?;
             self.persist_checkpoint(&checkpoint_name, &value).await?;
         }
-        
-        // If we haven't reached the wake time, schedule and suspend
+
         if Utc::now() < wake_at {
             self.schedule_run(wake_at).await?;
             return Err(Error::Suspended);
         }
-        
+
         Ok(())
     }
-    
-    /// Wait for an event to be emitted
+
+    /// Wait for an event to be emitted.
     ///
     /// Returns the event payload when received. If timeout is specified and
     /// exceeded, returns an error.
@@ -152,28 +150,30 @@ impl TaskContext {
         options: AwaitEventOptions,
     ) -> Result<Json> {
         let default_step_name = format!("$awaitEvent:{}", event_name);
-        let step_name = options.step_name.as_deref()
-            .unwrap_or(&default_step_name);
-        let checkpoint_name = self.get_checkpoint_name(step_name);
-        
-        // Check if already resolved
-        if let Some(cached) = self.checkpoint_cache.get(&checkpoint_name) {
-            return Ok(cached.clone());
+        let step_name = options.step_name.as_deref().unwrap_or(&default_step_name);
+
+        let checkpoint_name = self.peek_checkpoint_name(step_name);
+
+        if let Some(cached) = self.checkpoint_cache.get(&checkpoint_name).cloned() {
+            self.advance_checkpoint_name(step_name);
+            return Ok(cached);
         }
-        
+
         // Check if we resumed due to timeout
-        if self.task.wake_event.as_deref() == Some(event_name) 
-            && self.task.event_payload.is_none() 
+        if self.task.wake_event.as_deref() == Some(event_name)
+            && self.task.event_payload.is_none()
         {
             return Err(Error::EventTimeout(
                 event_name.to_string(),
                 options.timeout_secs.unwrap_or(0),
             ));
         }
-        
-        // Call await_event stored procedure
+
+        let checkpoint_name = self.advance_checkpoint_name(step_name);
         let timeout_secs = options.timeout_secs.map(|t| t as i32);
-        let rows = self.client
+
+        let rows = self
+            .client
             .query(
                 "SELECT should_suspend, payload
                  FROM absurd.await_event($1, $2, $3, $4, $5, $6)",
@@ -195,23 +195,24 @@ impl TaskContext {
                 }
                 Error::Database(e)
             })?;
-        
+
         if rows.is_empty() {
             return Err(Error::Other("await_event returned no rows".to_string()));
         }
-        
+
         let should_suspend: bool = rows[0].get(0);
         let payload: Option<Json> = rows[0].get(1);
-        
+
         if !should_suspend {
             let payload = payload.unwrap_or(Json::Null);
-            self.checkpoint_cache.insert(checkpoint_name, payload.clone());
+            self.checkpoint_cache
+                .insert(checkpoint_name, payload.clone());
             return Ok(payload);
         }
-        
+
         Err(Error::Suspended)
     }
-    
+
     /// Emit an event to the queue
     pub async fn emit_event(&self, event_name: &str, payload: Option<Json>) -> Result<()> {
         let payload = payload.unwrap_or(Json::Null);
@@ -220,14 +221,22 @@ impl TaskContext {
                 "SELECT absurd.emit_event($1, $2, $3)",
                 &[&self.queue_name, &event_name, &payload],
             )
-            .await?;
+            .await
+            .map_err(|e| {
+                if let Some(db_err) = e.as_db_error() {
+                    if db_err.code().code() == "AB001" {
+                        return Error::Cancelled;
+                    }
+                }
+                Error::Database(e)
+            })?;
         Ok(())
     }
-    
+
     /// Extend the claim timeout to prevent task from being reclaimed
     pub async fn heartbeat(&self, extend_by_secs: Option<i32>) -> Result<()> {
         let extend_by = extend_by_secs.unwrap_or(self.claim_timeout);
-        
+
         self.client
             .execute(
                 "SELECT absurd.extend_claim($1, $2, $3)",
@@ -242,23 +251,37 @@ impl TaskContext {
                 }
                 Error::Database(e)
             })?;
-        
+
         Ok(())
     }
-    
-    // Helper methods
-    
-    fn get_checkpoint_name(&mut self, name: &str) -> String {
+
+    // -------------------------------------------------------------------------
+    // Private helpers
+    // -------------------------------------------------------------------------
+
+    /// Returns the name that *would* be used next for `name` without advancing
+    /// the counter. Use this for cache lookups.
+    fn peek_checkpoint_name(&self, name: &str) -> String {
+        let count = self.step_counter.get(name).copied().unwrap_or(0);
+        if count == 0 {
+            name.to_string()
+        } else {
+            format!("{}#{}", name, count + 1)
+        }
+    }
+
+    /// Advances the counter for `name` and returns the checkpoint name to use
+    /// for the current invocation. Use this when you are about to write.
+    fn advance_checkpoint_name(&mut self, name: &str) -> String {
         let counter = self.step_counter.entry(name.to_string()).or_insert(0);
         *counter += 1;
-        
         if *counter == 1 {
             name.to_string()
         } else {
             format!("{}#{}", name, counter)
         }
     }
-    
+
     async fn persist_checkpoint(&mut self, name: &str, value: &Json) -> Result<()> {
         self.client
             .execute(
@@ -281,18 +304,26 @@ impl TaskContext {
                 }
                 Error::Database(e)
             })?;
-        
+
         self.checkpoint_cache.insert(name.to_string(), value.clone());
         Ok(())
     }
-    
+
     async fn schedule_run(&self, wake_at: DateTime<Utc>) -> Result<()> {
         self.client
             .execute(
                 "SELECT absurd.schedule_run($1, $2, $3)",
                 &[&self.queue_name, &self.task.run_id, &wake_at],
             )
-            .await?;
+            .await
+            .map_err(|e| {
+                if let Some(db_err) = e.as_db_error() {
+                    if db_err.code().code() == "AB001" {
+                        return Error::Cancelled;
+                    }
+                }
+                Error::Database(e)
+            })?;
         Ok(())
     }
 }
@@ -300,25 +331,20 @@ impl TaskContext {
 /// Options for awaiting an event
 #[derive(Debug, Clone, Default)]
 pub struct AwaitEventOptions {
-    /// Custom step name for checkpointing
     pub step_name: Option<String>,
-    /// Timeout in seconds (None = wait forever)
     pub timeout_secs: Option<u64>,
 }
 
 impl AwaitEventOptions {
-    /// Create new options with default values
     pub fn new() -> Self {
         Self::default()
     }
-    
-    /// Set custom step name
+
     pub fn with_step_name(mut self, name: impl Into<String>) -> Self {
         self.step_name = Some(name.into());
         self
     }
-    
-    /// Set timeout in seconds
+
     pub fn with_timeout(mut self, timeout_secs: u64) -> Self {
         self.timeout_secs = Some(timeout_secs);
         self
