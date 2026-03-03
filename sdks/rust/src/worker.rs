@@ -1,25 +1,14 @@
-use crate::context::TaskContext;
+use crate::client::RegisteredTask;
 use crate::error::{Error, Result};
+use crate::executor::execute_task_with_timeout;
 use crate::types::{ClaimedTask, WorkerOptions};
+use deadpool_postgres::Pool;
 use parking_lot::RwLock;
 use std::collections::HashMap;
-// use std::future::Future;
-// use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
-use tokio_postgres::Client;
-use uuid::Uuid;
-
-// type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
-// type TaskHandler = Arc<dyn Fn(serde_json::Value, TaskContext) -> BoxFuture<'static, Result<serde_json::Value>> + Send + Sync>;
-
-// pub(crate) struct RegisteredTask {
-//     pub name: String,
-//     pub queue: String,
-//     pub handler: TaskHandler,
-// }
 
 /// Background worker that polls for and executes tasks
 pub struct Worker {
@@ -29,142 +18,143 @@ pub struct Worker {
 
 impl Worker {
     pub(crate) async fn new(
-        client: Arc<Client>,
+        pool: Pool,
         queue_name: String,
-        registry: Arc<RwLock<HashMap<String, crate::client::RegisteredTask>>>,
+        registry: Arc<RwLock<HashMap<String, RegisteredTask>>>,
         options: WorkerOptions,
     ) -> Result<Self> {
         let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<()>(1);
-        
+
         let worker_handle = tokio::spawn(async move {
             let mut executing = tokio::task::JoinSet::new();
             let (notify_tx, mut notify_rx) = mpsc::channel::<()>(100);
-            
+
             loop {
-                tokio::select! {
-                    _ = shutdown_rx.recv() => {
-                        tracing::info!("Worker shutting down");
-                        break;
-                    }
-                    
-                    _ = notify_rx.recv() => {
-                        // Notified of availability, continue to claim tasks
-                    }
-                    
-                    _ = tokio::time::sleep(Duration::from_secs_f64(options.poll_interval_secs)) => {
-                        // Poll interval elapsed
-                    }
+                // Check shutdown first so a pending notify can't starve it
+                if shutdown_rx.try_recv().is_ok() {
+                    tracing::info!("Worker shutting down");
+                    break;
                 }
-                
-                // Check if we have capacity
-                if executing.len() >= options.concurrency {
+
+                // Drain any completed tasks before checking capacity
+                while executing.len() >= options.concurrency {
                     if let Some(result) = executing.join_next().await {
                         if let Err(e) = result {
                             tracing::error!("Task execution panicked: {:?}", e);
                         }
                     }
-                    continue;
                 }
-                
+
+                // Wait for a notify signal or the poll interval — whichever comes first
+                tokio::select! {
+                    _ = notify_rx.recv() => {}
+                    _ = tokio::time::sleep(Duration::from_secs_f64(options.poll_interval_secs)) => {}
+                }
+
                 let available_capacity = options.concurrency - executing.len();
                 let to_claim = available_capacity.min(options.batch_size);
-                
+
                 if to_claim == 0 {
                     continue;
                 }
-                
-                // Claim tasks
+
                 let tasks = match claim_tasks(
-                    &client,
+                    &pool,
                     &queue_name,
                     &options.worker_id,
                     options.claim_timeout,
                     to_claim as i32,
-                ).await {
+                )
+                .await
+                {
                     Ok(tasks) => tasks,
                     Err(e) => {
                         tracing::error!("Failed to claim tasks: {:?}", e);
                         continue;
                     }
                 };
-                
+
                 if tasks.is_empty() {
                     continue;
                 }
-                
-                // Spawn task execution
+
                 for task in tasks {
-                    let client_clone = Arc::clone(&client);
+                    let pool_clone = pool.clone();
                     let queue_clone = queue_name.clone();
                     let registry_clone = registry.clone();
                     let claim_timeout = options.claim_timeout;
                     let fatal_on_timeout = options.fatal_on_lease_timeout;
                     let notify_tx_clone = notify_tx.clone();
-                    
+
                     executing.spawn(async move {
                         if let Err(e) = execute_task_with_timeout(
-                            client_clone,
+                            pool_clone,
                             queue_clone,
                             registry_clone,
                             task,
                             claim_timeout,
                             fatal_on_timeout,
-                        ).await {
+                        )
+                        .await
+                        {
                             if !e.is_suspended() && !e.is_cancelled() {
                                 tracing::error!("Task execution failed: {:?}", e);
                             }
                         }
-                        
+
                         let _ = notify_tx_clone.send(()).await;
                     });
                 }
             }
-            
-            // Wait for all tasks to complete
+
+            // Drain all in-flight tasks before returning
             while let Some(result) = executing.join_next().await {
                 if let Err(e) = result {
                     tracing::error!("Task execution panicked during shutdown: {:?}", e);
                 }
             }
         });
-        
+
         Ok(Self {
             shutdown_tx,
             worker_handle,
         })
     }
-    
-    /// Stop the worker and wait for all tasks to complete
+
+    /// Stop the worker and wait for all in-flight tasks to complete
     pub async fn close(self) -> Result<()> {
         let _ = self.shutdown_tx.send(()).await;
-        self.worker_handle.await
+        self.worker_handle
+            .await
             .map_err(|e| Error::Other(format!("Worker task panicked: {}", e)))?;
         Ok(())
     }
 }
 
 async fn claim_tasks(
-    client: &Client,
+    pool: &Pool,
     queue_name: &str,
     worker_id: &str,
     claim_timeout: i32,
     batch_size: i32,
 ) -> Result<Vec<ClaimedTask>> {
-    let rows = client
+    let rows = pool
+        .get()
+        .await?
         .query(
-            "SELECT run_id, task_id, attempt, task_name, params, retry_strategy, 
+            "SELECT run_id, task_id, attempt, task_name, params, retry_strategy,
                     max_attempts, headers, wake_event, event_payload
              FROM absurd.claim_task($1, $2, $3, $4)",
             &[&queue_name, &worker_id, &claim_timeout, &batch_size],
         )
         .await?;
-    
+
     let tasks = rows
         .iter()
         .map(|row| {
             let headers_json: Option<serde_json::Value> = row.get(7);
-            let headers: Option<HashMap<String, serde_json::Value>> = headers_json
-                .and_then(|v| serde_json::from_value(v).ok());
+            let headers: Option<HashMap<String, serde_json::Value>> =
+                headers_json.and_then(|v| serde_json::from_value(v).ok());
 
             ClaimedTask {
                 run_id: row.get(0),
@@ -180,118 +170,6 @@ async fn claim_tasks(
             }
         })
         .collect();
-    
+
     Ok(tasks)
-}
-
-async fn execute_task_with_timeout(
-    client: Arc<Client>,
-    queue_name: String,
-    registry: Arc<RwLock<HashMap<String, crate::client::RegisteredTask>>>,
-    task: ClaimedTask,
-    claim_timeout: i32,
-    fatal_on_timeout: bool,
-) -> Result<()> {
-    let timeout_duration = Duration::from_secs((claim_timeout * 2) as u64);
-    
-    let result = if fatal_on_timeout {
-        tokio::time::timeout(
-            timeout_duration,
-            execute_task(client, queue_name, registry, task, claim_timeout),
-        )
-        .await
-        .unwrap_or_else(|_| {
-            tracing::error!(
-                "Task exceeded claim timeout by 2x ({}s), terminating process",
-                claim_timeout
-            );
-            std::process::exit(1);
-        })
-    } else {
-        tokio::time::timeout(
-            timeout_duration,
-            execute_task(client, queue_name, registry, task, claim_timeout),
-        )
-        .await
-        .unwrap_or_else(|_| {
-            tracing::warn!("Task exceeded claim timeout by 2x ({}s)", claim_timeout);
-            Err(Error::Other("Task timeout".to_string()))
-        })
-    };
-    
-    result
-}
-
-async fn execute_task(
-    client: Arc<Client>,
-    queue_name: String,
-    registry: Arc<RwLock<HashMap<String, crate::client::RegisteredTask>>>,
-    task: ClaimedTask,
-    claim_timeout: i32,
-) -> Result<()> {
-    let (handler, task_queue) = {
-        let registry_lock = registry.read();
-        let registered = registry_lock
-            .get(&task.task_name)
-            .ok_or_else(|| Error::TaskNotRegistered(task.task_name.clone()))?;
-        
-        (registered.handler.clone(), registered.queue.clone())
-    };
-    
-    // Create context
-    let ctx = TaskContext::new(
-        client.clone(),
-        task_queue,
-        task.clone(),
-        claim_timeout,
-    ).await?;
-    
-    // Execute handler
-    match handler(task.params.clone(), ctx).await {
-        Ok(result) => {
-            complete_run(&client, &queue_name, &task.run_id, result).await?;
-        }
-        Err(Error::Suspended) | Err(Error::Cancelled) => {}
-        Err(e) => {
-            fail_run(&client, &queue_name, &task.run_id, &e).await?;
-            return Err(e);
-        }
-    }
-    
-    Ok(())
-}
-
-async fn complete_run(
-    client: &Client,
-    queue_name: &str,
-    run_id: &Uuid,
-    result: serde_json::Value,
-) -> Result<()> {
-    client
-        .execute(
-            "SELECT absurd.complete_run($1, $2, $3)",
-            &[&queue_name, run_id, &result],
-        )
-        .await?;
-    Ok(())
-}
-
-async fn fail_run(
-    client: &Client,
-    queue_name: &str,
-    run_id: &Uuid,
-    error: &Error,
-) -> Result<()> {
-    let error_json = serde_json::json!({
-        "name": error.to_string(),
-        "message": error.to_string(),
-    });
-    
-    client
-        .execute(
-            "SELECT absurd.fail_run($1, $2, $3, $4)",
-            &[&queue_name, run_id, &error_json, &None::<String>],
-        )
-        .await?;
-    Ok(())
 }
