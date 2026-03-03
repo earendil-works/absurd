@@ -57,11 +57,34 @@ create table if not exists absurd.queues (
   created_at timestamptz not null default absurd.current_time()
 );
 
+-- Queue names are used in generated table/index identifiers.
+-- We intentionally cap UTF-8 byte length so generated explicit index names
+-- (for instance r_<queue>_sai) stay within PostgreSQL's 63-byte identifier
+-- limit. Character set is otherwise delegated to PostgreSQL quoted-ident rules.
+create function absurd.validate_queue_name (p_queue_name text)
+  returns text
+  language plpgsql
+as $$
+begin
+  if p_queue_name is null or length(trim(p_queue_name)) = 0 then
+    raise exception 'Queue name must be provided';
+  end if;
+
+  if octet_length(p_queue_name) > 57 then
+    raise exception 'Queue name "%" is too long (max 57 bytes).', p_queue_name;
+  end if;
+
+  return p_queue_name;
+end;
+$$;
+
 create function absurd.ensure_queue_tables (p_queue_name text)
   returns void
   language plpgsql
 as $$
 begin
+  perform absurd.validate_queue_name(p_queue_name);
+
   execute format(
     'create table if not exists absurd.%I (
         task_id uuid primary key,
@@ -187,13 +210,7 @@ create function absurd.create_queue (p_queue_name text)
   language plpgsql
 as $$
 begin
-  if p_queue_name is null or length(trim(p_queue_name)) = 0 then
-    raise exception 'Queue name must be provided';
-  end if;
-
-  if length(p_queue_name) + 2 > 50 then
-    raise exception 'Queue name "%" is too long', p_queue_name;
-  end if;
+  p_queue_name := absurd.validate_queue_name(p_queue_name);
 
   begin
     insert into absurd.queues (queue_name)
@@ -207,6 +224,8 @@ end;
 $$;
 
 -- Drop a queue if it exists.
+-- We intentionally don't validate the provided name here so legacy queues
+-- created under older naming rules can still be removed.
 create function absurd.drop_queue (p_queue_name text)
   returns void
   language plpgsql

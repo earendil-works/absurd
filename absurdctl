@@ -3,7 +3,6 @@ import csv
 import io
 import json
 import os
-import re
 import subprocess
 import sys
 import shutil
@@ -14,27 +13,36 @@ from urllib.parse import urlparse
 from optparse import OptionParser, IndentedHelpFormatter
 
 
-# Queue names are interpolated into dynamic table names (t_<queue>, r_<queue>, ...)
-# so we must constrain characters to a safe subset.
-QUEUE_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]*$")
+# Queue names are interpolated into generated table/index names (t_<queue>,
+# r_<queue>_sai, ...). We cap UTF-8 byte length so those identifiers stay
+# within PostgreSQL's 63-byte limit; character set is otherwise delegated to
+# PostgreSQL quoted identifier rules.
+MAX_QUEUE_NAME_LENGTH = 57
+
+
+def quote_ident(identifier):
+    """Quote a SQL identifier using PostgreSQL double-quote escaping."""
+    return '"' + identifier.replace('"', '""') + '"'
+
+
+def queue_relation(prefix, queue_name):
+    """Return a fully qualified absurd.<prefix>_<queue> relation reference."""
+    return f"absurd.{quote_ident(f'{prefix}_{queue_name}')}"
 
 
 def validate_queue_name(value):
-    """Validate queue names used in dynamic table names.
+    """Validate queue names used in dynamic table/index names."""
+    if value is None or len(value.strip()) == 0:
+        print("Error: Queue name must be provided.", file=sys.stderr)
+        sys.exit(1)
 
-    Queue names may start with a letter or digit and may contain letters,
-    numbers, underscores, and hyphens.
-    """
-    if not value or not QUEUE_NAME_PATTERN.match(value):
+    if len(value.encode("utf-8")) > MAX_QUEUE_NAME_LENGTH:
         print(
-            f"Error: Invalid queue name '{value}'. Must start with a letter or number "
-            "and contain only letters, numbers, underscores, and hyphens.",
+            f"Error: Queue name '{value}' is too long (max {MAX_QUEUE_NAME_LENGTH} bytes).",
             file=sys.stderr,
         )
         sys.exit(1)
-    if len(value) > 63:
-        print(f"Error: Queue name '{value}' is too long (max 63 characters).", file=sys.stderr)
-        sys.exit(1)
+
     return value
 
 
@@ -449,10 +457,14 @@ def cmd_cleanup(args):
     if options.dry_run:
         print("DRY RUN MODE - No data will be deleted")
 
+        t_rel = queue_relation("t", queue_name)
+        r_rel = queue_relation("r", queue_name)
+        e_rel = queue_relation("e", queue_name)
+
         task_count = run_psql(
             config,
-            f"""SELECT COUNT(*) FROM absurd.t_{queue_name} t
-                LEFT JOIN absurd.r_{queue_name} r ON r.run_id = t.last_attempt_run
+            f"""SELECT COUNT(*) FROM {t_rel} t
+                LEFT JOIN {r_rel} r ON r.run_id = t.last_attempt_run
                 WHERE t.state IN ('completed', 'failed', 'cancelled')
                 AND ((t.state = 'completed' AND r.completed_at < NOW() - make_interval(secs => :'ttl_seconds'::int))
                 OR (t.state = 'failed' AND r.failed_at < NOW() - make_interval(secs => :'ttl_seconds'::int))
@@ -464,7 +476,7 @@ def cmd_cleanup(args):
 
         event_count = run_psql(
             config,
-            f"SELECT COUNT(*) FROM absurd.e_{queue_name} WHERE emitted_at < NOW() - make_interval(secs => :'ttl_seconds'::int);",
+            f"SELECT COUNT(*) FROM {e_rel} WHERE emitted_at < NOW() - make_interval(secs => :'ttl_seconds'::int);",
             tuples_only=True,
             no_align=True,
             variables={"ttl_seconds": ttl_seconds},
@@ -1040,22 +1052,27 @@ def cmd_list_tasks(args):
             where_clauses.append("t.state = :'status'")
             variables["status"] = options.status
 
+        variables["queue_name"] = queue
+
         where_clause = ""
         if where_clauses:
             where_clause = "WHERE " + " AND ".join(where_clauses)
+
+        t_rel = queue_relation("t", queue)
+        r_rel = queue_relation("r", queue)
 
         query = f"""
             SELECT
                 t.task_id,
                 r.run_id,
                 t.task_name,
-                '{queue}' as queue_name,
+                :'queue_name' as queue_name,
                 t.state,
                 r.attempt,
                 t.max_attempts,
                 COALESCE(r.completed_at, r.failed_at, r.started_at, r.created_at) AS updated_at
-            FROM absurd.t_{queue} t
-            LEFT JOIN absurd.r_{queue} r ON r.run_id = t.last_attempt_run
+            FROM {t_rel} t
+            LEFT JOIN {r_rel} r ON r.run_id = t.last_attempt_run
             {where_clause}
             ORDER BY updated_at DESC
             LIMIT {options.limit}
@@ -1202,9 +1219,10 @@ def cmd_dump_task(args):
     if options.run_id:
         # Search for run_id across all queues
         for queue in queues:
+            r_rel = queue_relation("r", queue)
             result = run_psql(
                 config,
-                f"SELECT task_id FROM absurd.r_{queue} WHERE run_id = :'run_id';",
+                f"SELECT task_id FROM {r_rel} WHERE run_id = :'run_id';",
                 tuples_only=True,
                 no_align=True,
                 variables={"run_id": options.run_id},
@@ -1221,9 +1239,10 @@ def cmd_dump_task(args):
         # Search for task_id across all queues
         task_id = options.task_id
         for queue in queues:
+            t_rel = queue_relation("t", queue)
             result = run_psql(
                 config,
-                f"SELECT COUNT(*) FROM absurd.t_{queue} WHERE task_id = :'task_id';",
+                f"SELECT COUNT(*) FROM {t_rel} WHERE task_id = :'task_id';",
                 tuples_only=True,
                 no_align=True,
                 variables={"task_id": task_id},
@@ -1235,6 +1254,9 @@ def cmd_dump_task(args):
         if not target_queue:
             print(f"Task ID '{task_id}' not found in any queue", file=sys.stderr)
             sys.exit(1)
+
+    t_target_rel = queue_relation("t", target_queue)
+    r_target_rel = queue_relation("r", target_queue)
 
     # Fetch task and runs
     if options.run_id:
@@ -1259,8 +1281,8 @@ def cmd_dump_task(args):
                 t.cancelled_at,
                 COALESCE(r.completed_at, r.failed_at, r.started_at, r.created_at) AS updated_at,
                 r.claimed_by
-            FROM absurd.t_{target_queue} t
-            JOIN absurd.r_{target_queue} r ON r.task_id = t.task_id
+            FROM {t_target_rel} t
+            JOIN {r_target_rel} r ON r.task_id = t.task_id
             WHERE r.run_id = :'run_id'
         """
         runs_rows = run_psql_csv(config, runs_query, variables={"run_id": options.run_id})
@@ -1286,8 +1308,8 @@ def cmd_dump_task(args):
                 t.cancelled_at,
                 COALESCE(r.completed_at, r.failed_at, r.started_at, r.created_at) AS updated_at,
                 r.claimed_by
-            FROM absurd.t_{target_queue} t
-            JOIN absurd.r_{target_queue} r ON r.task_id = t.task_id
+            FROM {t_target_rel} t
+            JOIN {r_target_rel} r ON r.task_id = t.task_id
             WHERE t.task_id = :'task_id'
             ORDER BY r.attempt
         """
@@ -1324,6 +1346,10 @@ def cmd_dump_task(args):
                 }
             )
 
+    c_target_rel = queue_relation("c", target_queue)
+    w_target_rel = queue_relation("w", target_queue)
+    e_target_rel = queue_relation("e", target_queue)
+
     # For each run, fetch checkpoints and waits
     for run in runs:
         # Fetch checkpoints
@@ -1334,7 +1360,7 @@ def cmd_dump_task(args):
                 status,
                 owner_run_id,
                 updated_at
-            FROM absurd.c_{target_queue}
+            FROM {c_target_rel}
             WHERE task_id = :'task_id' AND owner_run_id = :'run_id'
             ORDER BY updated_at DESC
         """
@@ -1373,9 +1399,9 @@ def cmd_dump_task(args):
                 e.payload as event_payload_emitted,
                 e.emitted_at,
                 COALESCE(w.created_at, r.started_at) as updated_at
-            FROM absurd.r_{target_queue} r
-            LEFT JOIN absurd.w_{target_queue} w ON w.run_id = r.run_id
-            LEFT JOIN absurd.e_{target_queue} e ON e.event_name = r.wake_event AND e.payload IS NOT NULL
+            FROM {r_target_rel} r
+            LEFT JOIN {w_target_rel} w ON w.run_id = r.run_id
+            LEFT JOIN {e_target_rel} e ON e.event_name = r.wake_event AND e.payload IS NOT NULL
             WHERE r.run_id = :'run_id' AND r.state = 'sleeping'
         """
 

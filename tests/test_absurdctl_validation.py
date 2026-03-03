@@ -17,7 +17,13 @@ cmd_emit_event = MODULE["cmd_emit_event"]
         "1jobs",
         "queue_1",
         "queue-1",
+        "UpperCase",
+        "queue123",
         "9",
+        "_bad",
+        "-bad",
+        "bad space",
+        "bad'quote",
     ],
 )
 def test_validate_queue_name_accepts_supported_names(queue_name):
@@ -28,13 +34,11 @@ def test_validate_queue_name_accepts_supported_names(queue_name):
     "queue_name",
     [
         "",
-        "-bad",
-        "_bad",
-        "bad space",
-        "bad'quote",
+        "   ",
+        "a" * 58,
     ],
 )
-def test_validate_queue_name_rejects_unsafe_names(queue_name):
+def test_validate_queue_name_rejects_unsupported_names(queue_name):
     with pytest.raises(SystemExit):
         validate_queue_name(queue_name)
 
@@ -62,4 +66,4 @@ def test_emit_event_validates_queue_name(monkeypatch):
     monkeypatch.setitem(cmd_emit_event.__globals__, "ensure_queue_exists", lambda *_: None)
 
     with pytest.raises(SystemExit):
-        cmd_emit_event(["-q", "bad queue", "order.completed"])
+        cmd_emit_event(["-q", "a" * 58, "order.completed"])

@@ -185,6 +185,21 @@ class TimeoutError(Exception):
     """Error thrown when awaiting an event times out."""
 
 
+_MAX_QUEUE_NAME_LENGTH = 57
+
+
+def _validate_queue_name(queue_name: str) -> str:
+    if queue_name is None or len(queue_name.strip()) == 0:
+        raise ValueError("Queue name must be provided")
+
+    if len(queue_name.encode("utf-8")) > _MAX_QUEUE_NAME_LENGTH:
+        raise ValueError(
+            f"Queue name '{queue_name}' is too long (max {_MAX_QUEUE_NAME_LENGTH} bytes)."
+        )
+
+    return queue_name
+
+
 def _serialize_error(err: Any) -> JsonObject:
     """Serialize an exception to JSON"""
     if isinstance(err, Exception):
@@ -817,7 +832,7 @@ class _AbsurdBase:
         default_max_attempts: int = 5,
         hooks: Optional[AbsurdHooks] = None,
     ) -> None:
-        self._queue_name = queue_name
+        self._queue_name = _validate_queue_name(queue_name)
         self._default_max_attempts = default_max_attempts
         self._hooks: AbsurdHooks = hooks or {}
         self._registry: Dict[str, Dict[str, Any]] = {}
@@ -833,11 +848,8 @@ class _AbsurdBase:
         """Register a task handler by name"""
 
         def decorator(handler: TaskHandler) -> TaskHandler:
-            actual_queue = queue or self._queue_name
-            if not actual_queue:
-                raise ValueError(
-                    f'Task "{name}" must specify a queue or use a client with a default queue'
-                )
+            actual_queue = queue if queue is not None else self._queue_name
+            actual_queue = _validate_queue_name(actual_queue)
 
             self._registry[name] = {
                 "name": name,
@@ -865,12 +877,12 @@ class _AbsurdBase:
 
         if registration:
             actual_queue = registration["queue"]
-            if queue and queue != actual_queue:
+            if queue is not None and queue != actual_queue:
                 raise ValueError(
                     f'Task "{task_name}" is registered for queue "{actual_queue}" '
                     f'but spawn requested queue "{queue}".'
                 )
-        elif not queue:
+        elif queue is None:
             raise ValueError(
                 f'Task "{task_name}" is not registered. Provide queue when spawning unregistered tasks.'
             )
@@ -893,6 +905,8 @@ class _AbsurdBase:
             else registration.get("default_cancellation") if registration else None
         )
 
+        actual_queue = _validate_queue_name(actual_queue)
+
         options = _normalize_spawn_options(
             max_attempts=effective_max_attempts,
             retry_strategy=retry_strategy,
@@ -914,6 +928,8 @@ class Absurd(_AbsurdBase):
         default_max_attempts: int = 5,
         hooks: Optional[AbsurdHooks] = None,
     ) -> None:
+        validated_queue_name = _validate_queue_name(queue_name)
+
         if conn_or_url is None:
             conn_or_url = os.environ.get(
                 "ABSURD_DATABASE_URL", "postgresql://localhost/absurd"
@@ -925,17 +941,21 @@ class Absurd(_AbsurdBase):
         else:
             self._conn = conn_or_url
             self._owned_conn = False
-        super().__init__(queue_name, default_max_attempts, hooks)
+        super().__init__(validated_queue_name, default_max_attempts, hooks)
 
     def create_queue(self, queue_name: Optional[str] = None) -> None:
         """Create a queue (defaults to this client's queue)"""
-        queue = queue_name or self._queue_name
+        queue = _validate_queue_name(
+            queue_name if queue_name is not None else self._queue_name
+        )
         cursor = self._conn.cursor()
         cursor.execute("SELECT absurd.create_queue(%s)", (queue,))
 
     def drop_queue(self, queue_name: Optional[str] = None) -> None:
         """Drop a queue (defaults to this client's queue)"""
-        queue = queue_name or self._queue_name
+        queue = _validate_queue_name(
+            queue_name if queue_name is not None else self._queue_name
+        )
         cursor = self._conn.cursor()
         cursor.execute("SELECT absurd.drop_queue(%s)", (queue,))
 
@@ -1007,18 +1027,24 @@ class Absurd(_AbsurdBase):
         if not event_name:
             raise ValueError("event_name must be a non-empty string")
 
+        queue = _validate_queue_name(
+            queue_name if queue_name is not None else self._queue_name
+        )
         cursor = self._conn.cursor()
         cursor.execute(
             "SELECT absurd.emit_event(%s, %s, %s)",
-            (queue_name or self._queue_name, event_name, json.dumps(payload)),
+            (queue, event_name, json.dumps(payload)),
         )
 
     def cancel_task(self, task_id: str, queue_name: Optional[str] = None) -> None:
         """Cancel a task by ID on the specified or default queue"""
+        queue = _validate_queue_name(
+            queue_name if queue_name is not None else self._queue_name
+        )
         cursor = self._conn.cursor()
         cursor.execute(
             "SELECT absurd.cancel_task(%s, %s)",
-            (queue_name or self._queue_name, task_id),
+            (queue, task_id),
         )
 
     def claim_tasks(
@@ -1173,7 +1199,9 @@ class AsyncAbsurd(_AbsurdBase):
         """Create a queue (defaults to this client's queue)"""
         await self._ensure_connected()
         assert self._conn is not None
-        queue = queue_name or self._queue_name
+        queue = _validate_queue_name(
+            queue_name if queue_name is not None else self._queue_name
+        )
         cursor = self._conn.cursor()
         await cursor.execute("SELECT absurd.create_queue(%s)", (queue,))
 
@@ -1181,7 +1209,9 @@ class AsyncAbsurd(_AbsurdBase):
         """Drop a queue (defaults to this client's queue)"""
         await self._ensure_connected()
         assert self._conn is not None
-        queue = queue_name or self._queue_name
+        queue = _validate_queue_name(
+            queue_name if queue_name is not None else self._queue_name
+        )
         cursor = self._conn.cursor()
         await cursor.execute("SELECT absurd.drop_queue(%s)", (queue,))
 
@@ -1266,20 +1296,26 @@ class AsyncAbsurd(_AbsurdBase):
         if not event_name:
             raise ValueError("event_name must be a non-empty string")
 
+        queue = _validate_queue_name(
+            queue_name if queue_name is not None else self._queue_name
+        )
         cursor = self._conn.cursor()
         await cursor.execute(
             "SELECT absurd.emit_event(%s, %s, %s)",
-            (queue_name or self._queue_name, event_name, json.dumps(payload)),
+            (queue, event_name, json.dumps(payload)),
         )
 
     async def cancel_task(self, task_id: str, queue_name: Optional[str] = None) -> None:
         """Cancel a task by ID on the specified or default queue"""
         await self._ensure_connected()
         assert self._conn is not None
+        queue = _validate_queue_name(
+            queue_name if queue_name is not None else self._queue_name
+        )
         cursor = self._conn.cursor()
         await cursor.execute(
             "SELECT absurd.cancel_task(%s, %s)",
-            (queue_name or self._queue_name, task_id),
+            (queue, task_id),
         )
 
     async def claim_tasks(

@@ -472,6 +472,9 @@ export class Absurd {
     if (typeof options === "string" || isQueryable(options)) {
       options = { db: options };
     }
+
+    const validatedQueueName = validateQueueName(options?.queueName ?? "default");
+
     let connectionOrUrl = options.db;
     if (!connectionOrUrl) {
       connectionOrUrl =
@@ -484,7 +487,7 @@ export class Absurd {
       this.con = connectionOrUrl;
       this.ownedPool = false;
     }
-    this.queueName = options?.queueName ?? "default";
+    this.queueName = validatedQueueName;
     this.defaultMaxAttempts = options?.defaultMaxAttempts ?? 5;
     this.log = options?.log ?? console;
     this.hooks = options?.hooks ?? {};
@@ -533,14 +536,10 @@ export class Absurd {
       normalizeCancellation(options.defaultCancellation);
     }
     const queue = options.queue ?? this.queueName;
-    if (!queue) {
-      throw new Error(
-        `Task "${options.name}" must specify a queue or use a client with a default queue`,
-      );
-    }
+
     this.registry.set(options.name, {
       name: options.name,
-      queue,
+      queue: validateQueueName(queue),
       defaultMaxAttempts: options.defaultMaxAttempts,
       defaultCancellation: options.defaultCancellation,
       handler: handler as TaskHandler<any, any>,
@@ -552,7 +551,7 @@ export class Absurd {
    * @param queueName Queue name to create.
    */
   async createQueue(queueName?: string): Promise<void> {
-    const queue = queueName ?? this.queueName;
+    const queue = validateQueueName(queueName ?? this.queueName);
     await this.con.query(`SELECT absurd.create_queue($1)`, [queue]);
   }
 
@@ -561,7 +560,7 @@ export class Absurd {
    * @param queueName Queue name to drop.
    */
   async dropQueue(queueName?: string): Promise<void> {
-    const queue = queueName ?? this.queueName;
+    const queue = validateQueueName(queueName ?? this.queueName);
     await this.con.query(`SELECT absurd.drop_queue($1)`, [queue]);
   }
 
@@ -600,18 +599,22 @@ export class Absurd {
     let queue: string | undefined;
     if (registration) {
       queue = registration.queue;
-      if (options.queue !== undefined && options.queue !== registration.queue) {
-        throw new Error(
-          `Task "${taskName}" is registered for queue "${registration.queue}" but spawn requested queue "${options.queue}".`,
-        );
+      if (options.queue !== undefined) {
+        const requestedQueue = validateQueueName(options.queue);
+        if (requestedQueue !== registration.queue) {
+          throw new Error(
+            `Task "${taskName}" is registered for queue "${registration.queue}" but spawn requested queue "${options.queue}".`,
+          );
+        }
       }
-    } else if (!options.queue) {
+    } else if (options.queue === undefined) {
       throw new Error(
         `Task "${taskName}" is not registered. Provide options.queue when spawning unregistered tasks.`,
       );
     } else {
-      queue = options.queue;
+      queue = validateQueueName(options.queue);
     }
+
     const effectiveMaxAttempts =
       options.maxAttempts !== undefined
         ? options.maxAttempts
@@ -680,8 +683,9 @@ export class Absurd {
     if (!eventName) {
       throw new Error("eventName must be a non-empty string");
     }
+    const queue = validateQueueName(queueName ?? this.queueName);
     await this.con.query(`SELECT absurd.emit_event($1, $2, $3)`, [
-      queueName || this.queueName,
+      queue,
       eventName,
       JSON.stringify(payload ?? null),
     ]);
@@ -693,10 +697,8 @@ export class Absurd {
    * @param queueName Queue name (defaults to this client's queue).
    */
   async cancelTask(taskID: string, queueName?: string): Promise<void> {
-    await this.con.query(`SELECT absurd.cancel_task($1, $2)`, [
-      queueName || this.queueName,
-      taskID,
-    ]);
+    const queue = validateQueueName(queueName ?? this.queueName);
+    await this.con.query(`SELECT absurd.cancel_task($1, $2)`, [queue, taskID]);
   }
 
   async claimTasks(options?: {
@@ -956,6 +958,20 @@ export class Absurd {
       clearLeaseTimers();
     }
   }
+}
+
+const MAX_QUEUE_NAME_LENGTH = 57;
+
+function validateQueueName(queueName: string): string {
+  if (!queueName || queueName.trim().length === 0) {
+    throw new Error("Queue name must be provided");
+  }
+  if (Buffer.byteLength(queueName, "utf8") > MAX_QUEUE_NAME_LENGTH) {
+    throw new Error(
+      `Queue name "${queueName}" is too long (max ${MAX_QUEUE_NAME_LENGTH} bytes).`,
+    );
+  }
+  return queueName;
 }
 
 function isQueryable(value: unknown): value is Queryable {
