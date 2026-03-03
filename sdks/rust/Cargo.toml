@@ -1,0 +1,54 @@
+[package]
+name = "absurd"
+version = "0.0.1"
+edition = "2021"
+authors = ["Absurd Contributors"]
+description = "Rust SDK for Absurd: PostgreSQL-based durable task execution"
+repository = "git+https://github.com/earendil-works/absurd.git"
+readme = "README.md"
+keywords = ["durable", "workflow", "postgres", "task-queue", "execution"]
+categories = ["database", "asynchronous"]
+license = "Apache-2.0"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1.35", features = ["full"] }
+tokio-postgres = { version = "0.7", features = ["with-uuid-1", "with-serde_json-1", "with-chrono-0_4"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Types
+uuid = { version = "1.6", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+
+# Errors
+thiserror = "1.0"
+anyhow = "1.0"
+
+# Logging
+tracing = "0.1"
+
+# Utilities
+futures = "0.3"
+async-trait = "0.1"
+parking_lot = "0.12"
+hostname = "0.3"
+
+[dev-dependencies]
+tokio-test = "0.4"
+tempfile = "3.8"
+tracing-subscriber = "0.3"
+
+[[example]]
+name = "hello_world"
+path = "examples/hello_world.rs"
+
+[[example]]
+name = "basic_transfer"
+path = "examples/basic_transfer.rs"
+
+[[example]]
+name = "cross_border"
+path = "examples/cross_border.rs"
