@@ -1561,7 +1561,7 @@ def cmd_emit_event(args):
 
     payload_json = build_json_params(options.params, options.base_payload)
 
-    queue = options.queue or "default"
+    queue = validate_queue_name(options.queue or "default")
 
     ensure_queue_exists(config, queue)
 
@@ -1573,9 +1573,16 @@ def cmd_emit_event(args):
     details.extend(get_common_db_details(config))
     print_verbose_configuration(options.verbose, details)
 
-    query = f"SELECT absurd.emit_event('{queue}', '{event_name}', '{payload_json}'::jsonb);"
-
-    run_psql(config, query)
+    query = "SELECT absurd.emit_event(:'queue', :'event_name', :'payload_json'::jsonb);"
+    run_psql(
+        config,
+        query,
+        variables={
+            "queue": queue,
+            "event_name": event_name,
+            "payload_json": payload_json,
+        },
+    )
     print(f"Event '{event_name}' emitted successfully to queue '{queue}'")
 
 
