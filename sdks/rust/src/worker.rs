@@ -38,10 +38,8 @@ impl Worker {
 
                 // Drain any completed tasks before checking capacity
                 while executing.len() >= options.concurrency {
-                    if let Some(result) = executing.join_next().await {
-                        if let Err(e) = result {
-                            tracing::error!("Task execution panicked: {:?}", e);
-                        }
+                    if let Some(Err(e)) = executing.join_next().await {
+                        tracing::error!("Task execution panicked: {:?}", e);
                     }
                 }
 
@@ -108,10 +106,8 @@ impl Worker {
             }
 
             // Drain all in-flight tasks before returning
-            while let Some(result) = executing.join_next().await {
-                if let Err(e) = result {
-                    tracing::error!("Task execution panicked during shutdown: {:?}", e);
-                }
+            while let Some(Err(e)) = executing.join_next().await {
+                tracing::error!("Task execution panicked during shutdown: {:?}", e);
             }
         });
 

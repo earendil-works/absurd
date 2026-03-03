@@ -128,7 +128,7 @@ impl TaskContext {
             }
         } else {
             let checkpoint_name = self.advance_checkpoint_name(name);
-            let value = serde_json::to_value(&wake_at)?;
+            let value = serde_json::to_value(wake_at)?;
             self.persist_checkpoint(&checkpoint_name, &value).await?;
         }
 

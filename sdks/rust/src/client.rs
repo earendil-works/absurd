@@ -89,43 +89,47 @@ impl Absurd {
         params: Json,
         options: SpawnOptions,
     ) -> Result<SpawnResult> {
-        let registry = self.registry.read();
-        let registration = registry.get(task_name);
+        // Extract everything we need then drop the lock before any await
+        let (queue, effective_max_attempts, effective_cancellation) = {
+            let registry = self.registry.read();
+            let registration = registry.get(task_name);
 
-        let queue = if let Some(reg) = registration {
-            if let Some(ref opt_queue) = options.queue {
-                if opt_queue != &reg.queue {
-                    return Err(Error::Config(format!(
-                        "Task '{}' is registered for queue '{}' but spawn requested queue '{}'",
-                        task_name, reg.queue, opt_queue
-                    )));
+            let queue = if let Some(reg) = registration {
+                if let Some(ref opt_queue) = options.queue {
+                    if opt_queue != &reg.queue {
+                        return Err(Error::Config(format!(
+                            "Task '{}' is registered for queue '{}' but spawn requested queue '{}'",
+                            task_name, reg.queue, opt_queue
+                        )));
+                    }
                 }
-            }
-            reg.queue.clone()
-        } else {
-            options.queue.clone().ok_or_else(|| {
-                Error::Config(format!(
-                    "Task '{}' is not registered. Provide queue in options when spawning unregistered tasks",
-                    task_name
-                ))
-            })?
+                reg.queue.clone()
+            } else {
+                options.queue.clone().ok_or_else(|| {
+                    Error::Config(format!(
+                        "Task '{}' is not registered. Provide queue in options when spawning unregistered tasks",
+                        task_name
+                    ))
+                })?
+            };
+
+            let effective_max_attempts = options
+                .max_attempts
+                .or_else(|| registration.and_then(|r| r.default_max_attempts))
+                .unwrap_or(self.default_max_attempts);
+
+            let effective_cancellation = options
+                .cancellation
+                .clone()
+                .or_else(|| registration.and_then(|r| r.default_cancellation.clone()));
+
+            (queue, effective_max_attempts, effective_cancellation)
+            // registry lock drops here
         };
-
-        let effective_max_attempts = options
-            .max_attempts
-            .or_else(|| registration.and_then(|r| r.default_max_attempts))
-            .unwrap_or(self.default_max_attempts);
-
-        let effective_cancellation = options
-            .cancellation
-            .clone()
-            .or_else(|| registration.and_then(|r| r.default_cancellation.clone()));
 
         let mut spawn_opts = options.clone();
         spawn_opts.max_attempts = Some(effective_max_attempts);
         spawn_opts.cancellation = effective_cancellation;
-
-        drop(registry);
 
         let options_json = serde_json::to_value(&spawn_opts)?;
 
@@ -134,7 +138,7 @@ impl Absurd {
             .await?
             .query(
                 "SELECT task_id, run_id, attempt, created
-                 FROM absurd.spawn_task($1, $2, $3, $4)",
+                FROM absurd.spawn_task($1, $2, $3, $4)",
                 &[&queue, &task_name, &params, &options_json],
             )
             .await?;

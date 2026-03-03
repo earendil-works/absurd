@@ -84,7 +84,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             ctx.step("notify", || {
                 let from = from_account.to_string();
                 let to = to_account.to_string();
-                let amount = amount;
+                // let amount = amount;
                 Box::pin(async move {
                     println!("📧 Sending notification...");
                     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
