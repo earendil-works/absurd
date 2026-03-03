@@ -8,6 +8,14 @@ This contains the changes between releases.
 * Added `emit-event` command to `absurdctl` for publishing queue events from the CLI.  #67
 * Fixed TypeScript SDK lease handling to reschedule timers after `heartbeat` and checkpoint writes.
 * Fixed Habitat task listing to avoid partial results when database queries time out.
+* Added a collapse/expand-all toggle for task payload panels in Habitat.  #71
+* Enforced first-write-wins semantics for `emit_event`, so later emits no longer overwrite cached event payloads.
+* Improved `absurd.claim_task` to bound cancellation and expired-lease sweep work per claim call.
+* Hardened `absurd.extend_claim` to validate input and reject missing, non-running, cancelled, or unclaimed runs.
+* Improved checkpoint reads: `get_task_checkpoint_state` now hides pending rows by default, and `get_task_checkpoint_states` is run/attempt-aware.
+* Added queue-name byte-length validation and aligned queue-name validation behavior across SQL and clients.
+* Added queue indexes for run `claim_expires_at`, wait `task_id`, and event `emitted_at` to improve claim and cleanup performance.
+* Prevented deadlocks by aligning lock acquisition order across `cancel_task`, `complete_run`, and `fail_run` paths.
 
 # 0.0.8
 
