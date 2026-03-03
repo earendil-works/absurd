@@ -304,4 +304,27 @@ impl Absurd {
 
         Ok(tasks)
     }
+
+    /// Delete completed tasks and events older than the given number of days
+    pub async fn cleanup(&self, ttl_days: i32, queue_name: Option<&str>) -> Result<()> {
+        let queue = queue_name.unwrap_or(&self.queue_name);
+
+        self.db()
+            .await?
+            .execute(
+                "SELECT absurd.cleanup_tasks($1, $2)",
+                &[&queue, &ttl_days],
+            )
+            .await?;
+
+        self.db()
+            .await?
+            .execute(
+                "SELECT absurd.cleanup_events($1, $2)",
+                &[&queue, &ttl_days],
+            )
+            .await?;
+
+        Ok(())
+    }
 }
