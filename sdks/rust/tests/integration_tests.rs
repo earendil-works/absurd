@@ -52,11 +52,13 @@ async fn test_idempotency() -> Result<(), Box<dyn std::error::Error>> {
     let absurd = Absurd::with_queue(&get_test_db_url(), "test").await?;
     absurd.create_queue(None).await?; // ensure queue exists
 
+    let idempotency_key = format!("unique-key-{}", uuid::Uuid::new_v4());
+
     let result1 = absurd.spawn(
         "test-task",
         json!({ "value": 42 }),
         SpawnOptions {
-            idempotency_key: Some("unique-key-123".to_string()),
+            idempotency_key: Some(idempotency_key.clone()),
             queue: Some("test".to_string()),
             ..Default::default()
         }
@@ -66,7 +68,7 @@ async fn test_idempotency() -> Result<(), Box<dyn std::error::Error>> {
         "test-task",
         json!({ "value": 42 }),
         SpawnOptions {
-            idempotency_key: Some("unique-key-123".to_string()),
+            idempotency_key: Some(idempotency_key),
             queue: Some("test".to_string()),
             ..Default::default()
         }
