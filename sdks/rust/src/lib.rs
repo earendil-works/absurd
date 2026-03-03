@@ -117,6 +117,7 @@
 pub mod client;
 pub mod context;
 pub mod error;
+pub mod executor;
 pub mod types;
 pub mod worker;
 
