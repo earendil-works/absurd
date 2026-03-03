@@ -346,46 +346,41 @@ declare
   v_claim_until timestamptz := null;
   v_sql text;
   v_expired_run record;
+  v_cancel_candidate record;
 begin
   if v_claim_timeout > 0 then
     v_claim_until := v_now + make_interval(secs => v_claim_timeout);
   end if;
 
   -- Apply cancellation rules before claiming.
-  execute format(
-    'with limits as (
-        select task_id,
-               (cancellation->>''max_delay'')::bigint as max_delay,
-               (cancellation->>''max_duration'')::bigint as max_duration,
-               enqueue_at,
-               first_started_at,
-               state
-          from absurd.%I
+  --
+  -- Use cancel_task() so lock order stays consistent (runs first, task second)
+  -- with complete_run()/fail_run().
+  for v_cancel_candidate in
+    execute format(
+      'select task_id
+         from absurd.%I
         where state in (''pending'', ''sleeping'', ''running'')
-     ),
-     to_cancel as (
-        select task_id
-          from limits
-         where
-           (
-             max_delay is not null
-             and first_started_at is null
-             and extract(epoch from ($1 - enqueue_at)) >= max_delay
-           )
-           or
-           (
-             max_duration is not null
-             and first_started_at is not null
-             and extract(epoch from ($1 - first_started_at)) >= max_duration
-           )
-     )
-     update absurd.%I t
-        set state = ''cancelled'',
-            cancelled_at = coalesce(t.cancelled_at, $1)
-      where t.task_id in (select task_id from to_cancel)',
-    't_' || p_queue_name,
-    't_' || p_queue_name
-  ) using v_now;
+          and (
+            (
+              (cancellation->>''max_delay'')::bigint is not null
+              and first_started_at is null
+              and extract(epoch from ($1 - enqueue_at)) >= (cancellation->>''max_delay'')::bigint
+            )
+            or
+            (
+              (cancellation->>''max_duration'')::bigint is not null
+              and first_started_at is not null
+              and extract(epoch from ($1 - first_started_at)) >= (cancellation->>''max_duration'')::bigint
+            )
+          )
+        order by task_id',
+      't_' || p_queue_name
+    )
+  using v_now
+  loop
+    perform absurd.cancel_task(p_queue_name, v_cancel_candidate.task_id);
+  end loop;
 
   for v_expired_run in
     execute format(
@@ -415,19 +410,6 @@ begin
       null
     );
   end loop;
-
-  execute format(
-    'update absurd.%I r
-        set state = ''cancelled'',
-            claimed_by = null,
-            claim_expires_at = null,
-            available_at = $1,
-            wake_event = null
-      where task_id in (select task_id from absurd.%I where state = ''cancelled'')
-        and r.state <> ''cancelled''',
-    'r_' || p_queue_name,
-    't_' || p_queue_name
-  ) using v_now;
 
   v_sql := format(
     'with candidate as (
@@ -1199,6 +1181,18 @@ declare
   v_now timestamptz := absurd.current_time();
   v_task_state text;
 begin
+  -- Lock active runs before the task row so cancel_task() uses the same
+  -- lock acquisition order as complete_run()/fail_run().
+  execute format(
+    'select run_id
+       from absurd.%I
+      where task_id = $1
+        and state not in (''completed'', ''failed'', ''cancelled'')
+      order by run_id
+      for update',
+    'r_' || p_queue_name
+  ) using p_task_id;
+
   execute format(
     'select state
        from absurd.%I
