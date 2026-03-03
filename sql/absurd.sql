@@ -386,10 +386,15 @@ declare
   v_sql text;
   v_expired_run record;
   v_cancel_candidate record;
+  v_expired_sweep_limit integer;
 begin
   if v_claim_timeout > 0 then
     v_claim_until := v_now + make_interval(secs => v_claim_timeout);
   end if;
+
+  -- Keep claim polling work bounded: process at most v_qty expired leases
+  -- per claim call.
+  v_expired_sweep_limit := greatest(v_qty, 1);
 
   -- Apply cancellation rules before claiming.
   --
@@ -431,10 +436,12 @@ begin
         where state = ''running''
           and claim_expires_at is not null
           and claim_expires_at <= $1
+        order by claim_expires_at, run_id
+        limit $2
         for update skip locked',
       'r_' || p_queue_name
     )
-  using v_now
+  using v_now, v_expired_sweep_limit
   loop
     perform absurd.fail_run(
       p_queue_name,
