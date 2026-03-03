@@ -4,6 +4,11 @@ This contains the changes between releases.
 
 # Unreleased
 
+* Fixed SQL injection vulnerabilities in `absurdctl`.  #68
+* Added `emit-event` command to `absurdctl` for publishing queue events from the CLI.  #67
+* Fixed TypeScript SDK lease handling to reschedule timers after `heartbeat` and checkpoint writes.
+* Fixed Habitat task listing to avoid partial results when database queries time out.
+
 # 0.0.8
 
 * Fixed Habitat sub-path deployment support and hardened prefix handling for UI/API routes.
