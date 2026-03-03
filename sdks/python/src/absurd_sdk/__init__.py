@@ -563,7 +563,7 @@ class TaskContext:
                 (
                     self._queue_name,
                     self._task["run_id"],
-                    seconds or self._claim_timeout,
+                    seconds if seconds is not None else self._claim_timeout,
                 ),
             )
         except Exception as e:
@@ -759,7 +759,7 @@ class AsyncTaskContext:
                 (
                     self._queue_name,
                     self._task["run_id"],
-                    seconds or self._claim_timeout,
+                    seconds if seconds is not None else self._claim_timeout,
                 ),
             )
         except Exception as e:

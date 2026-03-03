@@ -856,32 +856,48 @@ create function absurd.extend_claim (
 as $$
 declare
   v_now timestamptz := absurd.current_time();
-  v_extend_by integer;
-  v_claim_timeout integer;
-  v_rows_updated integer;
   v_task_state text;
+  v_run_state text;
+  v_claim_expires_at timestamptz;
 begin
+  if p_extend_by is null or p_extend_by <= 0 then
+    raise exception 'extend_by must be > 0';
+  end if;
+
   execute format(
-    'select t.state
+    'select r.state,
+            r.claim_expires_at,
+            t.state
        from absurd.%I r
        join absurd.%I t on t.task_id = r.task_id
-      where r.run_id = $1',
+      where r.run_id = $1
+      for update',
     'r_' || p_queue_name,
     't_' || p_queue_name
   )
-  into v_task_state
+  into v_run_state, v_claim_expires_at, v_task_state
   using p_run_id;
+
+  if v_run_state is null then
+    raise exception 'Run "%" not found in queue "%"', p_run_id, p_queue_name;
+  end if;
 
   if v_task_state = 'cancelled' then
     raise exception sqlstate 'AB001' using message = 'Task has been cancelled';
   end if;
 
+  if v_run_state <> 'running' then
+    raise exception 'Run "%" is not currently running in queue "%"', p_run_id, p_queue_name;
+  end if;
+
+  if v_claim_expires_at is null then
+    raise exception 'Run "%" does not have an active claim in queue "%"', p_run_id, p_queue_name;
+  end if;
+
   execute format(
     'update absurd.%I
         set claim_expires_at = $2 + make_interval(secs => $3)
-      where run_id = $1
-        and state = ''running''
-        and claim_expires_at is not null',
+      where run_id = $1',
     'r_' || p_queue_name
   )
   using p_run_id, v_now, p_extend_by;

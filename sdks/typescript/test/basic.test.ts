@@ -535,6 +535,32 @@ describe("Basic SDK Operations", () => {
       });
     });
 
+    test("heartbeat rejects non-positive extensions", async () => {
+      const baseTime = new Date("2025-01-01T00:00:00Z");
+      await ctx.setFakeNow(baseTime);
+
+      absurd.registerTask(
+        { name: "heartbeat-invalid", defaultMaxAttempts: 1 },
+        async (_params, taskCtx) => {
+          await taskCtx.heartbeat(0);
+          return { ok: true };
+        },
+      );
+
+      const { taskID, runID } = await absurd.spawn("heartbeat-invalid", {});
+      await absurd.workBatch("heartbeat-invalid-worker", 60, 1);
+
+      const task = await ctx.getTask(taskID);
+      expect(task?.state).toBe("failed");
+
+      const run = await ctx.getRun(runID);
+      expect(run?.state).toBe("failed");
+      expect(run?.claim_expires_at?.getTime()).toBe(baseTime.getTime() + 60000);
+      expect(JSON.stringify(run?.failure_reason ?? null)).toContain(
+        "extend_by must be > 0",
+      );
+    });
+
     test("heartbeat keeps task alive past original claim timeout", async () => {
       const claimTimeout = 1;
       const extension = 10;
