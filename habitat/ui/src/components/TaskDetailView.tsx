@@ -1,5 +1,5 @@
 import { A } from "@solidjs/router";
-import { For, Show } from "solid-js";
+import { For, Show, createSignal } from "solid-js";
 import { JSONViewer } from "@/components/JSONViewer";
 import { TaskStatusBadge } from "@/components/TaskStatusBadge";
 import { IdDisplay } from "@/components/IdDisplay";
@@ -45,19 +45,29 @@ function DetailContent(props: {
   const stateLabel = () =>
     props.detail.status?.toLowerCase() === "failed" ? "Failure" : "Final State";
   const isDefault = props.variant === "default";
+  const [collapseAllPayloads, setCollapseAllPayloads] = createSignal(false);
 
   return (
     <>
-      <Show when={props.taskLink}>
-        {(link) => (
-          <A
-            href={link()}
-            class={`${buttonVariants({ variant: "secondary", size: "sm" })} float-right items-center gap-1`}
-          >
-            View task history
-          </A>
-        )}
-      </Show>
+      <div class="flex justify-end gap-2">
+        <button
+          type="button"
+          class={buttonVariants({ variant: "secondary", size: "sm" })}
+          onClick={() => setCollapseAllPayloads((current) => !current)}
+        >
+          {collapseAllPayloads() ? "Expand all" : "Collapse all"}
+        </button>
+        <Show when={props.taskLink}>
+          {(link) => (
+            <A
+              href={link()}
+              class={`${buttonVariants({ variant: "secondary", size: "sm" })} items-center gap-1`}
+            >
+              View task history
+            </A>
+          )}
+        </Show>
+      </div>
 
       <Show when={isDefault}>
         <div class="grid gap-4 md:grid-cols-2">
@@ -128,6 +138,7 @@ function DetailContent(props: {
           <JSONViewer
             data={props.detail.retryStrategy}
             label="Retry Strategy"
+            collapseAll={collapseAllPayloads()}
           />
         </div>
       </Show>
@@ -181,7 +192,11 @@ function DetailContent(props: {
                   </dl>
                   <Show when={typeof wait.payload !== "undefined"}>
                     <div>
-                      <JSONViewer data={wait.payload} label="Wait payload" />
+                      <JSONViewer
+                        data={wait.payload}
+                        label="Wait payload"
+                        collapseAll={collapseAllPayloads()}
+                      />
                     </div>
                   </Show>
                   <Show when={typeof wait.eventPayload !== "undefined"}>
@@ -189,6 +204,7 @@ function DetailContent(props: {
                       <JSONViewer
                         data={wait.eventPayload}
                         label="Event payload"
+                        collapseAll={collapseAllPayloads()}
                       />
                     </div>
                   </Show>
@@ -201,19 +217,31 @@ function DetailContent(props: {
 
       <Show when={props.detail.params}>
         <div>
-          <JSONViewer data={props.detail.params} label="Parameters" />
+          <JSONViewer
+            data={props.detail.params}
+            label="Parameters"
+            collapseAll={collapseAllPayloads()}
+          />
         </div>
       </Show>
 
       <Show when={props.detail.headers}>
         <div>
-          <JSONViewer data={props.detail.headers} label="Headers" />
+          <JSONViewer
+            data={props.detail.headers}
+            label="Headers"
+            collapseAll={collapseAllPayloads()}
+          />
         </div>
       </Show>
 
       <Show when={props.detail.state !== undefined}>
         <div>
-          <JSONViewer data={props.detail.state} label={stateLabel()} />
+          <JSONViewer
+            data={props.detail.state}
+            label={stateLabel()}
+            collapseAll={collapseAllPayloads()}
+          />
         </div>
       </Show>
 
@@ -238,7 +266,10 @@ function DetailContent(props: {
                       )}
                     </Show>
                   </div>
-                  <JSONViewer data={checkpoint.state} />
+                  <JSONViewer
+                    data={checkpoint.state}
+                    collapseAll={collapseAllPayloads()}
+                  />
                 </div>
               )}
             </For>
