@@ -438,6 +438,7 @@ export class TaskContext {
 
   /**
    * Emits an event to this task's queue with an optional payload.
+   * Event payloads are immutable per name: first emit wins.
    * @param eventName Non-empty event name.
    * @param payload Optional JSON-serializable payload.
    */
@@ -671,6 +672,7 @@ export class Absurd {
 
   /**
    * Emits an event with an optional payload on the specified or default queue.
+   * Event payloads are immutable per name: first emit wins.
    * @param eventName Non-empty event name.
    * @param payload Optional JSON-serializable payload.
    * @param queueName Queue to emit to (defaults to this client's queue).

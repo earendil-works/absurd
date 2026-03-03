@@ -63,6 +63,46 @@ def test_await_and_emit_event_flow(client):
     assert checkpoint["state"] == payload
 
 
+def test_emit_event_is_first_write_wins(client):
+    queue = "events-first-write"
+    client.create_queue(queue)
+
+    event_name = "stable-event"
+    first_payload = {"value": 1}
+    second_payload = {"value": 2}
+
+    first_emit_at = datetime(2024, 2, 2, 12, 0, tzinfo=timezone.utc)
+    client.set_fake_now(first_emit_at)
+    client.emit_event(queue, event_name, first_payload)
+
+    client.set_fake_now(first_emit_at + timedelta(seconds=30))
+    client.emit_event(queue, event_name, second_payload)
+
+    event_row = client.conn.execute(
+        sql.SQL(
+            "select payload, emitted_at from absurd.{table} where event_name = %s"
+        ).format(table=client.get_table("e", queue)),
+        (event_name,),
+    ).fetchone()
+    assert event_row is not None
+    assert event_row[0] == first_payload
+    assert event_row[1] == first_emit_at
+
+    spawn = client.spawn_task(queue, "waiter", {"step": 1})
+    claim = client.claim_tasks(queue)[0]
+
+    resumed = client.await_event(
+        queue,
+        spawn.task_id,
+        claim["run_id"],
+        step_name="wait",
+        event_name=event_name,
+        timeout_seconds=60,
+    )
+    assert resumed["should_suspend"] is False
+    assert resumed["payload"] == first_payload
+
+
 def test_await_event_timeout_does_not_recreate_wait(client):
     """
     When a timeout expires and the run resumes, await_event() should detect

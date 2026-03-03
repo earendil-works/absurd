@@ -76,6 +76,42 @@ describe("Event system", () => {
     });
   });
 
+  test("emitEvent is first-write-wins", async () => {
+    const eventName = randomName("stable_event");
+    const firstPayload = { value: 1 };
+    const secondPayload = { value: 2 };
+    const firstEmitAt = new Date("2024-05-01T09:00:00Z");
+
+    await ctx.setFakeNow(firstEmitAt);
+    await absurd.emitEvent(eventName, firstPayload);
+
+    await ctx.setFakeNow(new Date(firstEmitAt.getTime() + 30 * 1000));
+    await absurd.emitEvent(eventName, secondPayload);
+
+    const eventRows = await ctx.pool.query<{ payload: unknown; emitted_at: Date }>(
+      `SELECT payload, emitted_at FROM absurd.e_${ctx.queueName} WHERE event_name = $1`,
+      [eventName],
+    );
+    expect(eventRows.rows).toHaveLength(1);
+    expect(eventRows.rows[0].payload).toEqual(firstPayload);
+    expect(new Date(eventRows.rows[0].emitted_at).getTime()).toBe(
+      firstEmitAt.getTime(),
+    );
+
+    absurd.registerTask({ name: "late-first-write-waiter" }, async (_params, ctx) => {
+      const received = await ctx.awaitEvent(eventName);
+      return { received };
+    });
+
+    const { taskID } = await absurd.spawn("late-first-write-waiter", undefined);
+    await absurd.workBatch("worker1", 60, 1);
+
+    expect(await ctx.getTask(taskID)).toMatchObject({
+      state: "completed",
+      completed_payload: { received: firstPayload },
+    });
+  });
+
   test("awaitEvent with timeout expires and wakes task", async () => {
     const eventName = randomName("timeout_event");
     const baseTime = new Date("2024-05-01T10:00:00Z");

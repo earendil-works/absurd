@@ -544,7 +544,7 @@ class TaskContext:
         raise SuspendTask()
 
     def emit_event(self, event_name: str, payload: Optional[JsonValue] = None) -> None:
-        """Emit an event to this task's queue with an optional payload"""
+        """Emit an event to this task's queue (first emit per name wins)."""
         if not event_name:
             raise ValueError("event_name must be a non-empty string")
 
@@ -740,7 +740,7 @@ class AsyncTaskContext:
     async def emit_event(
         self, event_name: str, payload: Optional[JsonValue] = None
     ) -> None:
-        """Emit an event to this task's queue with an optional payload"""
+        """Emit an event to this task's queue (first emit per name wins)."""
         if not event_name:
             raise ValueError("event_name must be a non-empty string")
 
@@ -1023,7 +1023,7 @@ class Absurd(_AbsurdBase):
         payload: Optional[JsonValue] = None,
         queue_name: Optional[str] = None,
     ) -> None:
-        """Emit an event with an optional payload on the specified or default queue"""
+        """Emit an event on the queue (first emit per name wins)."""
         if not event_name:
             raise ValueError("event_name must be a non-empty string")
 
@@ -1290,7 +1290,7 @@ class AsyncAbsurd(_AbsurdBase):
         payload: Optional[JsonValue] = None,
         queue_name: Optional[str] = None,
     ) -> None:
-        """Emit an event with an optional payload on the specified or default queue"""
+        """Emit an event on the queue (first emit per name wins)."""
         await self._ensure_connected()
         assert self._conn is not None
         if not event_name:

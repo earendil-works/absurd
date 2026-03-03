@@ -26,8 +26,8 @@
 -- `get_task_checkpoint_state`, `get_task_checkpoint_states`) write arbitrary
 -- JSON payloads keyed by task and step, while `await_event` and `emit_event`
 -- coordinate sleepers and external signals so that tasks can suspend and resume
--- without losing context.  Events are uniquely indexed and can only be fired
--- once per name.
+-- without losing context.  Events are uniquely indexed and use first-write-wins
+-- semantics: the first emission per name is cached, later emits are ignored.
 
 create extension if not exists "uuid-ossp";
 
@@ -1193,19 +1193,33 @@ as $$
 declare
   v_now timestamptz := absurd.current_time();
   v_payload jsonb := coalesce(p_payload, 'null'::jsonb);
+  v_emit_applied integer;
 begin
   if p_event_name is null or length(trim(p_event_name)) = 0 then
     raise exception 'event_name must be provided';
   end if;
 
+  -- Events are immutable once emitted: first write wins.
+  --
+  -- await_event() may pre-create a row with payload=NULL as a "not emitted"
+  -- sentinel. We allow exactly one transition NULL -> JSON payload.
   execute format(
-    'insert into absurd.%I (event_name, payload, emitted_at)
+    'insert into absurd.%1$I as e (event_name, payload, emitted_at)
      values ($1, $2, $3)
      on conflict (event_name)
      do update set payload = excluded.payload,
-                   emitted_at = excluded.emitted_at',
+                   emitted_at = excluded.emitted_at
+      where e.payload is null',
     'e_' || p_queue_name
   ) using p_event_name, v_payload, v_now;
+
+  get diagnostics v_emit_applied = row_count;
+
+  -- Event was already emitted earlier; do not overwrite cached payload or
+  -- re-run wakeup side effects.
+  if v_emit_applied = 0 then
+    return;
+  end if;
 
   execute format(
     'with expired_waits as (

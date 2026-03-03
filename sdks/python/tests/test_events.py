@@ -105,6 +105,46 @@ def test_event_emitted_before_await_is_cached(conn, queue_name):
     assert task["completed_payload"] == {"received": payload}
 
 
+def test_emit_event_is_first_write_wins(conn, queue_name):
+    """Test that re-emitting the same event does not overwrite cached payload."""
+    queue = queue_name("event_first_write")
+    client = Absurd(conn, queue_name=queue)
+    client.create_queue()
+
+    event_name = f"stable_event_{queue}"
+    first_payload = {"value": 1}
+    second_payload = {"value": 2}
+
+    first_emit_at = datetime(2024, 5, 1, 9, 0, 0, tzinfo=timezone.utc)
+    _set_fake_now(conn, first_emit_at)
+    client.emit_event(event_name, first_payload)
+
+    _set_fake_now(conn, first_emit_at + timedelta(seconds=30))
+    client.emit_event(event_name, second_payload)
+
+    event_row = conn.execute(
+        sql.SQL(
+            "select payload, emitted_at from absurd.{table} where event_name = %s"
+        ).format(table=sql.Identifier(f"e_{queue}")),
+        (event_name,),
+    ).fetchone()
+    assert event_row is not None
+    assert event_row[0] == first_payload
+    assert event_row[1] == first_emit_at
+
+    @client.register_task("late-waiter")
+    def late_waiter_task(params, ctx):
+        received = ctx.await_event(event_name)
+        return {"received": received}
+
+    spawned = client.spawn("late-waiter", None)
+    client.work_batch("worker1", 60, 1)
+
+    task = _get_task(conn, queue, spawned["task_id"])
+    assert task["state"] == "completed"
+    assert task["completed_payload"] == {"received": first_payload}
+
+
 def test_await_event_with_timeout_expires_and_wakes_task(conn, queue_name):
     """Test that awaitEvent with timeout expires and wakes the task"""
     queue = queue_name("timeout_event")
