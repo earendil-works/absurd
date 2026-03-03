@@ -152,9 +152,29 @@ begin
   );
 
   execute format(
+    'create index if not exists %I on absurd.%I (claim_expires_at)
+      where state = ''running''
+        and claim_expires_at is not null',
+    ('r_' || p_queue_name) || '_cei',
+    'r_' || p_queue_name
+  );
+
+  execute format(
     'create index if not exists %I on absurd.%I (event_name)',
     ('w_' || p_queue_name) || '_eni',
     'w_' || p_queue_name
+  );
+
+  execute format(
+    'create index if not exists %I on absurd.%I (task_id)',
+    ('w_' || p_queue_name) || '_ti',
+    'w_' || p_queue_name
+  );
+
+  execute format(
+    'create index if not exists %I on absurd.%I (emitted_at)',
+    ('e_' || p_queue_name) || '_eai',
+    'e_' || p_queue_name
   );
 end;
 $$;
