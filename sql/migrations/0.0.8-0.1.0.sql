@@ -1,4 +1,4 @@
--- Migration from 0.0.8 to main
+-- Migration from 0.0.8 to 0.1.0
 --
 -- This migration introduces queue name byte-length validation, adds missing
 -- indexes for existing queues, and updates runtime functions for cancellation,
