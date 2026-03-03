@@ -849,6 +849,8 @@ begin
 end;
 $$;
 
+-- Returns one checkpoint by name. By default only committed checkpoint rows
+-- are visible; pass p_include_pending = true to include pending rows.
 create function absurd.get_task_checkpoint_state (
   p_queue_name text,
   p_task_id uuid,
@@ -869,12 +871,15 @@ begin
     'select checkpoint_name, state, status, owner_run_id, updated_at
        from absurd.%I
       where task_id = $1
-        and checkpoint_name = $2',
+        and checkpoint_name = $2
+        and ($3 or status = ''committed'')',
     'c_' || p_queue_name
-  ) using p_task_id, p_step_name;
+  ) using p_task_id, p_step_name, coalesce(p_include_pending, false);
 end;
 $$;
 
+-- Returns committed checkpoints visible to the given run. The run must belong
+-- to the provided task, and checkpoints from later attempts are hidden.
 create function absurd.get_task_checkpoint_states (
   p_queue_name text,
   p_task_id uuid,
@@ -889,14 +894,42 @@ create function absurd.get_task_checkpoint_states (
   )
   language plpgsql
 as $$
+declare
+  v_run_task_id uuid;
+  v_run_attempt integer;
 begin
-  return query execute format(
-    'select checkpoint_name, state, status, owner_run_id, updated_at
+  execute format(
+    'select task_id, attempt
        from absurd.%I
-      where task_id = $1
-      order by updated_at asc',
-    'c_' || p_queue_name
-  ) using p_task_id;
+      where run_id = $1',
+    'r_' || p_queue_name
+  )
+  into v_run_task_id, v_run_attempt
+  using p_run_id;
+
+  if v_run_task_id is null then
+    raise exception 'Run "%" not found in queue "%"', p_run_id, p_queue_name;
+  end if;
+
+  if v_run_task_id <> p_task_id then
+    raise exception 'Run "%" does not belong to task "%" in queue "%"', p_run_id, p_task_id, p_queue_name;
+  end if;
+
+  return query execute format(
+    'select c.checkpoint_name,
+            c.state,
+            c.status,
+            c.owner_run_id,
+            c.updated_at
+       from absurd.%1$I c
+       left join absurd.%2$I owner_run on owner_run.run_id = c.owner_run_id
+      where c.task_id = $1
+        and c.status = ''committed''
+        and (owner_run.attempt is null or owner_run.attempt <= $2)
+      order by c.updated_at asc',
+    'c_' || p_queue_name,
+    'r_' || p_queue_name
+  ) using p_task_id, v_run_attempt;
 end;
 $$;
 
