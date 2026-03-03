@@ -6,9 +6,9 @@ import {
   beforeAll,
   afterEach,
   vi,
-} from "vitest";
-import { createTestAbsurd, randomName, type TestContext } from "./setup.js";
-import type { Absurd } from "../src/index.js";
+} from "./testlib.ts";
+import { createTestAbsurd, randomName, type TestContext } from "./setup.ts";
+import type { Absurd } from "../src/index.ts";
 import { EventEmitter, once } from "events";
 
 describe("Basic SDK Operations", () => {
@@ -533,6 +533,58 @@ describe("Basic SDK Operations", () => {
           baseTime.getTime() + extension * 1000,
         );
       });
+    });
+
+    test("heartbeat keeps task alive past original claim timeout", async () => {
+      const claimTimeout = 1;
+      const extension = 10;
+      const longWorkMs = claimTimeout * 2000 + 100;
+      let heartbeatFired = false;
+
+      absurd.registerTask(
+        { name: "heartbeat-long-task" },
+        async (_params, taskCtx) => {
+          await taskCtx.heartbeat(extension);
+          heartbeatFired = true;
+          await ctx.sleep(longWorkMs);
+          return { ok: true };
+        },
+      );
+
+      const { taskID } = await absurd.spawn("heartbeat-long-task", {});
+
+      const originalExit = process.exit;
+      const exitCalls: unknown[][] = [];
+      process.exit = ((...args: unknown[]) => {
+        exitCalls.push(args);
+        return undefined as never;
+      }) as typeof process.exit;
+
+      const worker = await absurd.startWorker({
+        claimTimeout,
+        concurrency: 1,
+        pollInterval: 0.01,
+        fatalOnLeaseTimeout: true,
+      });
+
+      try {
+        await vi.waitFor(() => {
+          expect(heartbeatFired).toBe(true);
+        }, { timeout: 500 });
+
+        await vi.waitFor(async () => {
+          const task = await ctx.getTask(taskID);
+          expect(task?.state).toBe("completed");
+        }, { timeout: longWorkMs + 2000 });
+
+        const runs = await ctx.getRuns(taskID);
+        expect(runs).toHaveLength(1);
+        expect(runs[0]?.state).toBe("completed");
+        expect(exitCalls).toHaveLength(0);
+      } finally {
+        await worker.close();
+        process.exit = originalExit;
+      }
     });
   });
 });

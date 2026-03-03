@@ -1,7 +1,7 @@
-import { describe, test, expect, beforeAll, afterEach } from "vitest";
-import { createTestAbsurd, randomName, type TestContext } from "./setup.js";
-import type { Absurd } from "../src/index.js";
-import { TimeoutError } from "../src/index.js";
+import { describe, test, expect, beforeAll, afterEach } from "./testlib.ts";
+import { createTestAbsurd, randomName, type TestContext } from "./setup.ts";
+import type { Absurd } from "../src/index.ts";
+import { TimeoutError } from "../src/index.ts";
 
 describe("Event system", () => {
   let ctx: TestContext;

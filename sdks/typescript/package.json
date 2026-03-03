@@ -1,6 +1,6 @@
 {
   "name": "absurd-sdk",
-  "version": "0.0.7",
+  "version": "0.0.8",
   "description": "TypeScript SDK for Absurd - PostgreSQL-based durable task execution",
   "type": "module",
   "main": "./dist/cjs/index.js",
@@ -20,9 +20,8 @@
     "build": "tsc --project tsconfig.build.json && tsc --project tsconfig.cjs.json && echo '{\"type\":\"commonjs\"}' > dist/cjs/package.json",
     "type-check": "tsc --noEmit",
     "prepare": "npm run build",
-    "test": "vitest --silent --run",
-    "test:watch": "vitest",
-    "test:ui": "vitest --ui",
+    "test": "node --test --test-concurrency=1 test/*.test.ts",
+    "test:watch": "node --test --test-concurrency=1 --watch test/*.test.ts",
     "docs": "typedoc"
   },
   "keywords": [
@@ -47,8 +46,7 @@
     "@types/node": "^22.10.2",
     "@types/pg": "^8.11.10",
     "typedoc": "^0.28.14",
-    "typescript": "^5.9.3",
-    "vitest": "^4.0.7"
+    "typescript": "^5.9.3"
   },
   "engines": {
     "node": ">=18.0.0"

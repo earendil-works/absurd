@@ -14,7 +14,7 @@ lives in Postgres tables prefixed by queue name (`t_`, `r_`, `c_`, `e_`, `w_`).
 - **sql/absurd.sql** - Core Postgres schema and stored procedures. This is the heart of the system.
 - **sdks/typescript/** - TypeScript SDK (main SDK, currently unpublished, used from source)
 - **habitat/** - Go-based web UI for monitoring tasks, runs, and events
-- **absurdctl** - CLI tool (Go binary) for queue/task management and debugging
+- **absurdctl** - Python-based CLI tool for queue/task management and debugging
 - **tests/** - Python test suite using psycopg and testcontainers
 
 ## Building and Testing

@@ -15,10 +15,10 @@ test-core:
 	@echo "Running core tests"
 	@cd tests; uv run pytest
 
-# Run TypeScript SDK tests
+# Run TypeScript SDK checks and tests
 test-typescript:
-	@echo "Running TypeScript SDK tests"
-	@cd sdks/typescript && npm run test
+	@echo "Running TypeScript SDK checks and tests"
+	@cd sdks/typescript && npm run type-check && npm run test
 
 # Run Python SDK tests
 test-python:

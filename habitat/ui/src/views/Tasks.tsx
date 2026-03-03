@@ -47,14 +47,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import {
-  Pagination,
-  PaginationEllipsis,
-  PaginationItem,
-  PaginationItems,
-  PaginationNext,
-  PaginationPrevious,
-} from "@/components/ui/pagination";
 
 const REFRESH_INTERVAL_MS = 15_000;
 const PAGE_SIZE = 25;
@@ -93,19 +85,13 @@ function resolveSelectedOption(
 }
 
 function findParamsMatch(params: any, search: string): string | null {
-  console.log("[DEBUG] findParamsMatch called:", { params, search });
   if (!search || !params) {
-    console.log(
-      "[DEBUG] findParamsMatch: early return, search or params missing",
-    );
     return null;
   }
   const paramsStr = JSON.stringify(params);
-  console.log("[DEBUG] findParamsMatch: paramsStr=", paramsStr);
   const lowerParams = paramsStr.toLowerCase();
   const lowerSearch = search.toLowerCase();
   const index = lowerParams.indexOf(lowerSearch);
-  console.log("[DEBUG] findParamsMatch: index=", index);
   if (index === -1) return null;
 
   // Extract a snippet around the match (30 chars before and after)
@@ -115,7 +101,6 @@ function findParamsMatch(params: any, search: string): string | null {
   let snippet = paramsStr.slice(start, end);
   if (start > 0) snippet = "..." + snippet;
   if (end < paramsStr.length) snippet = snippet + "...";
-  console.log("[DEBUG] findParamsMatch: returning snippet=", snippet);
   return snippet;
 }
 
@@ -146,6 +131,9 @@ export default function Tasks() {
   );
   const [taskNameFilter, setTaskNameFilter] = createSignal<string | null>(
     normalizeNullableParam(getParam("taskName")),
+  );
+  const [taskNameInput, setTaskNameInput] = createSignal(
+    getParam("taskName") ?? "",
   );
   const [page, setPage] = createSignal(parsePageParam(getParam("page")));
 
@@ -212,6 +200,7 @@ export default function Tasks() {
     const nextTaskName = normalizeNullableParam(getParam("taskName"));
     if (nextTaskName !== taskNameFilter()) {
       setTaskNameFilter(nextTaskName);
+      setTaskNameInput(nextTaskName ?? "");
     }
 
     const nextPage = parsePageParam(getParam("page"));
@@ -252,23 +241,17 @@ export default function Tasks() {
   });
 
   const allTasks = () => tasks.items;
-  const totalTasks = createMemo(() => taskList()?.total ?? 0);
-  const totalPages = createMemo(() => {
-    const total = totalTasks();
-    if (!total) {
-      return 1;
-    }
-    return Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const totalTasks = createMemo<number | null>(() => {
+    const total = taskList()?.total ?? -1;
+    return total >= 0 ? total : null;
   });
-  const showPagination = createMemo(() => totalTasks() > PAGE_SIZE);
+  const hasMore = createMemo(() => taskList()?.hasMore ?? false);
+  const showPagination = createMemo(() => page() > 1 || hasMore());
   const queueOptions = createMemo(() =>
     buildFilterOptions(taskList()?.availableQueues ?? [], "All queues"),
   );
   const statusOptions = createMemo(() =>
     buildFilterOptions(taskList()?.availableStatuses ?? [], "All statuses"),
-  );
-  const taskNameOptions = createMemo(() =>
-    buildFilterOptions(taskList()?.availableTaskNames ?? [], "All task names"),
   );
   const selectedQueueOption = createMemo(() =>
     resolveSelectedOption(queueOptions(), queueFilter()),
@@ -276,20 +259,17 @@ export default function Tasks() {
   const selectedStatusOption = createMemo(() =>
     resolveSelectedOption(statusOptions(), statusFilter()),
   );
-  const selectedTaskNameOption = createMemo(() =>
-    resolveSelectedOption(taskNameOptions(), taskNameFilter()),
-  );
   const pageStart = createMemo(() => {
-    if (!totalTasks()) {
+    if (!allTasks().length) {
       return 0;
     }
     return (page() - 1) * PAGE_SIZE + 1;
   });
   const pageEnd = createMemo(() => {
-    if (!totalTasks()) {
+    if (!allTasks().length) {
       return 0;
     }
-    return Math.min(totalTasks(), pageStart() + allTasks().length - 1);
+    return pageStart() + allTasks().length - 1;
   });
 
   const renderQueueOption = (props: { item: any }) => {
@@ -301,15 +281,6 @@ export default function Tasks() {
     const option = () => props.item.rawValue as FilterOption;
     return <SelectItem item={props.item}>{option().label}</SelectItem>;
   };
-
-  createEffect(() => {
-    const maxPage = totalPages();
-    if (page() > maxPage) {
-      const normalized = Math.max(1, maxPage);
-      setPage(normalized);
-      syncSearchParams({ page: normalized }, { replace: true });
-    }
-  });
 
   createEffect(() => {
     const error = taskList.error;
@@ -450,10 +421,22 @@ export default function Tasks() {
                       }
 
                       setQueueFilter(nextValue);
+
+                      let nextTaskName = taskNameFilter();
+                      if (!nextValue && nextTaskName) {
+                        nextTaskName = null;
+                        setTaskNameFilter(null);
+                        setTaskNameInput("");
+                      }
+
                       if (page() !== 1) {
                         setPage(1);
                       }
-                      syncSearchParams({ queue: nextValue, page: 1 });
+                      syncSearchParams({
+                        queue: nextValue,
+                        taskName: nextTaskName,
+                        page: 1,
+                      });
                     }}
                     itemComponent={renderQueueOption}
                     defaultFilter="contains"
@@ -510,58 +493,52 @@ export default function Tasks() {
                     <SelectContent />
                   </Select>
                 </div>
-                <div class="space-y-1">
-                  <span class="text-sm font-medium text-foreground">
-                    Task name
-                  </span>
-                  <Select
-                    multiple={false}
-                    options={taskNameOptions()}
-                    optionValue={(option: FilterOption) => option.value}
-                    optionTextValue={(option: FilterOption) => option.label}
-                    value={selectedTaskNameOption()}
-                    onChange={(option) => {
-                      const nextValue = option?.value ? option.value : null;
-                      if (nextValue === taskNameFilter()) {
-                        return;
-                      }
-
-                      setTaskNameFilter(nextValue);
-                      if (page() !== 1) {
-                        setPage(1);
-                      }
-                      syncSearchParams({ taskName: nextValue, page: 1 });
+                <TextFieldRoot>
+                  <TextFieldLabel>Task name (exact)</TextFieldLabel>
+                  <TextField
+                    value={taskNameInput()}
+                    onInput={(event) => {
+                      setTaskNameInput(event.currentTarget.value);
                     }}
-                    itemComponent={renderSelectOption}
-                    placeholder="All task names"
-                    aria-label="Task name filter"
-                  >
-                    <SelectTrigger>
-                      <SelectValue>
-                        {(state) => {
-                          const option = state.selectedOption() as
-                            | FilterOption
-                            | undefined;
-                          return (
-                            option?.label ??
-                            selectedTaskNameOption()?.label ??
-                            "All task names"
-                          );
-                        }}
-                      </SelectValue>
-                    </SelectTrigger>
-                    <SelectContent />
-                  </Select>
-                </div>
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") {
+                        const nextValue = toParamValue(taskNameInput()) ?? null;
+                        if (nextValue === taskNameFilter()) {
+                          return;
+                        }
+
+                        setTaskNameFilter(nextValue);
+                        if (page() !== 1) {
+                          setPage(1);
+                        }
+                        syncSearchParams(
+                          { taskName: nextValue, page: 1 },
+                          { replace: true },
+                        );
+                      }
+                    }}
+                    disabled={!queueFilter()}
+                    placeholder={
+                      queueFilter()
+                        ? "Exact task name (press Enter)"
+                        : "Select a queue first"
+                    }
+                  />
+                </TextFieldRoot>
               </div>
               <div class="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
-                <Show when={totalTasks() > 0}>
-                  <span>
-                    Showing {pageStart()}–{pageEnd()} of {totalTasks()} task
-                    {totalTasks() === 1 ? "" : "s"}
-                  </span>
+                <Show when={allTasks().length > 0}>
+                  <Show
+                    when={totalTasks() !== null}
+                    fallback={<span>Showing {pageStart()}–{pageEnd()} tasks</span>}
+                  >
+                    <span>
+                      Showing {pageStart()}–{pageEnd()} of {totalTasks()} task
+                      {totalTasks() === 1 ? "" : "s"}
+                    </span>
+                  </Show>
                 </Show>
-                <Show when={totalTasks() === 0 && !taskList.loading}>
+                <Show when={allTasks().length === 0 && !taskList.loading}>
                   <span>No tasks match the current filters.</span>
                 </Show>
               </div>
@@ -678,24 +655,36 @@ export default function Tasks() {
               </Show>
             </Show>
             <Show when={showPagination()}>
-              <Pagination
-                class="mt-4"
-                count={totalPages()}
-                page={page()}
-                disabled={taskList.loading}
-                onPageChange={(nextPage) => {
-                  if (nextPage !== page()) {
+              <div class="mt-4 flex items-center justify-between gap-3">
+                <Button
+                  variant="outline"
+                  disabled={taskList.loading || page() <= 1}
+                  onClick={() => {
+                    const nextPage = Math.max(1, page() - 1);
+                    if (nextPage !== page()) {
+                      setPage(nextPage);
+                      syncSearchParams({ page: nextPage });
+                    }
+                  }}
+                >
+                  Previous
+                </Button>
+                <span class="text-xs text-muted-foreground">Page {page()}</span>
+                <Button
+                  variant="outline"
+                  disabled={taskList.loading || !hasMore()}
+                  onClick={() => {
+                    if (!hasMore()) {
+                      return;
+                    }
+                    const nextPage = page() + 1;
                     setPage(nextPage);
-                  }
-                  syncSearchParams({ page: nextPage });
-                }}
-                itemComponent={PaginationItem}
-                ellipsisComponent={() => <PaginationEllipsis />}
-              >
-                <PaginationPrevious aria-label="Previous page" />
-                <PaginationItems />
-                <PaginationNext aria-label="Next page" />
-              </Pagination>
+                    syncSearchParams({ page: nextPage });
+                  }}
+                >
+                  Next
+                </Button>
+              </div>
             </Show>
             <Show when={tasksError()}>
               {(error) => (

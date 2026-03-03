@@ -9,6 +9,8 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 
 	"habitat/internal/config"
@@ -50,7 +52,7 @@ func New(cfg config.Config, db *sql.DB) (*Server, error) {
 		return nil, fmt.Errorf("load index html: %w", err)
 	}
 
-	s.mux = s.routes()
+	s.mux = s.withBasePath(s.routes())
 	return s, nil
 }
 
@@ -66,7 +68,11 @@ func (s *Server) Run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("listen on %s: %w", s.cfg.ListenAddress, err)
 	}
-	log.Printf("dashboard listening on %s", listener.Addr())
+	if s.cfg.BasePath == "" {
+		log.Printf("dashboard listening on %s", listener.Addr())
+	} else {
+		log.Printf("dashboard listening on %s (base path %s)", listener.Addr(), s.cfg.BasePath)
+	}
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -114,6 +120,57 @@ func (s *Server) routes() http.Handler {
 
 	mux.HandleFunc("/", s.handleIndex)
 	return mux
+}
+
+func (s *Server) withBasePath(next http.Handler) http.Handler {
+	if s.cfg.BasePath == "" {
+		return next
+	}
+
+	basePath := s.cfg.BasePath
+	withSlash := basePath + "/"
+
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestPath := r.URL.Path
+		switch {
+		case requestPath == basePath:
+			redirectURL := cloneURL(r)
+			publicBasePath := s.publicBasePath(r)
+			if publicBasePath == "" {
+				publicBasePath = basePath
+			}
+			redirectURL.Path = publicBasePath + "/"
+			http.Redirect(w, r, redirectURL.String(), http.StatusPermanentRedirect)
+			return
+		case requestPath == withSlash:
+			forwarded := r.Clone(r.Context())
+			forwarded.URL = cloneURL(r)
+			forwarded.URL.Path = "/"
+			next.ServeHTTP(w, forwarded)
+			return
+		case !strings.HasPrefix(requestPath, withSlash):
+			http.NotFound(w, r)
+			return
+		default:
+			forwarded := r.Clone(r.Context())
+			forwarded.URL = cloneURL(r)
+			stripped := strings.TrimPrefix(requestPath, basePath)
+			if stripped == "" {
+				stripped = "/"
+			}
+			forwarded.URL.Path = stripped
+			next.ServeHTTP(w, forwarded)
+			return
+		}
+	})
+}
+
+func cloneURL(r *http.Request) *url.URL {
+	if r.URL == nil {
+		return &url.URL{}
+	}
+	cloned := *r.URL
+	return &cloned
 }
 
 type responseWriter struct {
