@@ -212,16 +212,34 @@ interface RegisteredTask {
 
 export class TaskContext {
   private stepNameCounter: Map<string, number> = new Map();
+  private readonly log: Log;
+  readonly taskID: string;
+  private readonly con: Queryable;
+  private readonly queueName: string;
+  private readonly task: ClaimedTask;
+  private readonly checkpointCache: Map<string, JsonValue>;
+  private readonly claimTimeout: number;
+  private readonly onLeaseExtended: (leaseSeconds: number) => void;
 
   private constructor(
-    private readonly log: Log,
-    readonly taskID: string,
-    private readonly con: Queryable,
-    private readonly queueName: string,
-    private readonly task: ClaimedTask,
-    private readonly checkpointCache: Map<string, JsonValue>,
-    private readonly claimTimeout: number,
-  ) {}
+    log: Log,
+    taskID: string,
+    con: Queryable,
+    queueName: string,
+    task: ClaimedTask,
+    checkpointCache: Map<string, JsonValue>,
+    claimTimeout: number,
+    onLeaseExtended: (leaseSeconds: number) => void,
+  ) {
+    this.log = log;
+    this.taskID = taskID;
+    this.con = con;
+    this.queueName = queueName;
+    this.task = task;
+    this.checkpointCache = checkpointCache;
+    this.claimTimeout = claimTimeout;
+    this.onLeaseExtended = onLeaseExtended;
+  }
 
   /**
    * Returns all headers attached to this task.
@@ -237,8 +255,10 @@ export class TaskContext {
     queueName: string;
     task: ClaimedTask;
     claimTimeout: number;
+    onLeaseExtended: (leaseSeconds: number) => void;
   }): Promise<TaskContext> {
-    const { log, taskID, con, queueName, task, claimTimeout } = args;
+    const { log, taskID, con, queueName, task, claimTimeout, onLeaseExtended } =
+      args;
     const result = await con.query<CheckpointRow>(
       `SELECT checkpoint_name, state, status, owner_run_id, updated_at
        FROM absurd.get_task_checkpoint_states($1, $2, $3)`,
@@ -256,6 +276,7 @@ export class TaskContext {
       task,
       cache,
       claimTimeout,
+      onLeaseExtended,
     );
   }
 
@@ -362,6 +383,7 @@ export class TaskContext {
       ],
     );
     this.checkpointCache.set(checkpointName, value);
+    this.onLeaseExtended(this.claimTimeout);
   }
 
   private async scheduleRun(wakeAt: Date): Promise<void> {
@@ -441,15 +463,18 @@ export class TaskContext {
    * @param seconds Lease extension in seconds.
    */
   async heartbeat(seconds?: number): Promise<void> {
+    const leaseSeconds = seconds ?? this.claimTimeout;
     await this.queryWithCancelCheck(`SELECT absurd.extend_claim($1, $2, $3)`, [
       this.queueName,
       this.task.run_id,
-      seconds ?? this.claimTimeout,
+      leaseSeconds,
     ]);
+    this.onLeaseExtended(leaseSeconds);
   }
 
   /**
    * Emits an event to this task's queue with an optional payload.
+   * Event payloads are immutable per name: first emit wins.
    * @param eventName Non-empty event name.
    * @param payload Optional JSON-serializable payload.
    */
@@ -484,6 +509,9 @@ export class Absurd {
     if (typeof options === "string" || isQueryable(options)) {
       options = { db: options };
     }
+
+    const validatedQueueName = validateQueueName(options?.queueName ?? "default");
+
     let connectionOrUrl = options.db;
     if (!connectionOrUrl) {
       connectionOrUrl =
@@ -496,7 +524,7 @@ export class Absurd {
       this.con = connectionOrUrl;
       this.ownedPool = false;
     }
-    this.queueName = options?.queueName ?? "default";
+    this.queueName = validatedQueueName;
     this.defaultMaxAttempts = options?.defaultMaxAttempts ?? 5;
     this.log = options?.log ?? console;
     this.hooks = options?.hooks ?? {};
@@ -545,14 +573,10 @@ export class Absurd {
       normalizeCancellation(options.defaultCancellation);
     }
     const queue = options.queue ?? this.queueName;
-    if (!queue) {
-      throw new Error(
-        `Task "${options.name}" must specify a queue or use a client with a default queue`,
-      );
-    }
+
     this.registry.set(options.name, {
       name: options.name,
-      queue,
+      queue: validateQueueName(queue),
       defaultMaxAttempts: options.defaultMaxAttempts,
       defaultCancellation: options.defaultCancellation,
       handler: handler as TaskHandler<any, any>,
@@ -564,7 +588,7 @@ export class Absurd {
    * @param queueName Queue name to create.
    */
   async createQueue(queueName?: string): Promise<void> {
-    const queue = queueName ?? this.queueName;
+    const queue = validateQueueName(queueName ?? this.queueName);
     await this.con.query(`SELECT absurd.create_queue($1)`, [queue]);
   }
 
@@ -573,7 +597,7 @@ export class Absurd {
    * @param queueName Queue name to drop.
    */
   async dropQueue(queueName?: string): Promise<void> {
-    const queue = queueName ?? this.queueName;
+    const queue = validateQueueName(queueName ?? this.queueName);
     await this.con.query(`SELECT absurd.drop_queue($1)`, [queue]);
   }
 
@@ -612,18 +636,22 @@ export class Absurd {
     let queue: string | undefined;
     if (registration) {
       queue = registration.queue;
-      if (options.queue !== undefined && options.queue !== registration.queue) {
-        throw new Error(
-          `Task "${taskName}" is registered for queue "${registration.queue}" but spawn requested queue "${options.queue}".`,
-        );
+      if (options.queue !== undefined) {
+        const requestedQueue = validateQueueName(options.queue);
+        if (requestedQueue !== registration.queue) {
+          throw new Error(
+            `Task "${taskName}" is registered for queue "${registration.queue}" but spawn requested queue "${options.queue}".`,
+          );
+        }
       }
-    } else if (!options.queue) {
+    } else if (options.queue === undefined) {
       throw new Error(
         `Task "${taskName}" is not registered. Provide options.queue when spawning unregistered tasks.`,
       );
     } else {
-      queue = options.queue;
+      queue = validateQueueName(options.queue);
     }
+
     const effectiveMaxAttempts =
       options.maxAttempts !== undefined
         ? options.maxAttempts
@@ -680,6 +708,7 @@ export class Absurd {
 
   /**
    * Emits an event with an optional payload on the specified or default queue.
+   * Event payloads are immutable per name: first emit wins.
    * @param eventName Non-empty event name.
    * @param payload Optional JSON-serializable payload.
    * @param queueName Queue to emit to (defaults to this client's queue).
@@ -692,8 +721,9 @@ export class Absurd {
     if (!eventName) {
       throw new Error("eventName must be a non-empty string");
     }
+    const queue = validateQueueName(queueName ?? this.queueName);
     await this.con.query(`SELECT absurd.emit_event($1, $2, $3)`, [
-      queueName || this.queueName,
+      queue,
       eventName,
       JSON.stringify(payload ?? null),
     ]);
@@ -705,10 +735,8 @@ export class Absurd {
    * @param queueName Queue name (defaults to this client's queue).
    */
   async cancelTask(taskID: string, queueName?: string): Promise<void> {
-    await this.con.query(`SELECT absurd.cancel_task($1, $2)`, [
-      queueName || this.queueName,
-      taskID,
-    ]);
+    const queue = validateQueueName(queueName ?? this.queueName);
+    await this.con.query(`SELECT absurd.cancel_task($1, $2)`, [queue, taskID]);
   }
 
   /**
@@ -1056,8 +1084,44 @@ export class Absurd {
     claimTimeout: number,
     options?: { fatalOnLeaseTimeout?: boolean },
   ): Promise<void> {
-    let warnTimer: any;
-    let fatalTimer: any;
+    let warnTimer: NodeJS.Timeout | null = null;
+    let fatalTimer: NodeJS.Timeout | null = null;
+
+    const taskLabel = `${task.task_name} (${task.task_id})`;
+    const clearLeaseTimers = () => {
+      if (warnTimer) {
+        clearTimeout(warnTimer);
+        warnTimer = null;
+      }
+      if (fatalTimer) {
+        clearTimeout(fatalTimer);
+        fatalTimer = null;
+      }
+    };
+    const scheduleLeaseTimers = (leaseSeconds: number) => {
+      clearLeaseTimers();
+      if (leaseSeconds <= 0) {
+        return;
+      }
+
+      warnTimer = setTimeout(() => {
+        this.log.warn(
+          `task ${taskLabel} exceeded claim timeout of ${leaseSeconds}s`,
+        );
+      }, leaseSeconds * 1000);
+
+      if (options?.fatalOnLeaseTimeout) {
+        fatalTimer = setTimeout(
+          () => {
+            this.log.error(
+              `task ${taskLabel} exceeded claim timeout of ${leaseSeconds}s by more than 100%; terminating process`,
+            );
+            process.exit(1);
+          },
+          leaseSeconds * 1000 * 2,
+        );
+      }
+    };
 
     const registration = this.registry.get(task.task_name);
     const ctx = await TaskContext.create({
@@ -1067,29 +1131,11 @@ export class Absurd {
       queueName: registration?.queue ?? "unknown",
       task: task,
       claimTimeout,
+      onLeaseExtended: scheduleLeaseTimers,
     });
+    scheduleLeaseTimers(claimTimeout);
 
     try {
-      if (claimTimeout > 0) {
-        const taskLabel = `${task.task_name} (${task.task_id})`;
-        warnTimer = setTimeout(() => {
-          this.log.warn(
-            `task ${taskLabel} exceeded claim timeout of ${claimTimeout}s`,
-          );
-        }, claimTimeout * 1000);
-        if (options?.fatalOnLeaseTimeout) {
-          fatalTimer = setTimeout(
-            () => {
-              this.log.error(
-                `task ${taskLabel} exceeded claim timeout of ${claimTimeout}s by more than 100%; terminating process`,
-              );
-              process.exit(1);
-            },
-            claimTimeout * 1000 * 2,
-          );
-        }
-      }
-
       if (!registration) {
         throw new Error("Unknown task");
       } else if (registration.queue !== this.queueName) {
@@ -1114,14 +1160,23 @@ export class Absurd {
       this.log.error("[absurd] task execution failed:", err);
       await failTaskRun(this.con, this.queueName, task.run_id, err);
     } finally {
-      if (warnTimer) {
-        clearTimeout(warnTimer);
-      }
-      if (fatalTimer) {
-        clearTimeout(fatalTimer);
-      }
+      clearLeaseTimers();
     }
   }
+}
+
+const MAX_QUEUE_NAME_LENGTH = 57;
+
+function validateQueueName(queueName: string): string {
+  if (!queueName || queueName.trim().length === 0) {
+    throw new Error("Queue name must be provided");
+  }
+  if (Buffer.byteLength(queueName, "utf8") > MAX_QUEUE_NAME_LENGTH) {
+    throw new Error(
+      `Queue name "${queueName}" is too long (max ${MAX_QUEUE_NAME_LENGTH} bytes).`,
+    );
+  }
+  return queueName;
 }
 
 function isQueryable(value: unknown): value is Queryable {

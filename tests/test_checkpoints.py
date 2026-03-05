@@ -1,6 +1,8 @@
 from datetime import datetime, timedelta, timezone
 
+from psycopg import sql
 from psycopg.types.json import Jsonb
+import pytest
 
 
 def test_set_checkpoint_extends_claim_lease(client):
@@ -11,7 +13,7 @@ def test_set_checkpoint_extends_claim_lease(client):
     client.set_fake_now(base)
 
     # Spawn and claim a task with a 60-second timeout
-    spawn = client.spawn_task(queue, "multi-step", {"value": 1})
+    client.spawn_task(queue, "multi-step", {"value": 1})
     claim = client.claim_tasks(queue, worker="worker-1", claim_timeout=60)[0]
     run_id = claim["run_id"]
     task_id = claim["task_id"]
@@ -200,7 +202,7 @@ def test_sleep_until_checkpoint_prevents_infinite_reschedule(client):
     client.set_fake_now(base)
 
     # Spawn and claim a task
-    spawn = client.spawn_task(queue, "sleepy-task", {"value": 1})
+    client.spawn_task(queue, "sleepy-task", {"value": 1})
     claim = client.claim_tasks(queue, worker="worker-1", claim_timeout=120)[0]
     run_id = claim["run_id"]
     task_id = claim["task_id"]
@@ -278,7 +280,7 @@ def test_sleep_until_checkpoint_with_multiple_sleep_steps(client):
     base = datetime(2024, 5, 4, 10, 0, tzinfo=timezone.utc)
     client.set_fake_now(base)
 
-    spawn = client.spawn_task(queue, "multi-sleep-task", {"value": 1})
+    client.spawn_task(queue, "multi-sleep-task", {"value": 1})
     claim = client.claim_tasks(queue, worker="worker-1", claim_timeout=120)[0]
     run_id = claim["run_id"]
     task_id = claim["task_id"]
@@ -328,3 +330,119 @@ def test_sleep_until_checkpoint_with_multiple_sleep_steps(client):
     client.complete_run(queue, run_id, {"result": "success"})
     task = client.get_task(queue, task_id)
     assert task["state"] == "completed"
+
+
+def test_get_task_checkpoint_state_respects_include_pending(client):
+    queue = "checkpoint_include_pending"
+    client.create_queue(queue)
+
+    spawn = client.spawn_task(queue, "task", {"value": 1})
+    claim = client.claim_tasks(queue, worker="worker-1")[0]
+
+    client.conn.execute(
+        "select absurd.set_task_checkpoint_state(%s, %s, %s, %s, %s, %s)",
+        (queue, spawn.task_id, "step-1", Jsonb({"value": "ok"}), claim["run_id"], 60),
+    )
+
+    client.conn.execute(
+        sql.SQL("update absurd.{c} set status = 'pending' where task_id = %s and checkpoint_name = %s").format(
+            c=client.get_table("c", queue)
+        ),
+        (spawn.task_id, "step-1"),
+    )
+
+    default_row = client.conn.execute(
+        """
+        select checkpoint_name, state, status, owner_run_id, updated_at
+        from absurd.get_task_checkpoint_state(%s, %s, %s)
+        """,
+        (queue, spawn.task_id, "step-1"),
+    ).fetchone()
+    assert default_row is None
+
+    pending_row = client.conn.execute(
+        """
+        select checkpoint_name, state, status, owner_run_id, updated_at
+        from absurd.get_task_checkpoint_state(%s, %s, %s, %s)
+        """,
+        (queue, spawn.task_id, "step-1", True),
+    ).fetchone()
+    assert pending_row is not None
+    assert pending_row[0] == "step-1"
+    assert pending_row[1] == {"value": "ok"}
+    assert pending_row[2] == "pending"
+
+
+def test_get_task_checkpoint_states_requires_run_task_match(client):
+    queue = "checkpoint_run_match"
+    client.create_queue(queue)
+
+    spawn1 = client.spawn_task(queue, "task-1", {"value": 1})
+    claim1 = client.claim_tasks(queue, worker="worker-1")[0]
+
+    client.conn.execute(
+        "select absurd.set_task_checkpoint_state(%s, %s, %s, %s, %s, %s)",
+        (queue, spawn1.task_id, "step-1", Jsonb({"value": "ok"}), claim1["run_id"], 60),
+    )
+
+    client.spawn_task(queue, "task-2", {"value": 2})
+    claim2 = client.claim_tasks(queue, worker="worker-2")[0]
+
+    with pytest.raises(Exception) as exc_info:
+        client.conn.execute(
+            """
+            select checkpoint_name, state, status, owner_run_id, updated_at
+            from absurd.get_task_checkpoint_states(%s, %s, %s)
+            """,
+            (queue, spawn1.task_id, claim2["run_id"]),
+        ).fetchall()
+
+    assert "does not belong" in str(exc_info.value)
+
+
+def test_get_task_checkpoint_states_filters_future_attempts(client):
+    queue = "checkpoint_attempt_scope"
+    client.create_queue(queue)
+
+    spawn = client.spawn_task(
+        queue,
+        "task",
+        {"value": 1},
+        {"retry_strategy": {"kind": "fixed", "base_seconds": 0}, "max_attempts": 2},
+    )
+
+    claim1 = client.claim_tasks(queue, worker="worker-1")[0]
+    run_id_1 = claim1["run_id"]
+
+    client.conn.execute(
+        "select absurd.set_task_checkpoint_state(%s, %s, %s, %s, %s, %s)",
+        (queue, spawn.task_id, "step-1", Jsonb({"value": 1}), run_id_1, 60),
+    )
+
+    client.fail_run(queue, run_id_1, {"message": "retry"})
+
+    claim2 = client.claim_tasks(queue, worker="worker-2")[0]
+    run_id_2 = claim2["run_id"]
+
+    client.conn.execute(
+        "select absurd.set_task_checkpoint_state(%s, %s, %s, %s, %s, %s)",
+        (queue, spawn.task_id, "step-2", Jsonb({"value": 2}), run_id_2, 60),
+    )
+
+    attempt1_rows = client.conn.execute(
+        """
+        select checkpoint_name, state, status, owner_run_id, updated_at
+        from absurd.get_task_checkpoint_states(%s, %s, %s)
+        """,
+        (queue, spawn.task_id, run_id_1),
+    ).fetchall()
+    assert [row[0] for row in attempt1_rows] == ["step-1"]
+
+    attempt2_rows = client.conn.execute(
+        """
+        select checkpoint_name, state, status, owner_run_id, updated_at
+        from absurd.get_task_checkpoint_states(%s, %s, %s)
+        """,
+        (queue, spawn.task_id, run_id_2),
+    ).fetchall()
+    assert {row[0] for row in attempt2_rows} == {"step-1", "step-2"}

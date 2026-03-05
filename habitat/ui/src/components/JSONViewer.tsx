@@ -1,8 +1,9 @@
-import { createSignal, Show, For, createMemo } from "solid-js";
+import { createSignal, Show, For, createMemo, createEffect } from "solid-js";
 
 interface JSONViewerProps {
   data: any;
   label?: string;
+  collapseAll?: boolean;
 }
 
 type JSONToken =
@@ -27,6 +28,20 @@ export function JSONViewer(props: JSONViewerProps) {
     new Set(),
   );
   const [foldedPaths, setFoldedPaths] = createSignal<Set<string>>(new Set());
+
+  const allFoldablePaths = createMemo(() => collectFoldablePaths(props.data));
+
+  createEffect(() => {
+    if (props.collapseAll === undefined) {
+      return;
+    }
+
+    if (props.collapseAll) {
+      setFoldedPaths(new Set(allFoldablePaths()));
+    } else {
+      setFoldedPaths(new Set<string>());
+    }
+  });
 
   const errorInfo = () => extractErrorLike(props.data);
 
@@ -292,6 +307,37 @@ function tokenizeJSON(
   }
 
   return tokens;
+}
+
+function collectFoldablePaths(data: any, path: string = "$"): string[] {
+  if (data === null || typeof data !== "object") {
+    return [];
+  }
+
+  if (Array.isArray(data)) {
+    if (data.length === 0) {
+      return [];
+    }
+
+    return [
+      path,
+      ...data.flatMap((item, index) =>
+        collectFoldablePaths(item, `${path}[${index}]`),
+      ),
+    ];
+  }
+
+  const entries = Object.entries(data);
+  if (entries.length === 0) {
+    return [];
+  }
+
+  return [
+    path,
+    ...entries.flatMap(([key, value]) =>
+      collectFoldablePaths(value, `${path}.${key}`),
+    ),
+  ];
 }
 
 type ErrorLikeInfo = {

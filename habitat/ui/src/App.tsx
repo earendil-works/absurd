@@ -8,11 +8,14 @@ import TaskRuns from "@/views/TaskRuns";
 import Queues from "@/views/Queues";
 import EventLog from "@/views/EventLog";
 import Schedules from "@/views/Schedules";
+import { getRuntimeConfig } from "@/lib/runtime";
+
+const runtimeConfig = getRuntimeConfig();
 
 export default function App() {
   return (
     <IdDisplayProvider>
-      <Router>
+      <Router base={runtimeConfig.basePath}>
         <Route
           path="/"
           component={() => (

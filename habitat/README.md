@@ -51,3 +51,7 @@ Habitat can be configured via command-line flags or environment variables (prefi
 | Flag | Environment Variable | Default | Description |
 |------|---------------------|---------|-------------|
 | `-listen` | `HABITAT_LISTEN` | `:7890` | Address to listen on |
+| `-base-path` | `HABITAT_BASE_PATH` | - | Serve UI/API under a URL prefix (e.g. `/habitat`) |
+
+When Habitat is behind a reverse proxy, it also honors `X-Forwarded-Prefix` (plus
+`X-Forwarded-Path` / `X-Script-Name`) to generate correct UI and API URLs.

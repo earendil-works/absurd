@@ -1,8 +1,8 @@
-import { describe, it, expect, beforeAll, afterEach, vi } from "vitest";
+import { describe, it, expect, beforeAll, afterEach, vi } from "./testlib.ts";
 import { EventEmitter, once } from "events";
-import type { TestContext } from "./setup";
-import { createTestAbsurd, randomName } from "./setup";
-import type { Absurd } from "../src/index";
+import type { TestContext } from "./setup.ts";
+import { createTestAbsurd, randomName } from "./setup.ts";
+import type { Absurd } from "../src/index.ts";
 
 describe("Worker", () => {
   let ctx: TestContext;

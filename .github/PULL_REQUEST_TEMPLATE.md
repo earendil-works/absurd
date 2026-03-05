@@ -1,22 +1,8 @@
 Provide a brief description of the changes in this PR here.
 
-## Checklist
-
-- [ ] My code follows the style guidelines of this project
-- [ ] I have performed a self-review of my own code
-
-## AI Usage Disclosure
-
-**Did you use AI assistance for this PR?**
-- [ ] No AI was used
-- [ ] AI was used minimally (e.g., for code formatting, minor suggestions)
-- [ ] AI was used extensively (e.g., for refactoring, significant code generation, algorithm design)
-
-**If AI was used, please describe:**
-
-Detail which tools you used (e.g., GitHub Copilot, ChatGPT, Claude) and for which parts of the PR
-
 ## Contribution Agreement
+
+Please ensure this PR follows the guidelines in `CONTRIBUTING.md`.
 
 <!-- Earendil employees and contractors can delete or ignore the following: -->
 

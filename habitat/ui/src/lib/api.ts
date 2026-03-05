@@ -1,3 +1,11 @@
+import { getRuntimeConfig } from "@/lib/runtime";
+
+const runtimeConfig = getRuntimeConfig();
+
+function apiURL(path: string): string {
+  return `${runtimeConfig.apiBasePath}${path}`;
+}
+
 export interface QueueMetrics {
   queueName: string;
   queueLength: number;
@@ -61,7 +69,7 @@ async function extractErrorMessage(response: Response): Promise<string> {
 
 export async function fetchMetrics(): Promise<QueueMetrics[]> {
   const result = await handleResponse<{ queues: QueueMetrics[] }>(
-    await fetch("/api/metrics", {
+    await fetch(apiURL("/metrics"), {
       headers: defaultHeaders,
     }),
   );
@@ -134,7 +142,8 @@ export interface QueueEvent {
 
 export interface TaskListResponse {
   items: TaskSummary[];
-  total: number;
+  total: number; // -1 when the backend skips expensive exact counts
+  hasMore: boolean;
   page: number;
   perPage: number;
   availableStatuses: string[];
@@ -180,7 +189,7 @@ export async function fetchTasks(
   }
 
   const query = params.toString();
-  const url = query ? `/api/tasks?${query}` : "/api/tasks";
+  const url = query ? `${apiURL("/tasks")}?${query}` : apiURL("/tasks");
 
   return handleResponse<TaskListResponse>(
     await fetch(url, {
@@ -191,7 +200,7 @@ export async function fetchTasks(
 
 export async function fetchTask(runId: string): Promise<TaskDetail> {
   return handleResponse<TaskDetail>(
-    await fetch(`/api/tasks/${runId}`, {
+    await fetch(apiURL(`/tasks/${runId}`), {
       headers: defaultHeaders,
     }),
   );
@@ -199,7 +208,7 @@ export async function fetchTask(runId: string): Promise<TaskDetail> {
 
 export async function fetchQueues(): Promise<QueueSummary[]> {
   return handleResponse<QueueSummary[]>(
-    await fetch("/api/queues", {
+    await fetch(apiURL("/queues"), {
       headers: defaultHeaders,
     }),
   );
@@ -209,7 +218,7 @@ export async function fetchQueueTasks(
   queueName: string,
 ): Promise<TaskSummary[]> {
   return handleResponse<TaskSummary[]>(
-    await fetch(`/api/queues/${queueName}/tasks`, {
+    await fetch(apiURL(`/queues/${queueName}/tasks`), {
       headers: defaultHeaders,
     }),
   );
@@ -232,9 +241,8 @@ export async function fetchQueueEvents(
     params.set("limit", String(filters.limit));
   }
   const query = params.toString();
-  const url = query
-    ? `/api/queues/${queueName}/events?${query}`
-    : `/api/queues/${queueName}/events`;
+  const baseURL = apiURL(`/queues/${queueName}/events`);
+  const url = query ? `${baseURL}?${query}` : baseURL;
 
   return handleResponse<QueueEvent[]>(
     await fetch(url, {
@@ -291,7 +299,7 @@ export async function fetchEvents(
   }
 
   const query = params.toString();
-  const url = query ? `/api/events?${query}` : "/api/events";
+  const url = query ? `${apiURL("/events")}?${query}` : apiURL("/events");
 
   return handleResponse<QueueEvent[]>(
     await fetch(url, {

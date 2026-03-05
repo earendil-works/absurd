@@ -97,8 +97,8 @@ execute again (a *run*).  The result of a step is stored in the database (a
 *checkpoint*).  To not repeat work, checkpoints are automatically loaded from
 the state storage in Postgres again.
 
-Additionally, tasks can *sleep* or *suspend for events*.  Events are cached,
-which means they are race-free.
+Additionally, tasks can *sleep* or *suspend for events*.  Events are cached
+(first emit wins), which means they are race-free.
 
 ## Components
 
@@ -149,8 +149,8 @@ app.registerTask({ name: 'order-fulfillment' }, async (params, ctx) => {
   });
 
   // Wait indefinitely for a warehouse event - the task suspends
-  // until the event arrives.  Events are cached like step checkpoints,
-  // which means this is race-free.
+  // until the event arrives.  Events are cached like step checkpoints
+  // (first emit wins), which means this is race-free.
   const shipment = await ctx.awaitEvent(`shipment.packed:${params.orderId}`);
 
   // Ready to send a notification!

@@ -5,7 +5,9 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"html"
 	"log"
 	"net/http"
 	"sort"
@@ -13,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/lib/pq"
 )
 
@@ -26,8 +29,124 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte("ok"))
 }
 
-func (s *Server) handleConfig(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{})
+type uiRuntimeConfig struct {
+	BasePath       string `json:"basePath"`
+	APIBasePath    string `json:"apiBasePath"`
+	StaticBasePath string `json:"staticBasePath"`
+}
+
+func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.runtimeConfig(r))
+}
+
+func (s *Server) runtimeConfig(r *http.Request) uiRuntimeConfig {
+	basePath := s.publicBasePath(r)
+	return uiRuntimeConfig{
+		BasePath:       basePath,
+		APIBasePath:    joinPathPrefixes(basePath, "/api"),
+		StaticBasePath: joinPathPrefixes(basePath, "/_static"),
+	}
+}
+
+func (s *Server) publicBasePath(r *http.Request) string {
+	basePath := s.cfg.BasePath
+	forwardedPrefix := normalizePathPrefix(extractForwardedPrefix(r))
+	if forwardedPrefix == "" {
+		return basePath
+	}
+	if basePath == "" {
+		return forwardedPrefix
+	}
+	if strings.HasSuffix(forwardedPrefix, basePath) {
+		return forwardedPrefix
+	}
+	return joinPathPrefixes(forwardedPrefix, basePath)
+}
+
+func extractForwardedPrefix(r *http.Request) string {
+	for _, headerName := range []string{"X-Forwarded-Prefix", "X-Forwarded-Path", "X-Script-Name"} {
+		raw := strings.TrimSpace(r.Header.Get(headerName))
+		if raw == "" {
+			continue
+		}
+
+		parts := strings.Split(raw, ",")
+		for i := len(parts) - 1; i >= 0; i-- {
+			value := strings.TrimSpace(parts[i])
+			if value != "" {
+				return value
+			}
+		}
+	}
+	return ""
+}
+
+func normalizePathPrefix(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" || value == "/" {
+		return ""
+	}
+	if idx := strings.IndexAny(value, "?#"); idx >= 0 {
+		value = value[:idx]
+	}
+	if !strings.HasPrefix(value, "/") {
+		value = "/" + value
+	}
+	value = "/" + strings.TrimLeft(value, "/")
+	value = strings.TrimRight(value, "/")
+	if value == "/" {
+		return ""
+	}
+	return value
+}
+
+func joinPathPrefixes(parts ...string) string {
+	result := ""
+	for _, part := range parts {
+		normalized := normalizePathPrefix(part)
+		if normalized == "" {
+			continue
+		}
+		if result == "" {
+			result = normalized
+			continue
+		}
+		result += normalized
+	}
+	if result == "" {
+		return ""
+	}
+	return result
+}
+
+func (s *Server) renderIndexHTML(runtimeCfg uiRuntimeConfig) []byte {
+	if len(s.indexHTML) == 0 {
+		return nil
+	}
+
+	baseHref := runtimeCfg.BasePath
+	if baseHref == "" {
+		baseHref = "/"
+	} else {
+		baseHref += "/"
+	}
+
+	payload, err := json.Marshal(runtimeCfg)
+	if err != nil {
+		payload = []byte("{}")
+	}
+
+	injection := fmt.Sprintf("<base href=\"%s\"><script>window.__HABITAT_RUNTIME_CONFIG__=%s;</script>", html.EscapeString(baseHref), payload)
+	document := string(s.indexHTML)
+	staticPrefix := runtimeCfg.StaticBasePath + "/"
+	document = strings.ReplaceAll(document, "\"/_static/", fmt.Sprintf("\"%s", staticPrefix))
+	document = strings.ReplaceAll(document, "'/_static/", fmt.Sprintf("'%s", staticPrefix))
+	if idx := strings.Index(document, "</head>"); idx >= 0 {
+		document = document[:idx] + injection + document[idx:]
+	} else {
+		document = injection + document
+	}
+	return []byte(document)
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
@@ -52,12 +171,14 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	indexHTML := s.renderIndexHTML(s.runtimeConfig(r))
+
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	if r.Method == http.MethodHead {
 		return
 	}
-	_, _ = w.Write(s.indexHTML)
+	_, _ = w.Write(indexHTML)
 }
 
 func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
@@ -169,12 +290,19 @@ func nullableInt64(v sql.NullInt64) *int64 {
 }
 
 func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second)
-	defer cancel()
-
 	queryValues := r.URL.Query()
 	search := strings.TrimSpace(queryValues.Get("q"))
-	statusFilter := strings.TrimSpace(queryValues.Get("status"))
+
+	timeout := 30 * time.Second
+	if search != "" {
+		// Free-text search scans more rows and can legitimately take longer.
+		timeout = 120 * time.Second
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), timeout)
+	defer cancel()
+
+	statusFilter, statusValid := normalizeTaskStatusFilter(queryValues.Get("status"))
 	queueFilter := strings.TrimSpace(queryValues.Get("queue"))
 	taskNameFilter := strings.TrimSpace(queryValues.Get("taskName"))
 	taskIDFilter := strings.TrimSpace(queryValues.Get("taskId"))
@@ -184,103 +312,121 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 	if perPage > 200 {
 		perPage = 200
 	}
+	if page < 1 {
+		page = 1
+	}
 
 	queueNames, err := s.listQueueNames(ctx)
 	if err != nil {
+		if isContextQueryFailure(err, ctx) {
+			writeTaskQueryContextError(w, err, ctx)
+			return
+		}
 		log.Printf("handleTasks: failed to list queues: %v", err)
 		http.Error(w, "failed to query queues", http.StatusInternalServerError)
 		return
 	}
 
-	statusSet := make(map[string]struct{})
-	taskNameSet := make(map[string]struct{})
-	var filtered []TaskSummary
+	if !statusValid {
+		writeJSON(w, http.StatusOK, emptyTaskListResponse(page, perPage, queueNames))
+		return
+	}
 
-	for _, queueName := range queueNames {
-		if queueFilter != "" && queueName != queueFilter {
-			continue
-		}
-
-		ttable := queueTableIdentifier("t", queueName)
-		rtable := queueTableIdentifier("r", queueName)
-		queueLiteral := pq.QuoteLiteral(queueName)
-		query := fmt.Sprintf(`
-			SELECT
-				t.task_id, r.run_id, %s AS queue_name, t.task_name, r.state,
-				r.attempt,
-				t.max_attempts,
-				r.created_at,
-				COALESCE(r.completed_at, r.failed_at, r.started_at, r.created_at) AS updated_at,
-				r.completed_at,
-				r.claimed_by,
-				t.params
-			FROM absurd.%s t
-			JOIN absurd.%s r ON r.task_id = t.task_id
-			ORDER BY r.created_at DESC
-		`, queueLiteral, ttable, rtable)
-
-		rows, err := s.db.QueryContext(ctx, query)
+	if taskIDFilter != "" {
+		parsedTaskID, err := uuid.Parse(taskIDFilter)
 		if err != nil {
-			log.Printf("handleTasks: failed to query tasks for queue %s: %v", queueName, err)
-			continue // Skip queues that don't exist or have errors
+			writeJSON(w, http.StatusOK, emptyTaskListResponse(page, perPage, queueNames))
+			return
 		}
+		// Normalize UUID input (for example URN forms) to Postgres-compatible text.
+		taskIDFilter = parsedTaskID.String()
+	}
 
-		for rows.Next() {
-			var record taskSummaryRecord
-			if err := rows.Scan(
-				&record.TaskID,
-				&record.RunID,
-				&record.QueueName,
-				&record.TaskName,
-				&record.Status,
-				&record.Attempt,
-				&record.MaxAttempts,
-				&record.CreatedAt,
-				&record.UpdatedAt,
-				&record.CompletedAt,
-				&record.ClaimedBy,
-				&record.Params,
-			); err != nil {
-				log.Printf("handleTasks: failed to scan task in queue %s: %v", queueName, err)
-				rows.Close()
-				http.Error(w, "failed to scan task", http.StatusInternalServerError)
+	selectedQueues := queueNames
+	if queueFilter != "" {
+		selectedQueues = make([]string, 0, 1)
+		for _, queueName := range queueNames {
+			if queueName == queueFilter {
+				selectedQueues = append(selectedQueues, queueName)
+				break
+			}
+		}
+		if len(selectedQueues) == 0 {
+			writeJSON(w, http.StatusOK, emptyTaskListResponse(page, perPage, queueNames))
+			return
+		}
+	}
+
+	start := (page - 1) * perPage
+	windowSize := start + perPage + 1
+	if windowSize < perPage+1 {
+		windowSize = perPage + 1
+	}
+
+	limitPerQueue := windowSize
+	includeParams := search != ""
+	if search != "" {
+		// Search still scans params in Go for exact behavior.
+		limitPerQueue = 0
+	}
+
+	var merged []TaskSummary
+	hasWindowTruncation := false
+	for _, queueName := range selectedQueues {
+		queueTasks, truncated, err := s.fetchQueueTaskCandidates(
+			ctx,
+			queueName,
+			statusFilter,
+			taskNameFilter,
+			taskIDFilter,
+			limitPerQueue,
+			includeParams,
+		)
+		if err != nil {
+			if isContextQueryFailure(err, ctx) {
+				log.Printf("handleTasks: context error while querying queue %s: %v", queueName, err)
+				writeTaskQueryContextError(w, err, ctx)
 				return
 			}
-
-			summary := record.AsAPI()
-
-			if summary.Status != "" {
-				statusSet[summary.Status] = struct{}{}
-			}
-			if summary.TaskName != "" {
-				taskNameSet[summary.TaskName] = struct{}{}
-			}
-
-			if matchesTaskFilters(summary, search, statusFilter, queueFilter, taskNameFilter, taskIDFilter) {
-				filtered = append(filtered, summary)
-			}
+			log.Printf("handleTasks: failed to query tasks for queue %s: %v", queueName, err)
+			continue
 		}
-		rows.Close()
-		if err := rows.Err(); err != nil {
-			log.Printf("handleTasks: row iteration error for queue %s: %v", queueName, err)
+		merged = append(merged, queueTasks...)
+		if truncated {
+			hasWindowTruncation = true
 		}
 	}
 
-	sort.Slice(filtered, func(i, j int) bool {
-		return filtered[i].CreatedAt.After(filtered[j].CreatedAt)
+	if search != "" {
+		searched := make([]TaskSummary, 0, len(merged))
+		for _, task := range merged {
+			if matchesTaskFilters(task, search, "", "", "", "") {
+				searched = append(searched, task)
+			}
+		}
+		merged = searched
+	}
+
+	sort.Slice(merged, func(i, j int) bool {
+		return merged[i].RunID > merged[j].RunID
 	})
 
-	total := len(filtered)
-	if page < 1 {
-		page = 1
+	total := -1
+	if search != "" || !hasWindowTruncation {
+		total = len(merged)
 	}
-	start := (page - 1) * perPage
-	if start > total {
-		start = total
+
+	if start > len(merged) {
+		start = len(merged)
 	}
 	end := start + perPage
-	if end > total {
-		end = total
+	if end > len(merged) {
+		end = len(merged)
+	}
+
+	hasMore := len(merged) > end || hasWindowTruncation
+	if total >= 0 {
+		hasMore = end < total
 	}
 
 	if queueNames == nil {
@@ -288,16 +434,179 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 	}
 
 	response := TaskListResponse{
-		Items:              filtered[start:end],
+		Items:              merged[start:end],
 		Total:              total,
+		HasMore:            hasMore,
 		Page:               page,
 		PerPage:            perPage,
-		AvailableStatuses:  sortedKeys(statusSet),
+		AvailableStatuses:  allTaskStatuses(),
 		AvailableQueues:    queueNames,
-		AvailableTaskNames: sortedKeys(taskNameSet),
+		AvailableTaskNames: []string{},
 	}
 
 	writeJSON(w, http.StatusOK, response)
+}
+
+func isContextQueryFailure(err error, ctx context.Context) bool {
+	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+			return true
+		}
+	}
+
+	ctxErr := ctx.Err()
+	return errors.Is(ctxErr, context.DeadlineExceeded) || errors.Is(ctxErr, context.Canceled)
+}
+
+func writeTaskQueryContextError(w http.ResponseWriter, err error, ctx context.Context) {
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		http.Error(w, "task query timed out", http.StatusGatewayTimeout)
+		return
+	}
+
+	http.Error(w, "task query canceled", http.StatusServiceUnavailable)
+}
+
+func allTaskStatuses() []string {
+	return []string{"pending", "running", "sleeping", "completed", "failed", "cancelled"}
+}
+
+func normalizeTaskStatusFilter(value string) (string, bool) {
+	status := strings.ToLower(strings.TrimSpace(value))
+	if status == "" {
+		return "", true
+	}
+
+	for _, candidate := range allTaskStatuses() {
+		if status == candidate {
+			return status, true
+		}
+	}
+
+	return "", false
+}
+
+func emptyTaskListResponse(page, perPage int, queueNames []string) TaskListResponse {
+	if queueNames == nil {
+		queueNames = []string{}
+	}
+
+	return TaskListResponse{
+		Items:              []TaskSummary{},
+		Total:              0,
+		HasMore:            false,
+		Page:               page,
+		PerPage:            perPage,
+		AvailableStatuses:  allTaskStatuses(),
+		AvailableQueues:    queueNames,
+		AvailableTaskNames: []string{},
+	}
+}
+
+func (s *Server) fetchQueueTaskCandidates(
+	ctx context.Context,
+	queueName string,
+	statusFilter string,
+	taskNameFilter string,
+	taskIDFilter string,
+	limit int,
+	includeParams bool,
+) ([]TaskSummary, bool, error) {
+	ttable := queueTableIdentifier("t", queueName)
+	rtable := queueTableIdentifier("r", queueName)
+	queueLiteral := pq.QuoteLiteral(queueName)
+	paramsSelect := "NULL::jsonb"
+	if includeParams {
+		paramsSelect = "t.params"
+	}
+
+	query := fmt.Sprintf(`
+		SELECT
+			t.task_id,
+			r.run_id,
+			%s AS queue_name,
+			t.task_name,
+			r.state,
+			r.attempt,
+			t.max_attempts,
+			r.created_at,
+			COALESCE(r.completed_at, r.failed_at, r.started_at, r.created_at) AS updated_at,
+			r.completed_at,
+			r.claimed_by,
+			%s AS params
+		FROM absurd.%s r
+		JOIN absurd.%s t ON t.task_id = r.task_id
+	`, queueLiteral, paramsSelect, rtable, ttable)
+
+	var (
+		clauses []string
+		params  []any
+	)
+
+	if statusFilter != "" {
+		params = append(params, statusFilter)
+		clauses = append(clauses, fmt.Sprintf("r.state = $%d", len(params)))
+	}
+	if taskNameFilter != "" {
+		params = append(params, taskNameFilter)
+		clauses = append(clauses, fmt.Sprintf("t.task_name = $%d", len(params)))
+	}
+	if taskIDFilter != "" {
+		params = append(params, taskIDFilter)
+		clauses = append(clauses, fmt.Sprintf("t.task_id = $%d", len(params)))
+	}
+
+	if len(clauses) > 0 {
+		query += " WHERE " + strings.Join(clauses, " AND ")
+	}
+
+	query += " ORDER BY r.run_id DESC"
+
+	queryLimit := limit
+	if queryLimit > 0 {
+		queryLimit += 1
+		params = append(params, queryLimit)
+		query += fmt.Sprintf(" LIMIT $%d", len(params))
+	}
+
+	rows, err := s.db.QueryContext(ctx, query, params...)
+	if err != nil {
+		return nil, false, err
+	}
+	defer rows.Close()
+
+	tasks := make([]TaskSummary, 0)
+	for rows.Next() {
+		var record taskSummaryRecord
+		if err := rows.Scan(
+			&record.TaskID,
+			&record.RunID,
+			&record.QueueName,
+			&record.TaskName,
+			&record.Status,
+			&record.Attempt,
+			&record.MaxAttempts,
+			&record.CreatedAt,
+			&record.UpdatedAt,
+			&record.CompletedAt,
+			&record.ClaimedBy,
+			&record.Params,
+		); err != nil {
+			return nil, false, err
+		}
+		tasks = append(tasks, record.AsAPI())
+	}
+	if err := rows.Err(); err != nil {
+		return nil, false, err
+	}
+
+	truncated := false
+	if limit > 0 && len(tasks) > limit {
+		tasks = tasks[:limit]
+		truncated = true
+	}
+
+	return tasks, truncated, nil
 }
 
 func (s *Server) handleTaskDetail(w http.ResponseWriter, r *http.Request) {
@@ -1040,6 +1349,7 @@ func (r scheduleRecord) AsAPI(queueName string) ScheduleSummary {
 type TaskListResponse struct {
 	Items              []TaskSummary `json:"items"`
 	Total              int           `json:"total"`
+	HasMore            bool          `json:"hasMore"`
 	Page               int           `json:"page"`
 	PerPage            int           `json:"perPage"`
 	AvailableStatuses  []string      `json:"availableStatuses"`
