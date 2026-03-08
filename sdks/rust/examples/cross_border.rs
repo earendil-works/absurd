@@ -20,10 +20,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         TaskOptions::new("cross-border-transfer")
             .with_queue("international"),
         |params, mut ctx| Box::pin(async move {
-            let transfer_id = params["transfer_id"].as_str().unwrap();
-            let from_country = params["from_country"].as_str().unwrap();
-            let to_country = params["to_country"].as_str().unwrap();
-            let amount = params["amount"].as_f64().unwrap();
+            // CRITICAL FIX: Extract and own all string parameters upfront
+            let transfer_id = params["transfer_id"]
+                .as_str()
+                .unwrap_or("unknown")
+                .to_string();  // ← Own this
+            
+            let from_country = params["from_country"]
+                .as_str()
+                .unwrap_or("unknown")
+                .to_string();  // ← Own this
+            
+            let to_country = params["to_country"]
+                .as_str()
+                .unwrap_or("unknown")
+                .to_string();  // ← Own this
+            
+            let amount = params["amount"].as_f64().unwrap_or(0.0);
 
             println!("\n🌍 Cross-border transfer initiated:");
             println!("  Transfer ID: {}", transfer_id);
@@ -57,18 +70,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             // Step 4: Debit sender
             ctx.step("debit-sender", || {
-                let amount = amount;
+                let amt = amount;  // Copy
                 Box::pin(async move {
                     println!("💳 Debiting sender...");
                     tokio::time::sleep(Duration::from_millis(200)).await;
-                    println!("  ✓ ${:.2} debited", amount);
-                    Ok(json!({ "debited": amount }))
+                    println!("  ✓ ${:.2} debited", amt);
+                    Ok(json!({ "debited": amt }))
                 })
             }).await?;
 
             // Step 5: Create SWIFT message
             let swift_msg = ctx.step("create-swift", || {
-                let tid = transfer_id.to_string();
+                let tid = transfer_id.clone();  // ← Clone the owned String
                 Box::pin(async move {
                     println!("📝 Creating SWIFT message...");
                     tokio::time::sleep(Duration::from_millis(300)).await;
@@ -83,12 +96,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("   Simulating 3 second wait...");
 
             // Step 6: Wait for settlement event
-            // In production, this would be triggered by external system
             let settlement_event = format!("settlement.confirmed:{}", transfer_id);
             
-            // Note: In production, this event would be emitted by an external system
-            // For demo purposes, we'll emit it after task is waiting
-
             // Wait for the event
             let settlement = ctx.await_event(
                 &settlement_event,
@@ -101,12 +110,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             // Step 7: Credit beneficiary
             ctx.step("credit-beneficiary", || {
-                let amount = amount;
+                let amt = amount;  // Copy
                 Box::pin(async move {
                     println!("💰 Crediting beneficiary...");
                     tokio::time::sleep(Duration::from_millis(200)).await;
-                    println!("  ✓ ${:.2} credited", amount);
-                    Ok(json!({ "credited": amount }))
+                    println!("  ✓ ${:.2} credited", amt);
+                    Ok(json!({ "credited": amt }))
                 })
             }).await?;
 
@@ -120,8 +129,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             })).await?;
 
             // Emit completion event
+            let tid = transfer_id.clone();  // ← Clone for the event
             ctx.emit_event(
-                &format!("transfer.completed:{}", transfer_id),
+                &format!("transfer.completed:{}", tid),
                 Some(json!({
                     "transfer_id": transfer_id,
                     "amount": amount,
