@@ -1,4 +1,4 @@
-import { afterAll, beforeAll } from "./testlib.ts";
+import { afterAll, beforeAll, testLog } from "./testlib.ts";
 import {
   PostgreSqlContainer,
   StartedPostgreSqlContainer,
@@ -119,6 +119,7 @@ export async function createTestAbsurd(
   const absurd = new Absurd({
     db: pool,
     queueName,
+    log: testLog,
   });
 
   await absurd.createQueue(queueName);

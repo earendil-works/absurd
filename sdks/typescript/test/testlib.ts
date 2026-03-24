@@ -331,8 +331,52 @@ function restoreAllMocks(): void {
   }
 }
 
+// Capturing log: buffers messages per-test and flushes to stderr on failure.
+const _capturedLogs: { level: string; args: unknown[] }[] = [];
+
+export const testLog = {
+  log(...args: unknown[]) { _capturedLogs.push({ level: "log", args }); },
+  info(...args: unknown[]) { _capturedLogs.push({ level: "info", args }); },
+  warn(...args: unknown[]) { _capturedLogs.push({ level: "warn", args }); },
+  error(...args: unknown[]) { _capturedLogs.push({ level: "error", args }); },
+};
+
+function clearCapturedLogs() {
+  _capturedLogs.length = 0;
+}
+
+function flushCapturedLogs() {
+  for (const entry of _capturedLogs) {
+    const fn = (console as unknown as Record<string, Function>)[entry.level] ?? console.error;
+    fn.call(console, ...entry.args);
+  }
+  _capturedLogs.length = 0;
+}
+
+type TestFn = (t?: unknown) => void | Promise<void>;
+
+function wrapTestFn(
+  original: (name: string, fn: TestFn) => void,
+): (name: string, fn: TestFn) => void {
+  return (name: string, fn: TestFn) => {
+    original(name, async (t) => {
+      clearCapturedLogs();
+      try {
+        await fn(t);
+      } catch (err) {
+        flushCapturedLogs();
+        throw err;
+      }
+      clearCapturedLogs();
+    });
+  };
+}
+
+const wrappedIt = wrapTestFn(it as (name: string, fn: TestFn) => void);
+const wrappedTest = wrapTestFn(test as (name: string, fn: TestFn) => void);
+
 export const expect = expectImpl;
-export { assert, describe, it, test, before as beforeAll, beforeEach, after as afterAll, afterEach };
+export { assert, describe, wrappedIt as it, wrappedTest as test, before as beforeAll, beforeEach, after as afterAll, afterEach };
 
 export const vi = {
   spyOn,
