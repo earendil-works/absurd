@@ -346,6 +346,47 @@ export default function Tasks() {
     }
   };
 
+  const applyFilter = (
+    e: MouseEvent,
+    kind: "queue" | "status" | "taskName",
+    value: string,
+  ) => {
+    e.stopPropagation();
+    const setters: Record<string, () => void> = {
+      queue: () => {
+        if (queueFilter() === value) {
+          setQueueFilter(null);
+          syncSearchParams({ queue: null, page: 1 });
+        } else {
+          setQueueFilter(value);
+          syncSearchParams({ queue: value, page: 1 });
+        }
+      },
+      status: () => {
+        if (statusFilter() === value) {
+          setStatusFilter(null);
+          syncSearchParams({ status: null, page: 1 });
+        } else {
+          setStatusFilter(value);
+          syncSearchParams({ status: value, page: 1 });
+        }
+      },
+      taskName: () => {
+        if (taskNameFilter() === value) {
+          setTaskNameFilter(null);
+          setTaskNameInput("");
+          syncSearchParams({ taskName: null, page: 1 });
+        } else {
+          setTaskNameFilter(value);
+          setTaskNameInput(value);
+          syncSearchParams({ taskName: value, page: 1 });
+        }
+      },
+    };
+    setters[kind]();
+    if (page() !== 1) setPage(1);
+  };
+
   const formatAge = (timestamp: string): string => {
     const date = new Date(timestamp);
     const now = new Date();
@@ -626,19 +667,58 @@ export default function Tasks() {
                                 <IdDisplay value={task.taskId} />
                               </td>
                               <td class="px-3 py-2 font-medium">
-                                <Highlight
-                                  text={task.taskName}
-                                  search={searchTerm()}
-                                />
+                                <span class="group/filter inline-flex items-center gap-1">
+                                  <Highlight
+                                    text={task.taskName}
+                                    search={searchTerm()}
+                                  />
+                                  <button
+                                    class={`inline-flex items-center rounded p-0.5 cursor-pointer transition-opacity hover:bg-muted ${
+                                      taskNameFilter() === task.taskName
+                                        ? "opacity-100 text-foreground"
+                                        : "opacity-0 group-hover/filter:opacity-60 text-muted-foreground"
+                                    }`}
+                                    title={taskNameFilter() === task.taskName ? "Clear task name filter" : `Filter by task name: ${task.taskName}`}
+                                    onClick={(e) => applyFilter(e, "taskName", task.taskName)}
+                                  >
+                                    <FilterIcon active={taskNameFilter() === task.taskName} />
+                                  </button>
+                                </span>
                               </td>
                               <td class="px-3 py-2">
-                                <Highlight
-                                  text={task.queueName}
-                                  search={searchTerm()}
-                                />
+                                <span class="group/filter inline-flex items-center gap-1">
+                                  <Highlight
+                                    text={task.queueName}
+                                    search={searchTerm()}
+                                  />
+                                  <button
+                                    class={`inline-flex items-center rounded p-0.5 cursor-pointer transition-opacity hover:bg-muted ${
+                                      queueFilter() === task.queueName
+                                        ? "opacity-100 text-foreground"
+                                        : "opacity-0 group-hover/filter:opacity-60 text-muted-foreground"
+                                    }`}
+                                    title={queueFilter() === task.queueName ? "Clear queue filter" : `Filter by queue: ${task.queueName}`}
+                                    onClick={(e) => applyFilter(e, "queue", task.queueName)}
+                                  >
+                                    <FilterIcon active={queueFilter() === task.queueName} />
+                                  </button>
+                                </span>
                               </td>
                               <td class="px-3 py-2">
-                                <TaskStatusBadge status={task.status} />
+                                <span class="group/filter inline-flex items-center gap-1">
+                                  <TaskStatusBadge status={task.status} />
+                                  <button
+                                    class={`inline-flex items-center rounded p-0.5 cursor-pointer transition-opacity hover:bg-muted ${
+                                      statusFilter() === task.status
+                                        ? "opacity-100 text-foreground"
+                                        : "opacity-0 group-hover/filter:opacity-60 text-muted-foreground"
+                                    }`}
+                                    title={statusFilter() === task.status ? "Clear status filter" : `Filter by status: ${task.status}`}
+                                    onClick={(e) => applyFilter(e, "status", task.status)}
+                                  >
+                                    <FilterIcon active={statusFilter() === task.status} />
+                                  </button>
+                                </span>
                               </td>
                               <td class="px-3 py-2 tabular-nums">
                                 {task.attempt}
@@ -742,6 +822,10 @@ export default function Tasks() {
       </section>
     </>
   );
+}
+
+function FilterIcon(props: { active?: boolean }) {
+  return <span class="text-[10px] leading-none">{props.active ? "▼" : "▽"}</span>;
 }
 
 function LoadingPlaceholder() {
