@@ -265,7 +265,7 @@ export default function Tasks() {
   const selectedTaskNameOption = createMemo(() => {
     const value = taskNameFilter();
     if (!value) {
-      return taskNameOptions()[0];
+      return null;
     }
 
     return (
@@ -541,7 +541,6 @@ export default function Tasks() {
                   >
                     <ComboboxTrigger>
                       <ComboboxInput
-                        value={taskNameInput()}
                         placeholder="All task names"
                         onKeyDown={(event) => {
                           if (event.key !== "Enter") {
