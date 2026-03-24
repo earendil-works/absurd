@@ -4,6 +4,8 @@ This contains the changes between releases.
 
 # Unreleased
 
+# 0.1.1
+
 * Added `AB002` error code for already-failed runs in `set_task_checkpoint_state` and `extend_claim`, letting SDKs gracefully handle stale execution.
 * Replaced task name text filter with a combobox that caches recent task names in Habitat.
 * Added inline filter icons for task name, queue, and status columns in Habitat.
