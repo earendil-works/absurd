@@ -44,6 +44,9 @@ __all__ = [
     "SpawnOptions",
     "ClaimedTask",
     "AbsurdHooks",
+    "ScheduleOptions",
+    "Schedule",
+    "ScheduleSummary",
     "get_current_context",
 ]
 
@@ -61,6 +64,7 @@ def get_current_context() -> Optional[Union["TaskContext", "AsyncTaskContext"]]:
     This works with both sync and async task handlers.
     """
     return _current_task_context.get()
+
 
 JsonValue = Union[
     str, int, float, bool, None, List["JsonValue"], Dict[str, "JsonValue"]
@@ -85,6 +89,49 @@ class CancellationPolicy(TypedDict, total=False):
 
     max_duration: int
     max_delay: int
+
+
+class ScheduleOptions(TypedDict, total=False):
+    """Options for creating or updating a schedule"""
+
+    params: JsonValue
+    headers: JsonObject
+    retry_strategy: RetryStrategy
+    max_attempts: int
+    cancellation: CancellationPolicy
+    catchup_policy: str
+    enabled: bool
+    schedule_expr: str
+
+
+class Schedule(TypedDict):
+    """Full schedule details"""
+
+    schedule_name: str
+    task_name: str
+    params: JsonValue
+    headers: Optional[JsonObject]
+    retry_strategy: Optional[JsonValue]
+    max_attempts: Optional[int]
+    cancellation: Optional[JsonValue]
+    schedule_expr: str
+    enabled: bool
+    catchup_policy: str
+    last_triggered_at: Optional[datetime]
+    next_run_at: datetime
+    created_at: datetime
+
+
+class ScheduleSummary(TypedDict):
+    """Schedule summary from list_schedules"""
+
+    schedule_name: str
+    task_name: str
+    schedule_expr: str
+    enabled: bool
+    catchup_policy: str
+    last_triggered_at: Optional[datetime]
+    next_run_at: datetime
 
 
 class SpawnOptions(TypedDict, total=False):
@@ -909,7 +956,9 @@ class _AbsurdBase:
         effective_cancellation = (
             cancellation
             if cancellation is not None
-            else registration.get("default_cancellation") if registration else None
+            else registration.get("default_cancellation")
+            if registration
+            else None
         )
 
         actual_queue = _validate_queue_name(actual_queue)
@@ -943,7 +992,9 @@ class Absurd(_AbsurdBase):
             )
 
         if isinstance(conn_or_url, str):
-            self._conn: Connection[Any] = Connection.connect(conn_or_url, autocommit=True)
+            self._conn: Connection[Any] = Connection.connect(
+                conn_or_url, autocommit=True
+            )
             self._owned_conn = True
         else:
             self._conn = conn_or_url
@@ -1052,6 +1103,76 @@ class Absurd(_AbsurdBase):
         cursor.execute(
             "SELECT absurd.cancel_task(%s, %s)",
             (queue, task_id),
+        )
+
+    def create_schedule(
+        self,
+        schedule_name: str,
+        task_name: str,
+        schedule_expr: str,
+        options: Optional[ScheduleOptions] = None,
+        queue_name: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Create a recurring schedule.
+
+        Returns dict with schedule_name and next_run_at.
+        """
+        queue = queue_name or self._queue_name
+        opts = dict(options) if options else {}
+        cursor = self._conn.cursor(row_factory=dict_row)
+        cursor.execute(
+            "SELECT schedule_name, next_run_at FROM absurd.create_schedule(%s, %s, %s, %s, %s)",
+            (queue, schedule_name, task_name, schedule_expr, json.dumps(opts)),
+        )
+        row = cursor.fetchone()
+        if not row:
+            raise Exception("Failed to create schedule")
+        return {
+            "schedule_name": row["schedule_name"],
+            "next_run_at": row["next_run_at"],
+        }
+
+    def get_schedule(
+        self, schedule_name: str, queue_name: Optional[str] = None
+    ) -> Optional[Schedule]:
+        """Get a schedule by name. Returns None if not found."""
+        queue = queue_name or self._queue_name
+        cursor = self._conn.cursor(row_factory=dict_row)
+        cursor.execute(
+            "SELECT * FROM absurd.get_schedule(%s, %s)",
+            (queue, schedule_name),
+        )
+        row = cursor.fetchone()
+        return cast(Schedule, dict(row)) if row else None
+
+    def list_schedules(self, queue_name: Optional[str] = None) -> List[ScheduleSummary]:
+        """List all schedules in the queue."""
+        queue = queue_name or self._queue_name
+        cursor = self._conn.cursor(row_factory=dict_row)
+        cursor.execute("SELECT * FROM absurd.list_schedules(%s)", (queue,))
+        return [cast(ScheduleSummary, dict(row)) for row in cursor.fetchall()]
+
+    def delete_schedule(
+        self, schedule_name: str, queue_name: Optional[str] = None
+    ) -> None:
+        """Delete a schedule by name."""
+        queue = queue_name or self._queue_name
+        cursor = self._conn.cursor()
+        cursor.execute("SELECT absurd.delete_schedule(%s, %s)", (queue, schedule_name))
+
+    def update_schedule(
+        self,
+        schedule_name: str,
+        options: ScheduleOptions,
+        queue_name: Optional[str] = None,
+    ) -> None:
+        """Update an existing schedule."""
+        queue = queue_name or self._queue_name
+        opts = dict(options)
+        cursor = self._conn.cursor()
+        cursor.execute(
+            "SELECT absurd.update_schedule(%s, %s, %s)",
+            (queue, schedule_name, json.dumps(opts)),
         )
 
     def claim_tasks(
@@ -1200,7 +1321,9 @@ class AsyncAbsurd(_AbsurdBase):
     async def _ensure_connected(self) -> None:
         """Ensure the connection is established"""
         if self._conn is None and self._conn_string:
-            self._conn = await AsyncConnection.connect(self._conn_string, autocommit=True)
+            self._conn = await AsyncConnection.connect(
+                self._conn_string, autocommit=True
+            )
 
     async def create_queue(self, queue_name: Optional[str] = None) -> None:
         """Create a queue (defaults to this client's queue)"""
@@ -1323,6 +1446,91 @@ class AsyncAbsurd(_AbsurdBase):
         await cursor.execute(
             "SELECT absurd.cancel_task(%s, %s)",
             (queue, task_id),
+        )
+
+    async def create_schedule(
+        self,
+        schedule_name: str,
+        task_name: str,
+        schedule_expr: str,
+        options: Optional[ScheduleOptions] = None,
+        queue_name: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Create a recurring schedule.
+
+        Returns dict with schedule_name and next_run_at.
+        """
+        await self._ensure_connected()
+        assert self._conn is not None
+        queue = queue_name or self._queue_name
+        opts = dict(options) if options else {}
+        cursor = self._conn.cursor(row_factory=dict_row)
+        await cursor.execute(
+            "SELECT schedule_name, next_run_at FROM absurd.create_schedule(%s, %s, %s, %s, %s)",
+            (queue, schedule_name, task_name, schedule_expr, json.dumps(opts)),
+        )
+        row = await cursor.fetchone()
+        if not row:
+            raise Exception("Failed to create schedule")
+        return {
+            "schedule_name": row["schedule_name"],
+            "next_run_at": row["next_run_at"],
+        }
+
+    async def get_schedule(
+        self, schedule_name: str, queue_name: Optional[str] = None
+    ) -> Optional[Schedule]:
+        """Get a schedule by name. Returns None if not found."""
+        await self._ensure_connected()
+        assert self._conn is not None
+        queue = queue_name or self._queue_name
+        cursor = self._conn.cursor(row_factory=dict_row)
+        await cursor.execute(
+            "SELECT * FROM absurd.get_schedule(%s, %s)",
+            (queue, schedule_name),
+        )
+        row = await cursor.fetchone()
+        return cast(Schedule, dict(row)) if row else None
+
+    async def list_schedules(
+        self, queue_name: Optional[str] = None
+    ) -> List[ScheduleSummary]:
+        """List all schedules in the queue."""
+        await self._ensure_connected()
+        assert self._conn is not None
+        queue = queue_name or self._queue_name
+        cursor = self._conn.cursor(row_factory=dict_row)
+        await cursor.execute("SELECT * FROM absurd.list_schedules(%s)", (queue,))
+        rows = await cursor.fetchall()
+        return [cast(ScheduleSummary, dict(row)) for row in rows]
+
+    async def delete_schedule(
+        self, schedule_name: str, queue_name: Optional[str] = None
+    ) -> None:
+        """Delete a schedule by name."""
+        await self._ensure_connected()
+        assert self._conn is not None
+        queue = queue_name or self._queue_name
+        cursor = self._conn.cursor()
+        await cursor.execute(
+            "SELECT absurd.delete_schedule(%s, %s)", (queue, schedule_name)
+        )
+
+    async def update_schedule(
+        self,
+        schedule_name: str,
+        options: ScheduleOptions,
+        queue_name: Optional[str] = None,
+    ) -> None:
+        """Update an existing schedule."""
+        await self._ensure_connected()
+        assert self._conn is not None
+        queue = queue_name or self._queue_name
+        opts = dict(options)
+        cursor = self._conn.cursor()
+        await cursor.execute(
+            "SELECT absurd.update_schedule(%s, %s, %s)",
+            (queue, schedule_name, json.dumps(opts)),
         )
 
     async def claim_tasks(

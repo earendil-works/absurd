@@ -1537,6 +1537,341 @@ def cmd_dump_task(args):
                 print()
 
 
+def cmd_create_schedule(args):
+    """Create a recurring schedule."""
+    usage = "usage: %prog create-schedule [options] QUEUE SCHEDULE_NAME TASK_NAME"
+    parser = build_command_parser(usage)
+
+    parser.add_option(
+        "--cron",
+        dest="cron",
+        metavar="EXPR",
+        help="Cron expression (e.g., '*/5 * * * *', '@daily')",
+    )
+    parser.add_option(
+        "--every",
+        dest="every",
+        type="int",
+        metavar="SECS",
+        help="Interval in seconds (alternative to --cron)",
+    )
+    parser.add_option(
+        "-P",
+        "--param",
+        dest="params",
+        action="append",
+        default=[],
+        metavar="K=V",
+        help="Task parameter (same syntax as spawn-task)",
+    )
+    parser.add_option(
+        "--params",
+        dest="base_params",
+        metavar="JSON",
+        help="Base JSON object for parameters",
+    )
+    parser.add_option(
+        "--catchup",
+        dest="catchup",
+        metavar="POLICY",
+        help="Catch-up policy: skip (default) or all",
+    )
+    parser.add_option(
+        "--disabled",
+        dest="disabled",
+        action="store_true",
+        default=False,
+        help="Create the schedule in disabled state",
+    )
+    parser.add_option(
+        "--max-attempts",
+        dest="max_attempts",
+        type="int",
+        metavar="N",
+        help="Maximum retry attempts for spawned tasks",
+    )
+
+    examples = [
+        "absurdctl create-schedule default nightly-sync sync-task --cron '0 2 * * *'",
+        "absurdctl create-schedule default poll-health health-check --every 300",
+        "absurdctl create-schedule default reports gen-report --cron '@weekly' -P format=pdf",
+    ]
+
+    options, args = parse_args_with_help(parser, args, examples)
+
+    if len(args) != 3:
+        print(
+            "Error: Expected QUEUE SCHEDULE_NAME TASK_NAME arguments",
+            file=sys.stderr,
+        )
+        parser.print_help()
+        sys.exit(1)
+
+    queue, schedule_name, task_name = args
+
+    if not options.cron and options.every is None:
+        print("Error: Must specify --cron or --every", file=sys.stderr)
+        sys.exit(1)
+    if options.cron and options.every is not None:
+        print("Error: Cannot specify both --cron and --every", file=sys.stderr)
+        sys.exit(1)
+
+    schedule_expr = options.cron if options.cron else f"@every {options.every}"
+
+    config = config_from_options(options)
+    ensure_queue_exists(config, queue)
+
+    params_json = build_json_params(options.params, options.base_params)
+
+    opts = {"params": json.loads(params_json)}
+    if options.catchup:
+        opts["catchup_policy"] = options.catchup
+    if options.disabled:
+        opts["enabled"] = False
+    if options.max_attempts:
+        opts["max_attempts"] = options.max_attempts
+
+    opts_json = json.dumps(opts)
+
+    details = [
+        ("Queue", queue),
+        ("Schedule", schedule_name),
+        ("Task", task_name),
+        ("Expression", schedule_expr),
+    ]
+    if options.catchup:
+        details.append(("Catchup", options.catchup))
+    details.extend(get_common_db_details(config))
+    print_verbose_configuration(options.verbose, details)
+
+    query = f"""
+        SELECT schedule_name, next_run_at
+        FROM absurd.create_schedule(
+            '{queue}',
+            '{schedule_name}',
+            '{task_name}',
+            '{schedule_expr}',
+            '{opts_json}'::jsonb
+        );
+    """
+
+    rows = run_psql_csv(config, query)
+    if rows:
+        name, next_run = rows[0]
+        print(f"Schedule created successfully:")
+        print(f"  Schedule: {name}")
+        print(f"  Next run: {format_timestamp(next_run)}")
+    else:
+        print("Schedule created, but no result returned", file=sys.stderr)
+
+
+def cmd_delete_schedule(args):
+    """Delete a schedule."""
+    usage = "usage: %prog delete-schedule [options] QUEUE SCHEDULE_NAME"
+    parser = build_command_parser(usage)
+
+    examples = [
+        "absurdctl delete-schedule default nightly-sync",
+    ]
+
+    options, args = parse_args_with_help(parser, args, examples)
+
+    if len(args) != 2:
+        print(
+            "Error: Expected QUEUE SCHEDULE_NAME arguments",
+            file=sys.stderr,
+        )
+        parser.print_help()
+        sys.exit(1)
+
+    queue, schedule_name = args
+    config = config_from_options(options)
+    ensure_queue_exists(config, queue)
+
+    print_verbose_configuration(
+        options.verbose,
+        [("Queue", queue), ("Schedule", schedule_name)] + get_common_db_details(config),
+    )
+
+    run_psql(
+        config,
+        f"SELECT absurd.delete_schedule('{queue}', '{schedule_name}');",
+    )
+    print(f"Schedule '{schedule_name}' deleted from queue '{queue}'")
+
+
+def cmd_list_schedules(args):
+    """List schedules in a queue."""
+    usage = "usage: %prog list-schedules [options] QUEUE"
+    parser = build_command_parser(usage)
+
+    examples = [
+        "absurdctl list-schedules default",
+    ]
+
+    options, args = parse_args_with_help(parser, args, examples)
+
+    if len(args) != 1:
+        print("Error: Expected QUEUE argument", file=sys.stderr)
+        parser.print_help()
+        sys.exit(1)
+
+    queue = args[0]
+    config = config_from_options(options)
+    ensure_queue_exists(config, queue)
+
+    print_verbose_configuration(
+        options.verbose,
+        [("Queue", queue)] + get_common_db_details(config),
+    )
+
+    query = f"""
+        SELECT schedule_name, task_name, schedule_expr, enabled,
+               catchup_policy, last_triggered_at, next_run_at
+        FROM absurd.list_schedules('{queue}');
+    """
+
+    rows = run_psql_csv(config, query)
+
+    if not rows:
+        print("No schedules found")
+        return
+
+    for parts in rows:
+        if len(parts) >= 7:
+            name, task, expr, enabled, catchup, last_at, next_at = parts[:7]
+            status = "enabled" if enabled == "t" else "disabled"
+            print(f"schedule={name}")
+            print(f"  task_name={task}")
+            print(f"  expression={expr}")
+            print(f"  status={status}")
+            print(f"  catchup={catchup}")
+            print(f"  last_triggered={format_timestamp(last_at) if last_at else '—'}")
+            print(f"  next_run={format_timestamp(next_at)}")
+            print()
+
+    print(f"Total: {len(rows)} schedule(s)")
+
+
+def cmd_update_schedule(args):
+    """Update an existing schedule."""
+    usage = "usage: %prog update-schedule [options] QUEUE SCHEDULE_NAME"
+    parser = build_command_parser(usage)
+
+    parser.add_option(
+        "--cron",
+        dest="cron",
+        metavar="EXPR",
+        help="New cron expression",
+    )
+    parser.add_option(
+        "--every",
+        dest="every",
+        type="int",
+        metavar="SECS",
+        help="New interval in seconds",
+    )
+    parser.add_option(
+        "-P",
+        "--param",
+        dest="params",
+        action="append",
+        default=[],
+        metavar="K=V",
+        help="Replace task parameters",
+    )
+    parser.add_option(
+        "--params",
+        dest="base_params",
+        metavar="JSON",
+        help="Base JSON for parameters",
+    )
+    parser.add_option(
+        "--enable",
+        dest="enable",
+        action="store_true",
+        default=False,
+        help="Enable the schedule",
+    )
+    parser.add_option(
+        "--disable",
+        dest="disable",
+        action="store_true",
+        default=False,
+        help="Disable the schedule",
+    )
+    parser.add_option(
+        "--catchup",
+        dest="catchup",
+        metavar="POLICY",
+        help="Change catch-up policy: skip or all",
+    )
+
+    examples = [
+        "absurdctl update-schedule default nightly-sync --cron '0 3 * * *'",
+        "absurdctl update-schedule default poll-health --disable",
+        "absurdctl update-schedule default poll-health --enable",
+        "absurdctl update-schedule default reports -P format=csv",
+    ]
+
+    options, args = parse_args_with_help(parser, args, examples)
+
+    if len(args) != 2:
+        print(
+            "Error: Expected QUEUE SCHEDULE_NAME arguments",
+            file=sys.stderr,
+        )
+        parser.print_help()
+        sys.exit(1)
+
+    if options.enable and options.disable:
+        print("Error: Cannot specify both --enable and --disable", file=sys.stderr)
+        sys.exit(1)
+
+    if options.cron and options.every is not None:
+        print("Error: Cannot specify both --cron and --every", file=sys.stderr)
+        sys.exit(1)
+
+    queue, schedule_name = args
+    config = config_from_options(options)
+    ensure_queue_exists(config, queue)
+
+    opts = {}
+    if options.cron:
+        opts["schedule_expr"] = options.cron
+    elif options.every is not None:
+        opts["schedule_expr"] = f"@every {options.every}"
+    if options.params or options.base_params:
+        opts["params"] = json.loads(
+            build_json_params(options.params, options.base_params)
+        )
+    if options.enable:
+        opts["enabled"] = True
+    if options.disable:
+        opts["enabled"] = False
+    if options.catchup:
+        opts["catchup_policy"] = options.catchup
+
+    if not opts:
+        print("Error: No updates specified", file=sys.stderr)
+        sys.exit(1)
+
+    opts_json = json.dumps(opts)
+
+    details = [("Queue", queue), ("Schedule", schedule_name)]
+    for key, value in opts.items():
+        details.append((key, value))
+    details.extend(get_common_db_details(config))
+    print_verbose_configuration(options.verbose, details)
+
+    run_psql(
+        config,
+        f"SELECT absurd.update_schedule('{queue}', '{schedule_name}', '{opts_json}'::jsonb);",
+    )
+    print(f"Schedule '{schedule_name}' updated")
+
+
+
 def cmd_emit_event(args):
     """Emit an event to wake waiting tasks."""
     usage = "usage: %prog emit-event [options] EVENT_NAME"
@@ -1632,6 +1967,8 @@ def cmd_agent_help(args):
         - dump-task: pull full details for a task or run (`absurdctl dump-task --task-id=<uuid>`)
         - spawn-task: enqueue new work (`absurdctl spawn-task my-task`)
         - emit-event: emit an event to wake waiting tasks (`absurdctl emit-event order.completed -P orderId=123`)
+        - list-schedules: show recurring schedules (`absurdctl list-schedules default`)
+        - create-schedule: add a recurring schedule (`absurdctl create-schedule default my-sched my-task --cron '0 * * * *'`)
 
         Use `absurdctl <command> --help` to see every option when you need more detail.
 
@@ -1649,18 +1986,22 @@ def show_help():
 A command-line utility for managing Absurd queues.
 
 Commands:
-  init            Initialize the Absurd schema by applying absurd.sql
-  cleanup         Clean up old completed, failed, or cancelled tasks and events
-  create-queue    Create a new queue
-  drop-queue      Drop an existing queue
-  list-queues     List all existing queues
-  spawn-task      Spawn a new task
-  emit-event      Emit an event to wake waiting tasks
-  list-tasks      List tasks with optional filtering
-  cancel-task     Cancel a running or pending task
-  dump-task       Dump task or run details including checkpoints
-  agent-help      Print quick guidance tailored for coding agents
-  help            Show this help message
+  init              Initialize the Absurd schema by applying absurd.sql
+  cleanup           Clean up old completed, failed, or cancelled tasks and events
+  create-queue      Create a new queue
+  drop-queue        Drop an existing queue
+  list-queues       List all existing queues
+  spawn-task        Spawn a new task
+  emit-event        Emit an event to wake waiting tasks
+  list-tasks        List tasks with optional filtering
+  cancel-task       Cancel a running or pending task
+  dump-task         Dump task or run details including checkpoints
+  create-schedule   Create a recurring schedule
+  update-schedule   Update an existing schedule
+  delete-schedule   Delete a schedule
+  list-schedules    List schedules in a queue
+  agent-help        Print quick guidance tailored for coding agents
+  help              Show this help message
 
 Run 'absurdctl COMMAND --help' for more information on a command.
 
@@ -1683,6 +2024,10 @@ Examples:
   absurdctl list-tasks --queue=default --status=failed
   absurdctl cancel-task 019a32d3-8425-7ae2-a5af-2f17a6707666
   absurdctl dump-task --task-id=019a32d3-8425-7ae2-a5af-2f17a6707666
+  absurdctl create-schedule default nightly-sync my-task --cron '0 2 * * *'
+  absurdctl list-schedules default
+  absurdctl update-schedule default nightly-sync --disable
+  absurdctl delete-schedule default nightly-sync
   absurdctl agent-help >> AGENTS.md
 """
     )
@@ -1716,6 +2061,14 @@ def main():
         cmd_cancel_task(args)
     elif command == "dump-task":
         cmd_dump_task(args)
+    elif command == "create-schedule":
+        cmd_create_schedule(args)
+    elif command == "update-schedule":
+        cmd_update_schedule(args)
+    elif command == "delete-schedule":
+        cmd_delete_schedule(args)
+    elif command == "list-schedules":
+        cmd_list_schedules(args)
     elif command == "agent-help":
         cmd_agent_help(args)
     else:

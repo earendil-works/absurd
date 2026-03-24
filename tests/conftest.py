@@ -352,3 +352,48 @@ class AbsurdTestClient:
 
     def get_table(self, prefix, queue):
         return sql.Identifier(f"{prefix}_{queue}")
+
+    def create_schedule(self, queue, schedule_name, task_name, schedule_expr,
+                        params=None, options=None):
+        opts = options or {}
+        if params is not None:
+            opts["params"] = params
+        result = self.conn.execute(
+            """
+            select schedule_name, next_run_at
+            from absurd.create_schedule(%s, %s, %s, %s, %s)
+            """,
+            (queue, schedule_name, task_name, schedule_expr, Jsonb(opts)),
+        )
+        return _fetchone_dict(result)
+
+    def get_schedule(self, queue, schedule_name):
+        result = self.conn.execute(
+            """
+            select schedule_name, task_name, params, headers,
+                   retry_strategy, max_attempts, cancellation, schedule_expr,
+                   enabled, catchup_policy, last_triggered_at, next_run_at, created_at
+            from absurd.get_schedule(%s, %s)
+            """,
+            (queue, schedule_name),
+        )
+        return _fetchone_dict(result)
+
+    def list_schedules(self, queue):
+        result = self.conn.execute(
+            "select * from absurd.list_schedules(%s)",
+            (queue,),
+        )
+        return _fetchall_dicts(result)
+
+    def delete_schedule(self, queue, schedule_name):
+        self.conn.execute(
+            "select absurd.delete_schedule(%s, %s)",
+            (queue, schedule_name),
+        )
+
+    def update_schedule(self, queue, schedule_name, options):
+        self.conn.execute(
+            "select absurd.update_schedule(%s, %s, %s)",
+            (queue, schedule_name, Jsonb(options)),
+        )

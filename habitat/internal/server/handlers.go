@@ -981,6 +981,8 @@ func (s *Server) handleQueueResource(w http.ResponseWriter, r *http.Request) {
 		s.handleQueueTasks(w, r, queueName)
 	case "events":
 		s.handleQueueEvents(w, r, queueName)
+	case "schedules":
+		s.handleQueueSchedules(w, r, queueName)
 	default:
 		http.NotFound(w, r)
 	}
@@ -1194,6 +1196,66 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, events)
 }
 
+func (s *Server) handleQueueSchedules(w http.ResponseWriter, r *http.Request, queueName string) {
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	if err := s.ensureQueueExists(ctx, queueName); err != nil {
+		log.Printf("handleQueueSchedules: queue %s not found: %v", queueName, err)
+		http.Error(w, "queue not found", http.StatusNotFound)
+		return
+	}
+
+	stable := queueTableIdentifier("s", queueName)
+	query := fmt.Sprintf(`
+		SELECT schedule_name, task_name, schedule_expr, enabled,
+		       catchup_policy, last_triggered_at, next_run_at, created_at,
+		       params, headers, retry_strategy, max_attempts, cancellation
+		FROM absurd.%s
+		ORDER BY schedule_name
+	`, stable)
+
+	rows, err := s.db.QueryContext(ctx, query)
+	if err != nil {
+		log.Printf("handleQueueSchedules: query failed for queue %s: %v", queueName, err)
+		http.Error(w, "failed to query schedules", http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	var schedules []ScheduleSummary
+	for rows.Next() {
+		var record scheduleRecord
+		if err := rows.Scan(
+			&record.ScheduleName,
+			&record.TaskName,
+			&record.ScheduleExpr,
+			&record.Enabled,
+			&record.CatchupPolicy,
+			&record.LastTriggeredAt,
+			&record.NextRunAt,
+			&record.CreatedAt,
+			&record.Params,
+			&record.Headers,
+			&record.RetryStrategy,
+			&record.MaxAttempts,
+			&record.Cancellation,
+		); err != nil {
+			log.Printf("handleQueueSchedules: scan failed: %v", err)
+			http.Error(w, "failed to scan schedule", http.StatusInternalServerError)
+			return
+		}
+		schedules = append(schedules, record.AsAPI(queueName))
+	}
+
+	if err := rows.Err(); err != nil {
+		http.Error(w, "failed to iterate schedules", http.StatusInternalServerError)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, schedules)
+}
+
 func (s *Server) listQueueNames(ctx context.Context) ([]string, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT queue_name FROM absurd.queues ORDER BY queue_name`)
 	if err != nil {
@@ -1356,6 +1418,59 @@ type QueueSummary struct {
 	CompletedCount int64      `json:"completedCount"`
 	FailedCount    int64      `json:"failedCount"`
 	CancelledCount int64      `json:"cancelledCount"`
+}
+
+type scheduleRecord struct {
+	ScheduleName  string
+	TaskName      string
+	ScheduleExpr  string
+	Enabled       bool
+	CatchupPolicy string
+	LastTriggeredAt sql.NullTime
+	NextRunAt     time.Time
+	CreatedAt     time.Time
+	Params        []byte
+	Headers       []byte
+	RetryStrategy []byte
+	MaxAttempts   sql.NullInt64
+	Cancellation  []byte
+}
+
+// ScheduleSummary is the API representation for schedule list views.
+type ScheduleSummary struct {
+	ScheduleName    string          `json:"scheduleName"`
+	QueueName       string          `json:"queueName"`
+	TaskName        string          `json:"taskName"`
+	ScheduleExpr    string          `json:"scheduleExpr"`
+	Enabled         bool            `json:"enabled"`
+	CatchupPolicy   string          `json:"catchupPolicy"`
+	LastTriggeredAt *time.Time      `json:"lastTriggeredAt,omitempty"`
+	NextRunAt       time.Time       `json:"nextRunAt"`
+	CreatedAt       time.Time       `json:"createdAt"`
+	Params          json.RawMessage `json:"params,omitempty"`
+	Headers         json.RawMessage `json:"headers,omitempty"`
+	RetryStrategy   json.RawMessage `json:"retryStrategy,omitempty"`
+	MaxAttempts     *int            `json:"maxAttempts,omitempty"`
+	Cancellation    json.RawMessage `json:"cancellation,omitempty"`
+}
+
+func (r scheduleRecord) AsAPI(queueName string) ScheduleSummary {
+	return ScheduleSummary{
+		ScheduleName:    r.ScheduleName,
+		QueueName:       queueName,
+		TaskName:        r.TaskName,
+		ScheduleExpr:    r.ScheduleExpr,
+		Enabled:         r.Enabled,
+		CatchupPolicy:   r.CatchupPolicy,
+		LastTriggeredAt: nullableTime(r.LastTriggeredAt),
+		NextRunAt:       r.NextRunAt,
+		CreatedAt:       r.CreatedAt,
+		Params:          nullableBytes(r.Params),
+		Headers:         nullableBytes(r.Headers),
+		RetryStrategy:   nullableBytes(r.RetryStrategy),
+		MaxAttempts:     nullableInt(r.MaxAttempts),
+		Cancellation:    nullableBytes(r.Cancellation),
+	}
 }
 
 type TaskListResponse struct {

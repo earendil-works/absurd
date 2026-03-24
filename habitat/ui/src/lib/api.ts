@@ -251,6 +251,33 @@ export async function fetchQueueEvents(
   );
 }
 
+export interface ScheduleSummary {
+  scheduleName: string;
+  queueName: string;
+  taskName: string;
+  scheduleExpr: string;
+  enabled: boolean;
+  catchupPolicy: string;
+  lastTriggeredAt?: string | null;
+  nextRunAt: string;
+  createdAt: string;
+  params?: any;
+  headers?: any;
+  retryStrategy?: any;
+  maxAttempts?: number | null;
+  cancellation?: any;
+}
+
+export async function fetchQueueSchedules(
+  queueName: string,
+): Promise<ScheduleSummary[]> {
+  return handleResponse<ScheduleSummary[]>(
+    await fetch(`/api/queues/${queueName}/schedules`, {
+      headers: defaultHeaders,
+    }),
+  );
+}
+
 export interface EventLogFilters {
   queue?: string | null;
   eventName?: string | null;
