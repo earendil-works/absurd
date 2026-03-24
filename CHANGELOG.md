@@ -4,6 +4,10 @@ This contains the changes between releases.
 
 # Unreleased
 
+* Added `AB002` error code for already-failed runs in `set_task_checkpoint_state` and `extend_claim`, letting SDKs gracefully handle stale execution.
+* Replaced task name text filter with a combobox that caches recent task names in Habitat.
+* Allow multiple task rows to stay expanded simultaneously in Habitat.
+
 # 0.1.0
 
 * Fixed SQL injection vulnerabilities in `absurdctl`.  #68
