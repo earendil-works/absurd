@@ -182,6 +182,29 @@ func expectQueueTasksQuery(queueName string, limit int64) func(string, []driver.
 	}
 }
 
+func expectRecentTaskNamesQuery(queueName string, limit int64) func(string, []driver.NamedValue) error {
+	rTable := fmt.Sprintf(`FROM absurd.%q`, "r_"+queueName)
+	tTable := fmt.Sprintf(`JOIN absurd.%q t ON t.task_id = r.task_id`, "t_"+queueName)
+	return func(query string, args []driver.NamedValue) error {
+		if !strings.Contains(query, rTable) {
+			return fmt.Errorf("query %q missing %q", query, rTable)
+		}
+		if !strings.Contains(query, tTable) {
+			return fmt.Errorf("query %q missing %q", query, tTable)
+		}
+		if !strings.Contains(query, "ORDER BY run_id DESC") {
+			return fmt.Errorf("query %q missing run_id ordering", query)
+		}
+		if len(args) != 1 {
+			return fmt.Errorf("expected 1 arg, got %d", len(args))
+		}
+		if args[0].Value != limit {
+			return fmt.Errorf("limit arg = %#v, want %#v", args[0].Value, limit)
+		}
+		return nil
+	}
+}
+
 func TestHandleTasksFailsFastOnQueueQueryDeadline(t *testing.T) {
 	now := time.Now().UTC()
 	db := newScriptedDB(t, []scriptedQuery{
@@ -191,6 +214,20 @@ func TestHandleTasksFailsFastOnQueueQueryDeadline(t *testing.T) {
 			rows: [][]driver.Value{
 				{"alpha"},
 				{"beta"},
+			},
+		},
+		{
+			match:   expectRecentTaskNamesQuery("alpha", 5000),
+			columns: []string{"task_name"},
+			rows: [][]driver.Value{
+				{"process-webhook"},
+			},
+		},
+		{
+			match:   expectRecentTaskNamesQuery("beta", 5000),
+			columns: []string{"task_name"},
+			rows: [][]driver.Value{
+				{"sync-account"},
 			},
 		},
 		{

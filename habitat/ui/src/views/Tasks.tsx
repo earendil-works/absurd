@@ -253,12 +253,25 @@ export default function Tasks() {
   const statusOptions = createMemo(() =>
     buildFilterOptions(taskList()?.availableStatuses ?? [], "All statuses"),
   );
+  const taskNameOptions = createMemo(() =>
+    buildFilterOptions(taskList()?.availableTaskNames ?? [], "All task names"),
+  );
   const selectedQueueOption = createMemo(() =>
     resolveSelectedOption(queueOptions(), queueFilter()),
   );
   const selectedStatusOption = createMemo(() =>
     resolveSelectedOption(statusOptions(), statusFilter()),
   );
+  const selectedTaskNameOption = createMemo(() => {
+    const value = taskNameFilter();
+    if (!value) {
+      return taskNameOptions()[0];
+    }
+
+    return (
+      taskNameOptions().find((option) => option.value === value) ?? null
+    );
+  });
   const pageStart = createMemo(() => {
     if (!allTasks().length) {
       return 0;
@@ -493,38 +506,68 @@ export default function Tasks() {
                     <SelectContent />
                   </Select>
                 </div>
-                <TextFieldRoot>
-                  <TextFieldLabel>Task name (exact)</TextFieldLabel>
-                  <TextField
-                    value={taskNameInput()}
-                    onInput={(event) => {
-                      setTaskNameInput(event.currentTarget.value);
+                <div class="space-y-1">
+                  <span class="text-sm font-medium text-foreground">
+                    Task name (exact)
+                  </span>
+                  <Combobox
+                    multiple={false}
+                    options={taskNameOptions()}
+                    optionLabel={(option: FilterOption) => option.label}
+                    optionValue={(option: FilterOption) => option.value}
+                    optionTextValue={(option: FilterOption) => option.label}
+                    value={selectedTaskNameOption()}
+                    onInputChange={(value) => {
+                      setTaskNameInput(value);
                     }}
-                    onKeyDown={(event) => {
-                      if (event.key === "Enter") {
-                        const nextValue = toParamValue(taskNameInput()) ?? null;
-                        if (nextValue === taskNameFilter()) {
-                          return;
-                        }
-
-                        setTaskNameFilter(nextValue);
-                        if (page() !== 1) {
-                          setPage(1);
-                        }
-                        syncSearchParams(
-                          { taskName: nextValue, page: 1 },
-                          { replace: true },
-                        );
+                    onChange={(option) => {
+                      const nextValue = option?.value ? option.value : null;
+                      setTaskNameInput(nextValue ?? "");
+                      if (nextValue === taskNameFilter()) {
+                        return;
                       }
+
+                      setTaskNameFilter(nextValue);
+                      if (page() !== 1) {
+                        setPage(1);
+                      }
+                      syncSearchParams({ taskName: nextValue, page: 1 });
                     }}
-                    disabled={!queueFilter()}
-                    placeholder={
-                      queueFilter()
-                        ? "Exact task name (press Enter)"
-                        : "Select a queue first"
-                    }
-                  />
-                </TextFieldRoot>
+                    itemComponent={renderQueueOption}
+                    defaultFilter="contains"
+                    disallowEmptySelection={false}
+                    placeholder="All task names"
+                    aria-label="Task name filter"
+                  >
+                    <ComboboxTrigger>
+                      <ComboboxInput
+                        value={taskNameInput()}
+                        placeholder="All task names"
+                        onKeyDown={(event) => {
+                          if (event.key !== "Enter") {
+                            return;
+                          }
+
+                          const nextValue = toParamValue(taskNameInput()) ?? null;
+                          setTaskNameInput(nextValue ?? "");
+                          if (nextValue === taskNameFilter()) {
+                            return;
+                          }
+
+                          setTaskNameFilter(nextValue);
+                          if (page() !== 1) {
+                            setPage(1);
+                          }
+                          syncSearchParams(
+                            { taskName: nextValue, page: 1 },
+                            { replace: true },
+                          );
+                        }}
+                      />
+                    </ComboboxTrigger>
+                    <ComboboxContent />
+                  </Combobox>
+                </div>
               </div>
               <div class="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
                 <Show when={allTasks().length > 0}>

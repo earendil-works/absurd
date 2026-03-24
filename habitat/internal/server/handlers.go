@@ -357,6 +357,16 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	availableTaskNames, err := s.listRecentTaskNames(ctx, selectedQueues, 5000)
+	if err != nil {
+		if isContextQueryFailure(err, ctx) {
+			writeTaskQueryContextError(w, err, ctx)
+			return
+		}
+		log.Printf("handleTasks: failed to list recent task names: %v", err)
+		availableTaskNames = []string{}
+	}
+
 	start := (page - 1) * perPage
 	windowSize := start + perPage + 1
 	if windowSize < perPage+1 {
@@ -441,10 +451,127 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 		PerPage:            perPage,
 		AvailableStatuses:  allTaskStatuses(),
 		AvailableQueues:    queueNames,
-		AvailableTaskNames: []string{},
+		AvailableTaskNames: availableTaskNames,
 	}
 
 	writeJSON(w, http.StatusOK, response)
+}
+
+type recentTaskNamesCacheEntry struct {
+	values    []string
+	expiresAt time.Time
+}
+
+const recentTaskNamesCacheTTL = time.Minute
+
+func (s *Server) listRecentTaskNames(ctx context.Context, queueNames []string, recentRunLimit int) ([]string, error) {
+	if len(queueNames) == 0 {
+		return []string{}, nil
+	}
+	if recentRunLimit <= 0 {
+		return []string{}, nil
+	}
+
+	namesByValue := make(map[string]struct{})
+
+	for _, queueName := range queueNames {
+		queueTaskNames, err := s.getRecentQueueTaskNamesCached(ctx, queueName, recentRunLimit)
+		if err != nil {
+			if isContextQueryFailure(err, ctx) {
+				return nil, err
+			}
+			log.Printf("listRecentTaskNames: failed to query queue %s: %v", queueName, err)
+			continue
+		}
+
+		for _, taskName := range queueTaskNames {
+			trimmedName := strings.TrimSpace(taskName)
+			if trimmedName == "" {
+				continue
+			}
+			namesByValue[trimmedName] = struct{}{}
+		}
+	}
+
+	result := make([]string, 0, len(namesByValue))
+	for taskName := range namesByValue {
+		result = append(result, taskName)
+	}
+	sort.Strings(result)
+
+	return result, nil
+}
+
+func (s *Server) getRecentQueueTaskNamesCached(ctx context.Context, queueName string, recentRunLimit int) ([]string, error) {
+	now := time.Now()
+
+	s.recentTaskNamesMu.RLock()
+	entry, ok := s.recentTaskNamesCache[queueName]
+	s.recentTaskNamesMu.RUnlock()
+	if ok && now.Before(entry.expiresAt) {
+		return append([]string(nil), entry.values...), nil
+	}
+
+	taskNames, err := s.fetchRecentQueueTaskNames(ctx, queueName, recentRunLimit)
+	if err != nil {
+		return nil, err
+	}
+
+	s.recentTaskNamesMu.Lock()
+	if s.recentTaskNamesCache == nil {
+		s.recentTaskNamesCache = map[string]recentTaskNamesCacheEntry{}
+	}
+	s.recentTaskNamesCache[queueName] = recentTaskNamesCacheEntry{
+		values:    append([]string(nil), taskNames...),
+		expiresAt: now.Add(recentTaskNamesCacheTTL),
+	}
+	s.recentTaskNamesMu.Unlock()
+
+	return taskNames, nil
+}
+
+func (s *Server) fetchRecentQueueTaskNames(ctx context.Context, queueName string, recentRunLimit int) ([]string, error) {
+	if recentRunLimit <= 0 {
+		return []string{}, nil
+	}
+
+	ttable := queueTableIdentifier("t", queueName)
+	rtable := queueTableIdentifier("r", queueName)
+
+	query := fmt.Sprintf(`
+		WITH recent_runs AS (
+			SELECT task_id
+			FROM absurd.%s
+			ORDER BY run_id DESC
+			LIMIT $1
+		)
+		SELECT DISTINCT t.task_name
+		FROM recent_runs r
+		JOIN absurd.%s t ON t.task_id = r.task_id
+		WHERE t.task_name <> ''
+		ORDER BY t.task_name
+	`, rtable, ttable)
+
+	rows, err := s.db.QueryContext(ctx, query, recentRunLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	taskNames := make([]string, 0)
+	for rows.Next() {
+		var taskName string
+		if err := rows.Scan(&taskName); err != nil {
+			return nil, err
+		}
+		taskNames = append(taskNames, taskName)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return taskNames, nil
 }
 
 func isContextQueryFailure(err error, ctx context.Context) bool {

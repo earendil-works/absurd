@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"sync"
 	"strings"
 	"time"
 
@@ -22,6 +23,9 @@ type Server struct {
 	cfg config.Config
 	db  *sql.DB
 
+	recentTaskNamesMu    sync.RWMutex
+	recentTaskNamesCache map[string]recentTaskNamesCacheEntry
+
 	staticHandler http.Handler
 	indexHTML     []byte
 
@@ -33,6 +37,8 @@ func New(cfg config.Config, db *sql.DB) (*Server, error) {
 	s := &Server{
 		cfg: cfg,
 		db:  db,
+
+		recentTaskNamesCache: map[string]recentTaskNamesCacheEntry{},
 	}
 
 	staticFS, err := web.StaticFS()
