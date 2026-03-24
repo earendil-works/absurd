@@ -1,9 +1,17 @@
 import asyncio
+import json
 
 import psycopg
+import pytest
 from psycopg import sql
 
-from absurd_sdk import Absurd, AsyncAbsurd
+from absurd_sdk import (
+    Absurd,
+    AsyncAbsurd,
+    FailedTask,
+    _create_async_task_context,
+    _create_task_context,
+)
 
 
 def _fetch_run(conn, queue, run_id):
@@ -73,3 +81,114 @@ def test_async_heartbeat_zero_is_rejected_by_sql(db_dsn, queue_name):
         assert run is not None
         assert run[0] == "failed"
         assert "extend_by must be > 0" in str(run[2])
+
+
+def test_sync_heartbeat_on_failed_run_raises_failed_task(conn, queue_name):
+    queue = queue_name("heartbeat_failed")
+    client = Absurd(conn, queue_name=queue)
+    client.create_queue()
+
+    @client.register_task("heartbeat-task")
+    def heartbeat_task(_params, _ctx):
+        return {"ok": True}
+
+    spawned = client.spawn("heartbeat-task", {"value": 1})
+    task = client.claim_tasks(worker_id="worker", claim_timeout=60)[0]
+
+    conn.execute(
+        "SELECT absurd.fail_run(%s, %s, %s, %s)",
+        (
+            queue,
+            task["run_id"],
+            json.dumps({"name": "$ClaimTimeout", "message": "timeout"}),
+            None,
+        ),
+    )
+
+    ctx = _create_task_context(task["task_id"], conn, queue, task, claim_timeout=60)
+    with pytest.raises(FailedTask):
+        ctx.heartbeat(30)
+
+    run = _fetch_run(conn, queue, spawned["run_id"])
+    assert run is not None
+    assert run[0] == "failed"
+
+
+def test_sync_execute_task_swallows_failed_task_checkpoint(conn, queue_name):
+    queue = queue_name("checkpoint_failed_wrapper")
+    client = Absurd(conn, queue_name=queue)
+    client.create_queue()
+
+    @client.register_task("checkpoint-failed")
+    def checkpoint_failed(_params, ctx):
+        ctx.step("persist", lambda: {"value": 1})
+        return {"ok": True}
+
+    spawned = client.spawn("checkpoint-failed", {"value": 1})
+    task = client.claim_tasks(worker_id="worker", claim_timeout=60)[0]
+
+    conn.execute(
+        "SELECT absurd.fail_run(%s, %s, %s, %s)",
+        (
+            queue,
+            task["run_id"],
+            json.dumps({"name": "$ClaimTimeout", "message": "timeout"}),
+            None,
+        ),
+    )
+
+    # Must not raise: FailedTask is a terminal control-flow signal.
+    client._execute_task(task, 60)
+
+    checkpoint = conn.execute(
+        sql.SQL(
+            "select 1 from absurd.{table} where task_id = %s and checkpoint_name = %s"
+        ).format(table=sql.Identifier(f"c_{queue}")),
+        (spawned["task_id"], "persist"),
+    ).fetchone()
+    assert checkpoint is None
+
+
+def test_async_heartbeat_on_failed_run_raises_failed_task(db_dsn, queue_name):
+    queue = queue_name("heartbeat_failed_async")
+
+    with psycopg.connect(db_dsn, autocommit=True) as setup_conn:
+        Absurd(setup_conn, queue_name=queue).create_queue()
+
+    async def run_case():
+        client = AsyncAbsurd(db_dsn, queue_name=queue)
+
+        @client.register_task("heartbeat-task-async")
+        async def heartbeat_task_async(_params, _ctx):
+            return {"ok": True}
+
+        spawned = await client.spawn("heartbeat-task-async", {"value": 1})
+        tasks = await client.claim_tasks(worker_id="worker", claim_timeout=60)
+        task = tasks[0]
+
+        assert client._conn is not None
+        await client._conn.execute(
+            "SELECT absurd.fail_run(%s, %s, %s, %s)",
+            (
+                queue,
+                task["run_id"],
+                json.dumps({"name": "$ClaimTimeout", "message": "timeout"}),
+                None,
+            ),
+        )
+
+        ctx = await _create_async_task_context(
+            task["task_id"], client._conn, queue, task, claim_timeout=60
+        )
+        with pytest.raises(FailedTask):
+            await ctx.heartbeat(30)
+
+        await client.close()
+        return spawned
+
+    spawned = asyncio.run(run_case())
+
+    with psycopg.connect(db_dsn, autocommit=True) as check_conn:
+        run = _fetch_run(check_conn, queue, spawned["run_id"])
+        assert run is not None
+        assert run[0] == "failed"

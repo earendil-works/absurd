@@ -37,6 +37,7 @@ __all__ = [
     "AsyncTaskContext",
     "SuspendTask",
     "CancelledTask",
+    "FailedTask",
     "TimeoutError",
     "RetryStrategy",
     "CancellationPolicy",
@@ -181,8 +182,20 @@ class CancelledTask(Exception):
     """Internal exception thrown when a task is cancelled."""
 
 
+class FailedTask(Exception):
+    """Internal exception thrown when the current run has already failed."""
+
+
 class TimeoutError(Exception):
     """Error thrown when awaiting an event times out."""
+
+
+def _raise_task_state_exception(err: Exception) -> None:
+    code = getattr(err, "sqlstate", None) or getattr(err, "pgcode", None)
+    if code == "AB001":
+        raise CancelledTask() from err
+    if code == "AB002":
+        raise FailedTask() from err
 
 
 _MAX_QUEUE_NAME_LENGTH = 57
@@ -527,8 +540,7 @@ class TaskContext:
                 ),
             )
         except Exception as e:
-            if hasattr(e, "pgcode") and e.pgcode == "AB001":  # type: ignore
-                raise CancelledTask() from e
+            _raise_task_state_exception(e)
             raise
 
         result = cursor.fetchone()
@@ -567,8 +579,7 @@ class TaskContext:
                 ),
             )
         except Exception as e:
-            if hasattr(e, "pgcode") and e.pgcode == "AB001":  # type: ignore
-                raise CancelledTask() from e
+            _raise_task_state_exception(e)
             raise
 
     def _get_checkpoint_name(self, name: str) -> str:
@@ -613,8 +624,7 @@ class TaskContext:
                 ),
             )
         except Exception as e:
-            if hasattr(e, "pgcode") and e.pgcode == "AB001":  # type: ignore
-                raise CancelledTask() from e
+            _raise_task_state_exception(e)
             raise
         self._checkpoint_cache[checkpoint_name] = value
 
@@ -721,8 +731,7 @@ class AsyncTaskContext:
                 ),
             )
         except Exception as e:
-            if hasattr(e, "pgcode") and e.pgcode == "AB001":  # type: ignore
-                raise CancelledTask() from e
+            _raise_task_state_exception(e)
             raise
 
         result = await cursor.fetchone()
@@ -763,8 +772,7 @@ class AsyncTaskContext:
                 ),
             )
         except Exception as e:
-            if hasattr(e, "pgcode") and e.pgcode == "AB001":  # type: ignore
-                raise CancelledTask() from e
+            _raise_task_state_exception(e)
             raise
 
     def _get_checkpoint_name(self, name: str) -> str:
@@ -809,8 +817,7 @@ class AsyncTaskContext:
                 ),
             )
         except Exception as e:
-            if hasattr(e, "pgcode") and e.pgcode == "AB001":  # type: ignore
-                raise CancelledTask() from e
+            _raise_task_state_exception(e)
             raise
         self._checkpoint_cache[checkpoint_name] = value
 
@@ -1157,7 +1164,7 @@ class Absurd(_AbsurdBase):
             else:
                 result = registration["handler"](task["params"], ctx)
             _complete_task_run(self._conn, queue_name, task["run_id"], result)
-        except (SuspendTask, CancelledTask):
+        except (SuspendTask, CancelledTask, FailedTask):
             pass
         except Exception as err:
             _fail_task_run(self._conn, queue_name, task["run_id"], err)
@@ -1451,7 +1458,7 @@ class AsyncAbsurd(_AbsurdBase):
             await _complete_task_run_async(
                 self._conn, queue_name, task["run_id"], result
             )
-        except (SuspendTask, CancelledTask):
+        except (SuspendTask, CancelledTask, FailedTask):
             pass
         except Exception as err:
             await _fail_task_run_async(

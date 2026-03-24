@@ -236,6 +236,64 @@ describe("Retry and cancellation", () => {
     expect(task?.cancelled_at).not.toBeNull();
   });
 
+  test("executeTask swallows AB002 from heartbeat on failed run", async () => {
+    absurd.registerTask({ name: "failed-heartbeat" }, async (_params, taskCtx) => {
+      await taskCtx.heartbeat(30);
+      return { ok: true };
+    });
+
+    const { runID } = await absurd.spawn("failed-heartbeat", { data: 1 });
+    const [claim] = await absurd.claimTasks({
+      workerId: "worker-1",
+      claimTimeout: 60,
+    });
+    expect(claim.run_id).toBe(runID);
+
+    await ctx.pool.query(`SELECT absurd.fail_run($1, $2, $3, $4)`, [
+      ctx.queueName,
+      claim.run_id,
+      JSON.stringify({ name: "$ClaimTimeout", message: "timeout" }),
+      null,
+    ]);
+
+    await absurd.executeTask(claim, 60);
+
+    const staleRun = await ctx.getRun(claim.run_id);
+    expect(staleRun?.state).toBe("failed");
+  });
+
+  test("executeTask swallows AB002 from checkpoint writes on failed run", async () => {
+    absurd.registerTask({ name: "failed-checkpoint" }, async (_params, taskCtx) => {
+      await taskCtx.step("persist", async () => ({ value: 1 }));
+      return { ok: true };
+    });
+
+    const { taskID, runID } = await absurd.spawn("failed-checkpoint", { data: 1 });
+    const [claim] = await absurd.claimTasks({
+      workerId: "worker-1",
+      claimTimeout: 60,
+    });
+    expect(claim.run_id).toBe(runID);
+
+    await ctx.pool.query(`SELECT absurd.fail_run($1, $2, $3, $4)`, [
+      ctx.queueName,
+      claim.run_id,
+      JSON.stringify({ name: "$ClaimTimeout", message: "timeout" }),
+      null,
+    ]);
+
+    await absurd.executeTask(claim, 60);
+
+    const staleRun = await ctx.getRun(claim.run_id);
+    expect(staleRun?.state).toBe("failed");
+
+    const checkpoints = await ctx.pool.query(
+      `SELECT 1 FROM absurd.c_${ctx.queueName} WHERE task_id = $1 AND checkpoint_name = $2`,
+      [taskID, "persist"],
+    );
+    expect(checkpoints.rows).toHaveLength(0);
+  });
+
   test("cancel blocks checkpoint writes", async () => {
     absurd.registerTask({ name: "checkpoint-cancel" }, async () => {
       return { ok: true };

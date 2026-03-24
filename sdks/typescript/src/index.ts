@@ -106,6 +106,17 @@ export class CancelledTask extends Error {
 }
 
 /**
+ * Internal exception thrown when the current run has already failed (for
+ * example due to claim timeout) and can no longer make progress.
+ */
+export class FailedTask extends Error {
+  constructor() {
+    super("Task already failed");
+    this.name = "FailedTask";
+  }
+}
+
+/**
  * This error is thrown when awaiting an event ran into a timeout.
  */
 export class TimeoutError extends Error {
@@ -244,12 +255,18 @@ export class TaskContext {
     );
   }
 
-  private async queryWithCancelCheck(sql: string, params: any[]): Promise<any> {
+  private async queryWithTaskStateCheck(
+    sql: string,
+    params: any[],
+  ): Promise<any> {
     try {
       return await this.con.query(sql, params);
     } catch (err: any) {
       if (err?.code === "AB001") {
         throw new CancelledTask();
+      }
+      if (err?.code === "AB002") {
+        throw new FailedTask();
       }
       throw err;
     }
@@ -335,7 +352,7 @@ export class TaskContext {
     checkpointName: string,
     value: JsonValue,
   ): Promise<void> {
-    await this.queryWithCancelCheck(
+    await this.queryWithTaskStateCheck(
       `SELECT absurd.set_task_checkpoint_state($1, $2, $3, $4, $5, $6)`,
       [
         this.queueName,
@@ -394,7 +411,7 @@ export class TaskContext {
       throw new TimeoutError(`Timed out waiting for event "${eventName}"`);
     }
 
-    const result = await this.queryWithCancelCheck(
+    const result = await this.queryWithTaskStateCheck(
       `SELECT should_suspend, payload
         FROM absurd.await_event($1, $2, $3, $4, $5, $6)`,
       [
@@ -428,7 +445,7 @@ export class TaskContext {
    */
   async heartbeat(seconds?: number): Promise<void> {
     const leaseSeconds = seconds ?? this.claimTimeout;
-    await this.queryWithCancelCheck(`SELECT absurd.extend_claim($1, $2, $3)`, [
+    await this.queryWithTaskStateCheck(`SELECT absurd.extend_claim($1, $2, $3)`, [
       this.queueName,
       this.task.run_id,
       leaseSeconds,
@@ -950,7 +967,11 @@ export class Absurd {
         await execute();
       }
     } catch (err) {
-      if (err instanceof SuspendTask || err instanceof CancelledTask) {
+      if (
+        err instanceof SuspendTask ||
+        err instanceof CancelledTask ||
+        err instanceof FailedTask
+      ) {
         // Task suspended or cancelled (sleep or await), don't complete or fail
         return;
       }

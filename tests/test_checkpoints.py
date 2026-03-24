@@ -79,6 +79,43 @@ def test_set_checkpoint_extends_claim_lease(client):
     assert final_expires_at > new_expires_at
 
 
+def test_checkpoint_write_on_failed_run_raises_ab002(client):
+    queue = "checkpoint-failed"
+    client.create_queue(queue)
+
+    spawn = client.spawn_task(queue, "task", {"value": 1})
+    claim = client.claim_tasks(queue, worker="worker-1", claim_timeout=60)[0]
+
+    client.fail_run(
+        queue,
+        claim["run_id"],
+        {
+            "name": "$ClaimTimeout",
+            "message": "worker did not finish task within claim interval",
+        },
+    )
+
+    savepoint = "checkpoint_failed_ab002"
+    client.conn.execute(f"savepoint {savepoint}")
+    with pytest.raises(Exception) as exc_info:
+        client.conn.execute(
+            "select absurd.set_task_checkpoint_state(%s, %s, %s, %s, %s, %s)",
+            (
+                queue,
+                spawn.task_id,
+                "step-after-fail",
+                Jsonb({"value": 1}),
+                claim["run_id"],
+                60,
+            ),
+        )
+
+    assert getattr(exc_info.value, "sqlstate", None) == "AB002"
+    client.conn.execute(f"rollback to savepoint {savepoint}")
+    client.conn.execute(f"release savepoint {savepoint}")
+
+
+
 def test_checkpoint_preloading_survives_retry(client):
     queue = "checkpoint-retry"
     client.create_queue(queue)

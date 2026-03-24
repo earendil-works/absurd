@@ -69,6 +69,34 @@ def test_extend_claim_missing_run_errors(client):
     assert "not found" in str(exc_info.value).lower()
 
 
+def test_extend_claim_failed_run_raises_ab002(client):
+    queue = "extend_claim_failed"
+    client.create_queue(queue)
+
+    spawn = client.spawn_task(queue, "task", {"value": 1})
+    claim = client.claim_tasks(queue, worker="worker-1", claim_timeout=60)[0]
+    run_id = claim["run_id"]
+
+    client.fail_run(
+        queue,
+        run_id,
+        {
+            "name": "$ClaimTimeout",
+            "message": "worker did not finish task within claim interval",
+        },
+    )
+
+    savepoint = "extend_claim_failed_ab002"
+    client.conn.execute(f"savepoint {savepoint}")
+    with pytest.raises(Exception) as exc_info:
+        client.extend_claim(queue, run_id, 30)
+
+    assert getattr(exc_info.value, "sqlstate", None) == "AB002"
+    client.conn.execute(f"rollback to savepoint {savepoint}")
+    client.conn.execute(f"release savepoint {savepoint}")
+    assert client.get_task(queue, spawn.task_id)["state"] in ("pending", "sleeping", "failed")
+
+
 def test_extend_claim_non_running_run_errors(client):
     queue = "extend_claim_non_running"
     client.create_queue(queue)

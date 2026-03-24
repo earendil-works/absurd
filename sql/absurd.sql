@@ -788,20 +788,21 @@ declare
   v_existing_attempt integer;
   v_existing_owner uuid;
   v_task_state text;
+  v_run_state text;
 begin
   if p_step_name is null or length(trim(p_step_name)) = 0 then
     raise exception 'step_name must be provided';
   end if;
 
   execute format(
-    'select r.attempt, t.state
+    'select r.attempt, r.state, t.state
        from absurd.%I r
        join absurd.%I t on t.task_id = r.task_id
       where r.run_id = $1',
     'r_' || p_queue_name,
     't_' || p_queue_name
   )
-  into v_new_attempt, v_task_state
+  into v_new_attempt, v_run_state, v_task_state
   using p_owner_run;
 
   if v_new_attempt is null then
@@ -810,6 +811,10 @@ begin
 
   if v_task_state = 'cancelled' then
     raise exception sqlstate 'AB001' using message = 'Task has been cancelled';
+  end if;
+
+  if v_run_state = 'failed' then
+    raise exception sqlstate 'AB002' using message = format('Run "%s" has already failed in queue "%s"', p_owner_run, p_queue_name);
   end if;
 
   -- Extend the claim if requested
@@ -894,6 +899,9 @@ begin
   end if;
 
   if v_run_state <> 'running' then
+    if v_run_state = 'failed' then
+      raise exception sqlstate 'AB002' using message = format('Run "%s" has already failed in queue "%s"', p_run_id, p_queue_name);
+    end if;
     raise exception 'Run "%" is not currently running in queue "%"', p_run_id, p_queue_name;
   end if;
 
