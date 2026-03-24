@@ -223,7 +223,7 @@ export default function Tasks() {
     fetchTasks,
   );
   const [tasksError, setTasksError] = createSignal<string | null>(null);
-  const [expandedRunId, setExpandedRunId] = createSignal<string | null>(null);
+  const [expandedRunIds, setExpandedRunIds] = createSignal<Set<string>>(new Set());
   const [autoRefreshEnabled, setAutoRefreshEnabled] = createSignal(true);
   const [taskDetails, setTaskDetails] = createSignal<
     Record<string, TaskDetail>
@@ -326,12 +326,14 @@ export default function Tasks() {
   };
 
   const handleRowClick = async (runId: string) => {
-    if (expandedRunId() === runId) {
-      setExpandedRunId(null);
-      return;
+    const current = expandedRunIds();
+    const next = new Set(current);
+    if (next.has(runId)) {
+      next.delete(runId);
+    } else {
+      next.add(runId);
     }
-
-    setExpandedRunId(runId);
+    setExpandedRunIds(next);
 
     // Fetch task details if not already loaded
     if (!taskDetails()[runId]) {
@@ -652,7 +654,7 @@ export default function Tasks() {
                               </td>
                               <td class="px-3 py-2 text-center">
                                 <span class="text-muted-foreground">
-                                  {expandedRunId() === task.runId ? "▲" : "▼"}
+                                  {expandedRunIds().has(task.runId) ? "▲" : "▼"}
                                 </span>
                               </td>
                             </tr>
@@ -675,7 +677,7 @@ export default function Tasks() {
                                 </tr>
                               )}
                             </Show>
-                            <Show when={expandedRunId() === task.runId}>
+                            <Show when={expandedRunIds().has(task.runId)}>
                               <tr>
                                 <td colspan="8" class="bg-muted/20 p-0">
                                   <div class="animate-slide-down">
