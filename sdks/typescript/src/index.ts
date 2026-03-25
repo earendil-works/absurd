@@ -36,6 +36,12 @@ export interface SpawnOptions {
   idempotencyKey?: string;
 }
 
+export interface RetryTaskOptions {
+  queue?: string;
+  maxAttempts?: number;
+  spawnNewTask?: boolean;
+}
+
 export interface ClaimedTask {
   run_id: string;
   task_id: string;
@@ -708,6 +714,48 @@ export class Absurd {
       eventName,
       JSON.stringify(payload ?? null),
     ]);
+  }
+
+  /**
+   * Retries a failed task by either extending attempts on the same task or
+   * spawning a brand-new task with the original inputs.
+   */
+  async retryTask(
+    taskID: string,
+    options: RetryTaskOptions = {},
+  ): Promise<SpawnResult> {
+    const queue = validateQueueName(options.queue ?? this.queueName);
+    const payload: JsonObject = {};
+
+    if (options.maxAttempts !== undefined) {
+      payload.max_attempts = options.maxAttempts;
+    }
+    if (options.spawnNewTask) {
+      payload.spawn_new = true;
+    }
+
+    const result = await this.con.query<{
+      task_id: string;
+      run_id: string;
+      attempt: number;
+      created: boolean;
+    }>(
+      `SELECT task_id, run_id, attempt, created
+       FROM absurd.retry_task($1, $2, $3)`,
+      [queue, taskID, JSON.stringify(payload)],
+    );
+
+    if (result.rows.length === 0) {
+      throw new Error("Failed to retry task");
+    }
+
+    const row = result.rows[0];
+    return {
+      taskID: row.task_id,
+      runID: row.run_id,
+      attempt: row.attempt,
+      created: row.created,
+    };
   }
 
   /**

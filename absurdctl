@@ -1162,6 +1162,85 @@ def cmd_cancel_task(args):
         sys.exit(1)
 
 
+def cmd_retry_task(args):
+    """Retry a failed task by extending attempts or spawning a new task."""
+    usage = "usage: %prog retry-task [options] TASK_ID"
+    parser = build_command_parser(usage)
+    parser.add_option(
+        "-q",
+        "--queue",
+        dest="queue",
+        metavar="NAME",
+        help="Queue name (default: default)",
+    )
+    parser.add_option(
+        "--max-attempts",
+        dest="max_attempts",
+        type="int",
+        metavar="N",
+        help="Set max attempts for retry (in-place or when using --spawn-new)",
+    )
+    parser.add_option(
+        "--spawn-new",
+        dest="spawn_new",
+        action="store_true",
+        default=False,
+        help="Spawn a brand new task with the original inputs",
+    )
+
+    examples = [
+        "absurdctl retry-task 019a32d3-8425-7ae2-a5af-2f17a6707666",
+        "absurdctl retry-task 019a32d3-8425-7ae2-a5af-2f17a6707666 --max-attempts 5",
+        "absurdctl retry-task -q myqueue 019a32d3-8425-7ae2-a5af-2f17a6707666 --spawn-new",
+        "absurdctl retry-task 019a32d3-8425-7ae2-a5af-2f17a6707666 --spawn-new --max-attempts 8",
+    ]
+
+    options, args = parse_args_with_help(parser, args, examples)
+
+    if len(args) != 1:
+        print("Error: Missing required argument TASK_ID", file=sys.stderr)
+        parser.print_help()
+        sys.exit(1)
+
+    task_id = args[0]
+    queue = validate_queue_name(options.queue or "default")
+    config = config_from_options(options)
+
+    retry_options = {}
+    if options.spawn_new:
+        retry_options["spawn_new"] = True
+    if options.max_attempts is not None:
+        retry_options["max_attempts"] = options.max_attempts
+
+    rows = run_psql_csv(
+        config,
+        """
+        SELECT task_id, run_id, attempt, created
+        FROM absurd.retry_task(:'queue', :'task_id', :'options_json'::jsonb);
+        """,
+        variables={
+            "queue": queue,
+            "task_id": task_id,
+            "options_json": json.dumps(retry_options),
+        },
+    )
+
+    if not rows:
+        print("Retry requested, but no result returned", file=sys.stderr)
+        sys.exit(1)
+
+    out_task_id, out_run_id, out_attempt, out_created = rows[0]
+    created = str(out_created).lower() in ("t", "true", "1")
+
+    if created:
+        print("Task respawned successfully:")
+    else:
+        print("Task retried successfully:")
+    print(f"  Task ID: {out_task_id}")
+    print(f"  Run ID: {out_run_id}")
+    print(f"  Attempt: {out_attempt}")
+
+
 def cmd_dump_task(args):
     """Dump task or run details including checkpoints."""
     usage = "usage: %prog dump-task [options]"
@@ -1631,6 +1710,7 @@ def cmd_agent_help(args):
         - list-tasks: inspect recent activity in a queue (`absurdctl list-tasks --queue=default`)
         - dump-task: pull full details for a task or run (`absurdctl dump-task --task-id=<uuid>`)
         - spawn-task: enqueue new work (`absurdctl spawn-task my-task`)
+        - retry-task: retry failed work (`absurdctl retry-task <task-id> --max-attempts 5`)
         - emit-event: emit an event to wake waiting tasks (`absurdctl emit-event order.completed -P orderId=123`)
 
         Use `absurdctl <command> --help` to see every option when you need more detail.
@@ -1655,6 +1735,7 @@ Commands:
   drop-queue      Drop an existing queue
   list-queues     List all existing queues
   spawn-task      Spawn a new task
+  retry-task      Retry a failed task
   emit-event      Emit an event to wake waiting tasks
   list-tasks      List tasks with optional filtering
   cancel-task     Cancel a running or pending task
@@ -1679,6 +1760,7 @@ Examples:
   absurdctl drop-queue myqueue --yes
   absurdctl list-queues
   absurdctl spawn-task my-task -P foo=bar -P count:=42
+  absurdctl retry-task 019a32d3-8425-7ae2-a5af-2f17a6707666 --max-attempts 5
   absurdctl emit-event order.completed -P orderId=123
   absurdctl list-tasks --queue=default --status=failed
   absurdctl cancel-task 019a32d3-8425-7ae2-a5af-2f17a6707666
@@ -1708,6 +1790,8 @@ def main():
         cmd_init(args)
     elif command == "spawn-task":
         cmd_spawn_task(args)
+    elif command == "retry-task":
+        cmd_retry_task(args)
     elif command == "emit-event":
         cmd_emit_event(args)
     elif command == "list-tasks":

@@ -148,6 +148,52 @@ describe("Retry and cancellation", () => {
     });
   });
 
+  test("retryTask defaults to one additional attempt", async () => {
+    absurd.registerTask(
+      { name: "retry-default", defaultMaxAttempts: 1 },
+      async () => {
+        throw new Error("always fails");
+      },
+    );
+
+    const spawned = await absurd.spawn("retry-default", { payload: 1 });
+    await absurd.workBatch("worker1", 60, 1);
+
+    expect((await ctx.getTask(spawned.taskID))?.state).toBe("failed");
+    expect((await ctx.getTask(spawned.taskID))?.attempts).toBe(1);
+
+    const retried = await absurd.retryTask(spawned.taskID);
+
+    expect(retried.taskID).toBe(spawned.taskID);
+    expect(retried.created).toBe(false);
+    expect(retried.attempt).toBe(2);
+
+    expect((await ctx.getTask(spawned.taskID))?.state).toBe("pending");
+    expect((await ctx.getTask(spawned.taskID))?.attempts).toBe(2);
+  });
+
+  test("retryTask can spawn a fresh task from original inputs", async () => {
+    absurd.registerTask(
+      { name: "retry-spawn-new", defaultMaxAttempts: 1 },
+      async (_params, taskCtx) => {
+        await taskCtx.step("step-1", async () => ({ ok: true }));
+        throw new Error("boom");
+      },
+    );
+
+    const spawned = await absurd.spawn("retry-spawn-new", { payload: 1 });
+    await absurd.workBatch("worker1", 60, 1);
+
+    const retried = await absurd.retryTask(spawned.taskID, { spawnNewTask: true });
+
+    expect(retried.created).toBe(true);
+    expect(retried.attempt).toBe(1);
+    expect(retried.taskID).not.toBe(spawned.taskID);
+
+    expect((await ctx.getTask(spawned.taskID))?.state).toBe("failed");
+    expect((await ctx.getTask(retried.taskID))?.state).toBe("pending");
+  });
+
   test("cancellation by max duration", async () => {
     const baseTime = new Date("2024-05-01T09:00:00Z");
     await ctx.setFakeNow(baseTime);

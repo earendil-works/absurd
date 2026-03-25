@@ -196,6 +196,19 @@ class AbsurdTestClient:
             (queue, run_id, Jsonb(reason), retry_at),
         )
 
+    def retry_task(self, queue, task_id, options=None):
+        result = self.conn.execute(
+            """
+            select task_id, run_id, attempt, created
+            from absurd.retry_task(%s, %s, %s)
+            """,
+            (queue, task_id, Jsonb(options or {})),
+        )
+        row = _fetchone_dict(result)
+        if row is None:
+            raise AssertionError("retry_task returned no rows")
+        return row
+
     def await_event(
         self,
         queue,
