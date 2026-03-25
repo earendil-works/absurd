@@ -42,6 +42,8 @@ __all__ = [
     "RetryStrategy",
     "CancellationPolicy",
     "SpawnOptions",
+    "RetryTaskOptions",
+    "RetryTaskResult",
     "ClaimedTask",
     "AbsurdHooks",
     "get_current_context",
@@ -98,6 +100,14 @@ class SpawnOptions(TypedDict, total=False):
     idempotency_key: str
 
 
+class RetryTaskOptions(TypedDict, total=False):
+    """Options for retrying a failed task"""
+
+    queue_name: str
+    max_attempts: int
+    spawn_new: bool
+
+
 class ClaimedTask(TypedDict):
     """A claimed task from the queue"""
 
@@ -119,6 +129,15 @@ class SpawnResult(TypedDict):
     task_id: str
     run_id: str
     attempt: int
+
+
+class RetryTaskResult(TypedDict):
+    """Result of retrying a task"""
+
+    task_id: str
+    run_id: str
+    attempt: int
+    created: bool
 
 
 # Type aliases for hook callbacks
@@ -1043,6 +1062,43 @@ class Absurd(_AbsurdBase):
             (queue, event_name, json.dumps(payload)),
         )
 
+    def retry_task(
+        self,
+        task_id: str,
+        *,
+        max_attempts: Optional[int] = None,
+        spawn_new: bool = False,
+        queue_name: Optional[str] = None,
+    ) -> RetryTaskResult:
+        """Retry a failed task in-place or spawn a new task from the same inputs."""
+        queue = _validate_queue_name(
+            queue_name if queue_name is not None else self._queue_name
+        )
+
+        options: RetryTaskOptions = {}
+        if max_attempts is not None:
+            options["max_attempts"] = max_attempts
+        if spawn_new:
+            options["spawn_new"] = True
+
+        cursor = self._conn.cursor(row_factory=dict_row)
+        cursor.execute(
+            """SELECT task_id, run_id, attempt, created
+               FROM absurd.retry_task(%s, %s, %s)""",
+            (queue, task_id, json.dumps(options)),
+        )
+        row = cursor.fetchone()
+
+        if not row:
+            raise Exception("Failed to retry task")
+
+        return {
+            "task_id": row["task_id"],
+            "run_id": row["run_id"],
+            "attempt": row["attempt"],
+            "created": row["created"],
+        }
+
     def cancel_task(self, task_id: str, queue_name: Optional[str] = None) -> None:
         """Cancel a task by ID on the specified or default queue"""
         queue = _validate_queue_name(
@@ -1311,6 +1367,46 @@ class AsyncAbsurd(_AbsurdBase):
             "SELECT absurd.emit_event(%s, %s, %s)",
             (queue, event_name, json.dumps(payload)),
         )
+
+    async def retry_task(
+        self,
+        task_id: str,
+        *,
+        max_attempts: Optional[int] = None,
+        spawn_new: bool = False,
+        queue_name: Optional[str] = None,
+    ) -> RetryTaskResult:
+        """Retry a failed task in-place or spawn a new task from the same inputs."""
+        await self._ensure_connected()
+        assert self._conn is not None
+
+        queue = _validate_queue_name(
+            queue_name if queue_name is not None else self._queue_name
+        )
+
+        options: RetryTaskOptions = {}
+        if max_attempts is not None:
+            options["max_attempts"] = max_attempts
+        if spawn_new:
+            options["spawn_new"] = True
+
+        cursor = self._conn.cursor(row_factory=dict_row)
+        await cursor.execute(
+            """SELECT task_id, run_id, attempt, created
+               FROM absurd.retry_task(%s, %s, %s)""",
+            (queue, task_id, json.dumps(options)),
+        )
+        row = await cursor.fetchone()
+
+        if not row:
+            raise Exception("Failed to retry task")
+
+        return {
+            "task_id": row["task_id"],
+            "run_id": row["run_id"],
+            "attempt": row["attempt"],
+            "created": row["created"],
+        }
 
     async def cancel_task(self, task_id: str, queue_name: Optional[str] = None) -> None:
         """Cancel a task by ID on the specified or default queue"""

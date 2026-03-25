@@ -4,10 +4,12 @@ import (
 	"context"
 	"database/sql"
 	"database/sql/driver"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -205,6 +207,67 @@ func expectRecentTaskNamesQuery(queueName string, limit int64) func(string, []dr
 	}
 }
 
+func expectRetryTaskQuery(queueName string, taskID string, options map[string]any) func(string, []driver.NamedValue) error {
+	return func(query string, args []driver.NamedValue) error {
+		if !strings.Contains(query, "FROM absurd.retry_task($1, $2, $3::jsonb)") {
+			return fmt.Errorf("query %q missing retry_task call", query)
+		}
+		if len(args) != 3 {
+			return fmt.Errorf("expected 3 args, got %d", len(args))
+		}
+		if args[0].Value != queueName {
+			return fmt.Errorf("queue arg = %#v, want %#v", args[0].Value, queueName)
+		}
+		if args[1].Value != taskID {
+			return fmt.Errorf("task_id arg = %#v, want %#v", args[1].Value, taskID)
+		}
+
+		payload, ok := args[2].Value.(string)
+		if !ok {
+			return fmt.Errorf("options arg has type %T, want string", args[2].Value)
+		}
+
+		var got map[string]any
+		if err := json.Unmarshal([]byte(payload), &got); err != nil {
+			return fmt.Errorf("options arg is invalid JSON %q: %w", payload, err)
+		}
+
+		expectedJSON, err := json.Marshal(options)
+		if err != nil {
+			return err
+		}
+		var expected map[string]any
+		if err := json.Unmarshal(expectedJSON, &expected); err != nil {
+			return err
+		}
+
+		if !reflect.DeepEqual(got, expected) {
+			return fmt.Errorf("options arg = %#v, want %#v", got, expected)
+		}
+
+		return nil
+	}
+}
+
+func expectTaskAttemptsQuery(queueName string, taskID string) func(string, []driver.NamedValue) error {
+	table := fmt.Sprintf(`FROM absurd.%q`, "t_"+queueName)
+	return func(query string, args []driver.NamedValue) error {
+		if !strings.Contains(query, "SELECT attempts") {
+			return fmt.Errorf("query %q missing attempts select", query)
+		}
+		if !strings.Contains(query, table) {
+			return fmt.Errorf("query %q missing %q", query, table)
+		}
+		if len(args) != 1 {
+			return fmt.Errorf("expected 1 arg, got %d", len(args))
+		}
+		if args[0].Value != taskID {
+			return fmt.Errorf("task_id arg = %#v, want %#v", args[0].Value, taskID)
+		}
+		return nil
+	}
+}
+
 func TestHandleTasksFailsFastOnQueueQueryDeadline(t *testing.T) {
 	now := time.Now().UTC()
 	db := newScriptedDB(t, []scriptedQuery{
@@ -286,5 +349,154 @@ func TestHandleTasksFailsFastOnQueueQueryDeadline(t *testing.T) {
 	}
 	if strings.Contains(body, `"items"`) {
 		t.Fatalf("expected non-JSON error response for timeout, got %q", body)
+	}
+}
+
+func TestHandleRetryTaskSuccess(t *testing.T) {
+	taskID := uuid.NewString()
+	runID := uuid.NewString()
+	queueName := "default"
+
+	db := newScriptedDB(t, []scriptedQuery{
+		{
+			match:   expectContains(`SELECT queue_name FROM absurd.queues WHERE queue_name = $1`),
+			columns: []string{"queue_name"},
+			rows:    [][]driver.Value{{queueName}},
+		},
+		{
+			match:   expectRetryTaskQuery(queueName, taskID, map[string]any{"spawn_new": true}),
+			columns: []string{"task_id", "run_id", "attempt", "created"},
+			rows:    [][]driver.Value{{taskID, runID, int64(1), true}},
+		},
+	})
+
+	srv := &Server{db: db}
+
+	body := strings.NewReader(fmt.Sprintf(`{"taskId":%q,"queueName":%q,"spawnNewTask":true}`, taskID, queueName))
+	req := httptest.NewRequest(http.MethodPost, "/api/tasks/retry", body)
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+
+	srv.handleRetryTask(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (body=%q)", resp.Code, http.StatusOK, resp.Body.String())
+	}
+
+	if !strings.Contains(resp.Body.String(), `"created":true`) {
+		t.Fatalf("expected created=true in response body, got %q", resp.Body.String())
+	}
+}
+
+func TestHandleRetryTaskRejectsWrongMethod(t *testing.T) {
+	srv := &Server{}
+	req := httptest.NewRequest(http.MethodGet, "/api/tasks/retry", nil)
+	resp := httptest.NewRecorder()
+
+	srv.handleRetryTask(resp, req)
+
+	if resp.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status = %d, want %d", resp.Code, http.StatusMethodNotAllowed)
+	}
+}
+
+func TestHandleRetryTaskInPlaceUsesBackendDefaultWhenNoOverrideProvided(t *testing.T) {
+	taskID := uuid.NewString()
+	runID := uuid.NewString()
+	queueName := "default"
+
+	db := newScriptedDB(t, []scriptedQuery{
+		{
+			match:   expectContains(`SELECT queue_name FROM absurd.queues WHERE queue_name = $1`),
+			columns: []string{"queue_name"},
+			rows:    [][]driver.Value{{queueName}},
+		},
+		{
+			match:   expectRetryTaskQuery(queueName, taskID, map[string]any{}),
+			columns: []string{"task_id", "run_id", "attempt", "created"},
+			rows:    [][]driver.Value{{taskID, runID, int64(5), false}},
+		},
+	})
+
+	srv := &Server{db: db}
+
+	body := strings.NewReader(fmt.Sprintf(`{"taskId":%q,"queueName":%q}`, taskID, queueName))
+	req := httptest.NewRequest(http.MethodPost, "/api/tasks/retry", body)
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+
+	srv.handleRetryTask(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (body=%q)", resp.Code, http.StatusOK, resp.Body.String())
+	}
+}
+
+func TestHandleRetryTaskInPlaceUsesExtraAttemptsOverride(t *testing.T) {
+	taskID := uuid.NewString()
+	runID := uuid.NewString()
+	queueName := "default"
+
+	db := newScriptedDB(t, []scriptedQuery{
+		{
+			match:   expectContains(`SELECT queue_name FROM absurd.queues WHERE queue_name = $1`),
+			columns: []string{"queue_name"},
+			rows:    [][]driver.Value{{queueName}},
+		},
+		{
+			match:   expectTaskAttemptsQuery(queueName, taskID),
+			columns: []string{"attempts"},
+			rows:    [][]driver.Value{{int64(4)}},
+		},
+		{
+			match:   expectRetryTaskQuery(queueName, taskID, map[string]any{"max_attempts": 6}),
+			columns: []string{"task_id", "run_id", "attempt", "created"},
+			rows:    [][]driver.Value{{taskID, runID, int64(5), false}},
+		},
+	})
+
+	srv := &Server{db: db}
+
+	body := strings.NewReader(fmt.Sprintf(`{"taskId":%q,"queueName":%q,"extraAttempts":2}`, taskID, queueName))
+	req := httptest.NewRequest(http.MethodPost, "/api/tasks/retry", body)
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+
+	srv.handleRetryTask(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (body=%q)", resp.Code, http.StatusOK, resp.Body.String())
+	}
+}
+
+func TestHandleRetryTaskSpawnNewUsesExplicitMaxAttemptsOverride(t *testing.T) {
+	taskID := uuid.NewString()
+	runID := uuid.NewString()
+	queueName := "default"
+
+	db := newScriptedDB(t, []scriptedQuery{
+		{
+			match:   expectContains(`SELECT queue_name FROM absurd.queues WHERE queue_name = $1`),
+			columns: []string{"queue_name"},
+			rows:    [][]driver.Value{{queueName}},
+		},
+		{
+			match:   expectRetryTaskQuery(queueName, taskID, map[string]any{"spawn_new": true, "max_attempts": 9}),
+			columns: []string{"task_id", "run_id", "attempt", "created"},
+			rows:    [][]driver.Value{{taskID, runID, int64(1), true}},
+		},
+	})
+
+	srv := &Server{db: db}
+
+	body := strings.NewReader(fmt.Sprintf(`{"taskId":%q,"queueName":%q,"spawnNewTask":true,"maxAttempts":9}`, taskID, queueName))
+	req := httptest.NewRequest(http.MethodPost, "/api/tasks/retry", body)
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+
+	srv.handleRetryTask(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (body=%q)", resp.Code, http.StatusOK, resp.Body.String())
 	}
 }

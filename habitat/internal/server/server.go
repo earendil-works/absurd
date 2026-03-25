@@ -10,8 +10,8 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"sync"
 	"strings"
+	"sync"
 	"time"
 
 	"habitat/internal/config"
@@ -118,6 +118,7 @@ func (s *Server) routes() http.Handler {
 
 	mux.Handle("/api/metrics", http.HandlerFunc(s.handleMetrics))
 	mux.Handle("/api/tasks", http.HandlerFunc(s.handleTasks))
+	mux.Handle("/api/tasks/retry", http.HandlerFunc(s.handleRetryTask))
 	mux.Handle("/api/tasks/", http.HandlerFunc(s.handleTaskDetail))
 	mux.Handle("/api/queues", http.HandlerFunc(s.handleQueues))
 	mux.Handle("/api/queues/", http.HandlerFunc(s.handleQueueResource))

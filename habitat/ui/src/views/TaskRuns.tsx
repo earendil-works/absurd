@@ -16,14 +16,24 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { TaskDetailView } from "@/components/TaskDetailView";
 import { TaskStatusBadge } from "@/components/TaskStatusBadge";
 import { IdDisplay } from "@/components/IdDisplay";
 import {
+  APIError,
   type TaskDetail,
   type TaskSummary,
   fetchTask,
   fetchTasks,
+  retryTask,
 } from "@/lib/api";
 
 export default function TaskRuns() {
@@ -32,6 +42,17 @@ export default function TaskRuns() {
 
   const [runsError, setRunsError] = createSignal<string | null>(null);
   const [detailError, setDetailError] = createSignal<string | null>(null);
+  const [retryError, setRetryError] = createSignal<string | null>(null);
+  const [retrySuccess, setRetrySuccess] = createSignal<string | null>(null);
+  const [retryInFlight, setRetryInFlight] = createSignal<
+    "inplace" | "spawn" | null
+  >(null);
+  const [retryDialogOpen, setRetryDialogOpen] = createSignal(false);
+  const [retrySpawnNewTask, setRetrySpawnNewTask] = createSignal(false);
+  const [retryMaxAttemptsInput, setRetryMaxAttemptsInput] = createSignal("");
+  const [retryDialogError, setRetryDialogError] = createSignal<string | null>(
+    null,
+  );
   const [runDetails, setRunDetails] = createSignal<Record<string, TaskDetail>>(
     {},
   );
@@ -94,6 +115,13 @@ export default function TaskRuns() {
     taskId();
     setRunDetails({});
     setDetailError(null);
+    setRetryError(null);
+    setRetrySuccess(null);
+    setRetryInFlight(null);
+    setRetryDialogOpen(false);
+    setRetrySpawnNewTask(false);
+    setRetryMaxAttemptsInput("");
+    setRetryDialogError(null);
   });
 
   createEffect(() => {
@@ -164,6 +192,46 @@ export default function TaskRuns() {
       }
       return aCreated - bCreated;
     });
+  });
+
+  const latestRun = createMemo(() => {
+    const items = runs();
+    if (!items || items.length === 0) {
+      return null;
+    }
+    return items[0];
+  });
+
+  const canRetry = createMemo(() => {
+    const latest = latestRun();
+    if (!latest) {
+      return false;
+    }
+    return latest.status.toLowerCase() === "failed";
+  });
+
+  const retryFieldLabel = createMemo(() =>
+    retrySpawnNewTask() ? "Max attempts" : "Extra attempts",
+  );
+
+  const retryDefaultValue = createMemo(() => {
+    const latest = latestRun();
+    if (!latest) {
+      return 1;
+    }
+    if (retrySpawnNewTask()) {
+      return latest.maxAttempts ?? latest.attempt;
+    }
+    return 1;
+  });
+
+  const retryFieldHelper = createMemo(() => {
+    const latest = latestRun();
+    const currentAttempt = latest?.attempt ?? 1;
+    if (retrySpawnNewTask()) {
+      return `Total max attempts for the new task. Defaults to ${retryDefaultValue()}.`;
+    }
+    return `Added to current attempts (${currentAttempt}). Defaults to 1.`;
   });
 
   const totalDurationMs = createMemo(() => {
@@ -277,6 +345,80 @@ export default function TaskRuns() {
     }
   };
 
+  const openRetryDialog = () => {
+    setRetryError(null);
+    setRetrySuccess(null);
+    setRetryDialogError(null);
+    setRetrySpawnNewTask(false);
+    setRetryMaxAttemptsInput("");
+    setRetryDialogOpen(true);
+  };
+
+  const handleRetry = async () => {
+    const latest = latestRun();
+    if (!latest) {
+      setRetryError("Task metadata is not loaded yet.");
+      return;
+    }
+    if (!canRetry()) {
+      setRetryError("Only failed tasks can be retried.");
+      return;
+    }
+
+    const rawAttempts = retryMaxAttemptsInput().trim();
+    let parsedAttempts: number | undefined;
+    if (rawAttempts !== "") {
+      if (!/^[1-9]\d*$/.test(rawAttempts)) {
+        setRetryDialogError(`${retryFieldLabel()} must be an integer >= 1.`);
+        return;
+      }
+      parsedAttempts = Number(rawAttempts);
+    }
+
+    setRetryError(null);
+    setRetrySuccess(null);
+    setRetryDialogError(null);
+    setRetryInFlight(retrySpawnNewTask() ? "spawn" : "inplace");
+
+    try {
+      const payload = {
+        taskId: latest.taskId,
+        queueName: latest.queueName,
+        spawnNewTask: retrySpawnNewTask(),
+        ...(retrySpawnNewTask()
+          ? parsedAttempts !== undefined
+            ? { maxAttempts: parsedAttempts }
+            : {}
+          : parsedAttempts !== undefined
+            ? { extraAttempts: parsedAttempts }
+            : {}),
+      };
+
+      const result = await retryTask(payload);
+
+      if (result.created) {
+        setRetrySuccess(
+          `Spawned new task ${result.taskId} (attempt ${result.attempt}).`,
+        );
+      } else {
+        setRetrySuccess(
+          `Retried task ${result.taskId} on attempt ${result.attempt}.`,
+        );
+      }
+
+      setRetryDialogOpen(false);
+      await handleRefresh();
+    } catch (error) {
+      if (error instanceof APIError) {
+        setRetryError(error.message);
+      } else {
+        setRetryError("Failed to retry task.");
+      }
+    } finally {
+      setRetryInFlight(null);
+    }
+  };
+
   const formatRelativeAge = (timestamp: string) => {
     const date = new Date(timestamp);
     if (Number.isNaN(date.getTime())) {
@@ -377,11 +519,21 @@ export default function TaskRuns() {
           >
             ← Back to runs
           </A>
+          <Show when={canRetry()}>
+            <Button
+              variant="secondary"
+              onClick={openRetryDialog}
+              class="min-w-[100px]"
+              disabled={runs.loading || retryInFlight() !== null}
+            >
+              Retry
+            </Button>
+          </Show>
           <Button
             variant="outline"
             onClick={handleRefresh}
             class="min-w-[96px]"
-            disabled={runs.loading}
+            disabled={runs.loading || retryInFlight() !== null}
           >
             {runs.loading ? "Refreshing…" : "Refresh"}
           </Button>
@@ -598,6 +750,20 @@ export default function TaskRuns() {
             </p>
           )}
         </Show>
+        <Show when={retryError()}>
+          {(message) => (
+            <p class="rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
+              {message()}
+            </p>
+          )}
+        </Show>
+        <Show when={retrySuccess()}>
+          {(message) => (
+            <p class="rounded-md border border-emerald-500/30 bg-emerald-500/10 p-3 text-sm text-emerald-700 dark:text-emerald-300">
+              {message()}
+            </p>
+          )}
+        </Show>
         <Show when={detailError()}>
           {(message) => (
             <p class="rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
@@ -606,6 +772,92 @@ export default function TaskRuns() {
           )}
         </Show>
       </section>
+
+      <Dialog
+        open={retryDialogOpen()}
+        onOpenChange={(open) => {
+          setRetryDialogOpen(open);
+          if (!open) {
+            setRetryDialogError(null);
+          }
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Retry failed task</DialogTitle>
+            <DialogDescription>
+              Choose how you want to retry this task. You can retry in place or
+              spawn a new task using the original inputs.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div class="space-y-4">
+            <label class="flex items-start gap-2 text-sm">
+              <input
+                type="checkbox"
+                class="mt-0.5"
+                checked={retrySpawnNewTask()}
+                onInput={(event) => {
+                  const checked = event.currentTarget.checked;
+                  setRetrySpawnNewTask(checked);
+                  setRetryMaxAttemptsInput("");
+                }}
+              />
+              <span>
+                <span class="font-medium">Spawn as new task</span>
+                <span class="block text-xs text-muted-foreground">
+                  Creates a brand new task with copied inputs instead of
+                  extending the existing failed task.
+                </span>
+              </span>
+            </label>
+
+            <div class="space-y-1">
+              <label class="text-sm font-medium" for="retry-max-attempts">
+                {retryFieldLabel()}
+              </label>
+              <input
+                id="retry-max-attempts"
+                type="number"
+                min="1"
+                step="1"
+                value={retryMaxAttemptsInput()}
+                onInput={(event) =>
+                  setRetryMaxAttemptsInput(event.currentTarget.value)
+                }
+                placeholder={String(retryDefaultValue())}
+                class="w-full rounded-md border bg-background px-3 py-2 text-sm"
+              />
+              <p class="text-xs text-muted-foreground">{retryFieldHelper()}</p>
+            </div>
+
+            <Show when={retryDialogError()}>
+              {(message) => (
+                <p class="rounded-md border border-destructive/30 bg-destructive/10 p-2 text-sm text-destructive">
+                  {message()}
+                </p>
+              )}
+            </Show>
+          </div>
+
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setRetryDialogOpen(false)}
+              disabled={retryInFlight() !== null}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="secondary"
+              onClick={handleRetry}
+              disabled={retryInFlight() !== null}
+            >
+              {retryInFlight() !== null ? "Retrying…" : "Retry"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </>
   );
 }

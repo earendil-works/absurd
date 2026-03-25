@@ -121,6 +121,14 @@ export interface TaskDetail extends TaskSummary {
   waits: WaitState[];
 }
 
+export interface RetryTaskResult {
+  taskId: string;
+  runId: string;
+  attempt: number;
+  created: boolean;
+  queueName: string;
+}
+
 export interface QueueSummary {
   queueName: string;
   createdAt?: string | null;
@@ -202,6 +210,27 @@ export async function fetchTask(runId: string): Promise<TaskDetail> {
   return handleResponse<TaskDetail>(
     await fetch(apiURL(`/tasks/${runId}`), {
       headers: defaultHeaders,
+    }),
+  );
+}
+
+export interface RetryTaskInput {
+  taskId: string;
+  queueName: string;
+  spawnNewTask?: boolean;
+  maxAttempts?: number;
+  extraAttempts?: number;
+}
+
+export async function retryTask(input: RetryTaskInput): Promise<RetryTaskResult> {
+  return handleResponse<RetryTaskResult>(
+    await fetch(apiURL("/tasks/retry"), {
+      method: "POST",
+      headers: {
+        ...defaultHeaders,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(input),
     }),
   );
 }

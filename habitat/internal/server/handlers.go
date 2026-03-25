@@ -894,6 +894,146 @@ func (s *Server) handleTaskDetail(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, task.AsAPI())
 }
 
+type retryTaskRequest struct {
+	TaskID        string `json:"taskId"`
+	QueueName     string `json:"queueName"`
+	SpawnNewTask  bool   `json:"spawnNewTask"`
+	MaxAttempts   *int   `json:"maxAttempts,omitempty"`
+	ExtraAttempts *int   `json:"extraAttempts,omitempty"`
+}
+
+type retryTaskResponse struct {
+	TaskID    string `json:"taskId"`
+	RunID     string `json:"runId"`
+	Attempt   int    `json:"attempt"`
+	Created   bool   `json:"created"`
+	QueueName string `json:"queueName"`
+}
+
+func (s *Server) handleRetryTask(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var request retryTaskRequest
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&request); err != nil {
+		http.Error(w, "invalid JSON body", http.StatusBadRequest)
+		return
+	}
+
+	if strings.TrimSpace(request.TaskID) == "" {
+		http.Error(w, "taskId is required", http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(request.QueueName) == "" {
+		http.Error(w, "queueName is required", http.StatusBadRequest)
+		return
+	}
+
+	parsedTaskID, err := uuid.Parse(request.TaskID)
+	if err != nil {
+		http.Error(w, "taskId must be a valid UUID", http.StatusBadRequest)
+		return
+	}
+
+	if request.MaxAttempts != nil && *request.MaxAttempts < 1 {
+		http.Error(w, "maxAttempts must be >= 1", http.StatusBadRequest)
+		return
+	}
+	if request.ExtraAttempts != nil && *request.ExtraAttempts < 1 {
+		http.Error(w, "extraAttempts must be >= 1", http.StatusBadRequest)
+		return
+	}
+
+	if request.SpawnNewTask && request.ExtraAttempts != nil {
+		http.Error(w, "extraAttempts cannot be used when spawnNewTask is true", http.StatusBadRequest)
+		return
+	}
+	if !request.SpawnNewTask && request.MaxAttempts != nil {
+		http.Error(w, "maxAttempts cannot be used when spawnNewTask is false; use extraAttempts", http.StatusBadRequest)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	if err := s.ensureQueueExists(ctx, request.QueueName); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			http.Error(w, "queue not found", http.StatusNotFound)
+			return
+		}
+		http.Error(w, "failed to validate queue", http.StatusInternalServerError)
+		return
+	}
+
+	options := map[string]any{}
+	if request.SpawnNewTask {
+		options["spawn_new"] = true
+		if request.MaxAttempts != nil {
+			options["max_attempts"] = *request.MaxAttempts
+		}
+	} else {
+		if request.ExtraAttempts != nil {
+			currentAttempts, err := s.getTaskAttempts(ctx, request.QueueName, parsedTaskID.String())
+			if err != nil {
+				if errors.Is(err, sql.ErrNoRows) {
+					http.Error(w, "task not found in queue", http.StatusNotFound)
+					return
+				}
+				http.Error(w, "failed to load current task attempts", http.StatusInternalServerError)
+				return
+			}
+
+			options["max_attempts"] = currentAttempts + *request.ExtraAttempts
+		}
+	}
+
+	optionsJSON, err := json.Marshal(options)
+	if err != nil {
+		http.Error(w, "failed to encode retry options", http.StatusInternalServerError)
+		return
+	}
+
+	var response retryTaskResponse
+	err = s.db.QueryRowContext(
+		ctx,
+		`SELECT task_id, run_id, attempt, created
+		 FROM absurd.retry_task($1, $2, $3::jsonb)`,
+		request.QueueName,
+		parsedTaskID.String(),
+		string(optionsJSON),
+	).Scan(&response.TaskID, &response.RunID, &response.Attempt, &response.Created)
+	if err != nil {
+		var pqErr *pq.Error
+		if errors.As(err, &pqErr) {
+			http.Error(w, pqErr.Message, http.StatusBadRequest)
+			return
+		}
+
+		http.Error(w, "failed to retry task", http.StatusInternalServerError)
+		return
+	}
+
+	response.QueueName = request.QueueName
+	writeJSON(w, http.StatusOK, response)
+}
+
+func (s *Server) getTaskAttempts(ctx context.Context, queueName, taskID string) (int, error) {
+	table := queueTableIdentifier("t", queueName)
+	query := fmt.Sprintf(`SELECT attempts FROM absurd.%s WHERE task_id = $1 LIMIT 1`, table)
+
+	var attempts int
+	err := s.db.QueryRowContext(ctx, query, taskID).Scan(&attempts)
+	if err != nil {
+		return 0, err
+	}
+
+	return attempts, nil
+}
+
 func (s *Server) handleQueues(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
