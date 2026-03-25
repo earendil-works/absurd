@@ -42,7 +42,6 @@ __all__ = [
     "RetryStrategy",
     "CancellationPolicy",
     "SpawnOptions",
-    "RetryTaskOptions",
     "RetryTaskResult",
     "ClaimedTask",
     "AbsurdHooks",
@@ -98,14 +97,6 @@ class SpawnOptions(TypedDict, total=False):
     queue: str
     cancellation: CancellationPolicy
     idempotency_key: str
-
-
-class RetryTaskOptions(TypedDict, total=False):
-    """Options for retrying a failed task"""
-
-    queue_name: str
-    max_attempts: int
-    spawn_new: bool
 
 
 class ClaimedTask(TypedDict):
@@ -1075,7 +1066,7 @@ class Absurd(_AbsurdBase):
             queue_name if queue_name is not None else self._queue_name
         )
 
-        options: RetryTaskOptions = {}
+        options: Dict[str, Any] = {}
         if max_attempts is not None:
             options["max_attempts"] = max_attempts
         if spawn_new:
@@ -1384,7 +1375,7 @@ class AsyncAbsurd(_AbsurdBase):
             queue_name if queue_name is not None else self._queue_name
         )
 
-        options: RetryTaskOptions = {}
+        options: Dict[str, Any] = {}
         if max_attempts is not None:
             options["max_attempts"] = max_attempts
         if spawn_new:
