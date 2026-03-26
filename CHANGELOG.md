@@ -4,6 +4,15 @@ This contains the changes between releases.
 
 # Unreleased
 
+* Added `absurd.retry_task()` stored procedure for retrying permanently failed tasks, either in-place or by spawning a new task from original inputs.  #75
+* Added version-aware migration support to `absurdctl`.
+* Added date range selector to tasks and events pages in Habitat.
+* Added auto-refresh toggle to the events page in Habitat.
+* Standardized timestamp rendering and tooltips across Habitat.
+* Fixed reactive loop in Habitat causing excessive polling (~1 req/s) on the tasks page.
+* Fixed Habitat to use stable asset filenames without content hashes for consistent load-balanced deployments.
+* Fixed timestamp display alignment to UTC and GMT offsets in Habitat.
+
 # 0.1.1
 
 * Added `AB002` error code for already-failed runs in `set_task_checkpoint_state` and `extend_claim`, letting SDKs gracefully handle stale execution.
