@@ -4,8 +4,12 @@ This contains the changes between releases.
 
 # Unreleased
 
+# 0.2.0
+
 * Added `absurd.retry_task()` stored procedure for retrying permanently failed tasks, either in-place or by spawning a new task from original inputs.  #75
 * Added version-aware migration support to `absurdctl`.
+* Set up PyPI publishing for the Python SDK as `absurd-sdk`.
+* Added documentation site.
 * Added date range selector to tasks and events pages in Habitat.
 * Added auto-refresh toggle to the events page in Habitat.
 * Standardized timestamp rendering and tooltips across Habitat.
