@@ -8,29 +8,15 @@ directly to Postgres.
   <img src="../images/habitat-screenshot.png" width="550" alt="Screenshot of the Habitat dashboard">
 </div>
 
-## Building
+## Installation
 
-Habitat requires Go and Node.js to build:
-
-```bash
-cd habitat
-make build
-```
-
-This builds the SolidJS frontend, embeds it into the Go binary, and outputs
-`./bin/habitat`.
-
-For development with hot reload:
-
-```bash
-cd habitat
-make dev
-```
+Download the latest binary from
+[GitHub Releases](https://github.com/earendil-works/absurd/releases/latest).
 
 ## Running
 
 ```bash
-./bin/habitat run -db-name mydb
+habitat run -db-name mydb
 ```
 
 The dashboard is served at `http://localhost:7890` by default.
@@ -63,18 +49,18 @@ Habitat accepts configuration via command-line flags or environment variables
 
 ```bash
 # Connect with a full URL
-./bin/habitat run -db-url "postgresql://user:pass@localhost:5432/mydb"
+habitat run -db-url "postgresql://user:pass@localhost:5432/mydb"
 
 # Connect with individual flags
-./bin/habitat run -db-host localhost -db-port 5432 -db-name mydb -db-user admin
+habitat run -db-host localhost -db-port 5432 -db-name mydb -db-user admin
 
 # Environment variables
 export HABITAT_DB_URL="postgresql://user:pass@localhost:5432/mydb"
 export HABITAT_LISTEN=":8080"
-./bin/habitat run
+habitat run
 
 # Serve under a URL prefix (for reverse proxies)
-./bin/habitat run -db-name mydb -base-path /habitat
+habitat run -db-name mydb -base-path /habitat
 ```
 
 ## Reverse Proxy

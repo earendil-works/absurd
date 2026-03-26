@@ -8,24 +8,16 @@ It connects straight away to postgres.
   <img src="screenshot.png" width="550" alt="Screenshot of habitat dashboard">
 </div>
 
-## Building
+## Installation
 
-To build the complete application with the UI bundle embedded:
-
-```bash
-make build
-```
-
-This will:
-1. Install UI dependencies and build the frontend assets
-2. Compile the Go binary with embedded assets to `./bin/habitat`
+Download the latest binary from [GitHub Releases](https://github.com/earendil-works/absurd/releases/latest).
 
 ## Running
 
 Start the habitat server:
 
 ```bash
-./bin/habitat run -db-name your-database-name
+habitat run -db-name your-database-name
 ```
 
 The dashboard will be available at `http://localhost:7890` by default.
