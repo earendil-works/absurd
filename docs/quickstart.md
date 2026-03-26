@@ -104,6 +104,14 @@ replayed from the checkpoint and only the remaining work executes.
 
 ## Write a Task (Python)
 
+Install the SDK:
+
+```bash
+pip install absurd-sdk
+# or with uv
+uv add absurd-sdk
+```
+
 You can do the same thing with the Python SDK:
 
 ```python

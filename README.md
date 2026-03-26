@@ -115,9 +115,15 @@ absurdctl migrate -d database-name
 absurdctl create-queue -d database-name default
 ```
 
-Right now, there is only a TypeScript SDK, which isn't published yet, so you
-need to use the SDK from the repository.  You can run `npm run build`
-to get a JS-only build or use the TypeScript code right away.
+Install the SDK for your language of choice:
+
+```bash
+# TypeScript / JavaScript
+npm install absurd-sdk
+
+# Python
+pip install absurd-sdk
+```
 
 <div style="text-align: center" align="center">
   <img src="habitat/screenshot.png" width="550" alt="Screenshot of habitat">

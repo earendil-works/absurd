@@ -6,11 +6,12 @@ The Python SDK provides both **synchronous** (`Absurd`) and **asynchronous**
 
 ## Installation
 
-The SDK is currently used from source:
+Install the SDK from [PyPI](https://pypi.org/project/absurd-sdk/):
 
 ```bash
-cd sdks/python
-uv sync   # or: pip install -e .
+pip install absurd-sdk
+# or with uv
+uv add absurd-sdk
 ```
 
 ## Creating a Client
