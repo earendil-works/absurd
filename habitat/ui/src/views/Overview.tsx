@@ -6,6 +6,7 @@ import {
   Show,
   createEffect,
   onCleanup,
+  onMount,
 } from "solid-js";
 import { A } from "@solidjs/router";
 import {
@@ -16,6 +17,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { readStoredAutoRefreshEnabled } from "@/components/AutoRefreshToggle";
 import { type QueueMetrics, fetchMetrics } from "@/lib/api";
 
 const REFRESH_INTERVAL_MS = 15_000;
@@ -24,6 +26,7 @@ export default function Overview() {
   const [metrics, { refetch: refetchMetrics }] =
     createResource<QueueMetrics[]>(fetchMetrics);
   const [metricsError, setMetricsError] = createSignal<string | null>(null);
+  const [autoRefreshEnabled, setAutoRefreshEnabled] = createSignal(false);
 
   const queues = createMemo(() => metrics() ?? []);
 
@@ -56,7 +59,15 @@ export default function Overview() {
     setMetricsError(error.message);
   });
 
+  onMount(() => {
+    setAutoRefreshEnabled(readStoredAutoRefreshEnabled());
+  });
+
   createEffect(() => {
+    if (!autoRefreshEnabled()) {
+      return;
+    }
+
     const timer = setInterval(() => {
       refetchMetrics();
     }, REFRESH_INTERVAL_MS);

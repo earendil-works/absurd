@@ -224,7 +224,7 @@ export default function Tasks() {
   );
   const [tasksError, setTasksError] = createSignal<string | null>(null);
   const [expandedRunIds, setExpandedRunIds] = createSignal<Set<string>>(new Set());
-  const [autoRefreshEnabled, setAutoRefreshEnabled] = createSignal(true);
+  const [autoRefreshEnabled, setAutoRefreshEnabled] = createSignal(false);
   const [taskDetails, setTaskDetails] = createSignal<
     Record<string, TaskDetail>
   >({});

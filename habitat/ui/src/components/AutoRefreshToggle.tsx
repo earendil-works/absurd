@@ -1,21 +1,19 @@
 import { createSignal, onMount } from "solid-js";
 
 const STORAGE_KEY = "autoRefreshEnabled";
+const DEFAULT_AUTO_REFRESH_ENABLED = false;
 
 interface AutoRefreshToggleProps {
   onToggle?: (enabled: boolean) => void;
 }
 
 export function AutoRefreshToggle(props: AutoRefreshToggleProps) {
-  const [enabled, setEnabled] = createSignal(true);
+  const [enabled, setEnabled] = createSignal(DEFAULT_AUTO_REFRESH_ENABLED);
 
   onMount(() => {
-    const stored = localStorage.getItem(STORAGE_KEY);
-    if (stored !== null) {
-      const value = stored === "true";
-      setEnabled(value);
-      props.onToggle?.(value);
-    }
+    const value = readStoredAutoRefreshEnabled();
+    setEnabled(value);
+    props.onToggle?.(value);
   });
 
   const handleToggle = () => {
@@ -48,14 +46,17 @@ export function AutoRefreshToggle(props: AutoRefreshToggleProps) {
 }
 
 export function useAutoRefresh(): boolean {
-  const [enabled, setEnabled] = createSignal(true);
+  return readStoredAutoRefreshEnabled();
+}
 
-  onMount(() => {
+export function readStoredAutoRefreshEnabled(): boolean {
+  try {
     const stored = localStorage.getItem(STORAGE_KEY);
-    if (stored !== null) {
-      setEnabled(stored === "true");
+    if (stored === null) {
+      return DEFAULT_AUTO_REFRESH_ENABLED;
     }
-  });
-
-  return enabled();
+    return stored === "true";
+  } catch {
+    return DEFAULT_AUTO_REFRESH_ENABLED;
+  }
 }
