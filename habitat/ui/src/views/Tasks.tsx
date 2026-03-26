@@ -232,16 +232,30 @@ export default function Tasks() {
     }
   });
 
-  const filters = createMemo(() => ({
-    search: searchTerm(),
-    queue: queueFilter(),
-    status: statusFilter(),
-    taskName: taskNameFilter(),
-    after: timeRange().after ?? null,
-    before: timeRange().before ?? null,
-    page: page(),
-    perPage: PAGE_SIZE,
-  }));
+  const filters = createMemo(
+    () => ({
+      search: searchTerm(),
+      queue: queueFilter(),
+      status: statusFilter(),
+      taskName: taskNameFilter(),
+      after: timeRange().after ?? null,
+      before: timeRange().before ?? null,
+      page: page(),
+      perPage: PAGE_SIZE,
+    }),
+    undefined,
+    {
+      equals: (prev, next) =>
+        prev.search === next.search &&
+        prev.queue === next.queue &&
+        prev.status === next.status &&
+        prev.taskName === next.taskName &&
+        prev.after === next.after &&
+        prev.before === next.before &&
+        prev.page === next.page &&
+        prev.perPage === next.perPage,
+    },
+  );
 
   const [taskList, { refetch: refetchTasks }] = createResource(
     filters,

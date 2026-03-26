@@ -1,4 +1,4 @@
-import { createSignal, createEffect, onMount, onCleanup } from "solid-js";
+import { createSignal, createEffect, createMemo, onMount, onCleanup, untrack } from "solid-js";
 import { Popover } from "@kobalte/core/popover";
 import { cn } from "@/lib/cn";
 
@@ -159,7 +159,7 @@ export function DateRangeSelector(props: DateRangeSelectorProps) {
   const [relativeTick, setRelativeTick] = createSignal(0);
 
   /* --- Compute API range --- */
-  const computeRange = (): TimeRange => {
+  const range = createMemo((): TimeRange => {
     const k = kind();
     if (k === "all") return {};
     if (k === "relative") {
@@ -179,15 +179,15 @@ export function DateRangeSelector(props: DateRangeSelectorProps) {
       };
     }
     if (k === "absolute") {
-      const range: TimeRange = {};
+      const rv: TimeRange = {};
       const s = absStart();
       const e = absEnd();
-      if (s) { const d = new Date(s); if (!isNaN(d.getTime())) range.after = d.toISOString(); }
-      if (e) { const d = new Date(e); if (!isNaN(d.getTime())) range.before = d.toISOString(); }
-      return range;
+      if (s) { const d = new Date(s); if (!isNaN(d.getTime())) rv.after = d.toISOString(); }
+      if (e) { const d = new Date(e); if (!isNaN(d.getTime())) rv.before = d.toISOString(); }
+      return rv;
     }
     return {};
-  };
+  });
 
   /* --- Compute URL params --- */
   const computeParams = (): TimeSelectionParams => {
@@ -205,8 +205,8 @@ export function DateRangeSelector(props: DateRangeSelectorProps) {
       };
     }
     if (k === "absolute") {
-      const range = computeRange();
-      return { time: "range", after: range.after, before: range.before };
+      const r = range();
+      return { time: "range", after: r.after, before: r.before };
     }
     return {};
   };
@@ -232,13 +232,14 @@ export function DateRangeSelector(props: DateRangeSelectorProps) {
   };
 
   createEffect(() => {
-    void relativeTick();
-    props.onChange(computeRange());
+    const r = range();
+    untrack(() => props.onChange(r));
   });
 
   createEffect(() => {
     void selectionVersion(); // track
-    props.onParamsChange(computeParams());
+    const params = computeParams();
+    untrack(() => props.onParamsChange(params));
   });
 
   /* --- Actions --- */
