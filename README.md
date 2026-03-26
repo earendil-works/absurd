@@ -72,7 +72,7 @@ might want to look at if you think you need more:
 Currently SDKs exist for the following languages:
 
 * [TypeScript](sdks/typescript) (and JavaScript)
-* [Python](sdks/python) (`pip install absurd-sdk`)
+* [Python](sdks/python)
 
 ## Push vs Pull
 
