@@ -8,7 +8,7 @@ create or replace function absurd.get_schema_version ()
   returns text
   language sql
 as $$
-  select 'main'::text;
+  select '0.2.0'::text;
 $$;
 
 create or replace function absurd.retry_task (
