@@ -597,26 +597,21 @@ def discover_remote_migrations(target_ref):
     return migrations
 
 
-def discover_migrations(script_dir, target_ref, include_remote=True):
-    discovered = {}
-    priority = {"github": 0, "bundled": 1, "local": 2}
-
-    sources = [
-        discover_bundled_migrations(),
-        discover_local_migrations(script_dir),
-    ]
+def discover_migrations(script_dir, target_ref, include_remote=False):
+    # Keep source selection simple: use local/bundled assets first and only
+    # switch to remote discovery when explicitly requested.
     if include_remote:
-        sources.insert(0, discover_remote_migrations(target_ref))
+        return discover_remote_migrations(target_ref)
 
-    for source in sources:
-        for key, migration in source.items():
-            existing = discovered.get(key)
-            if existing is None or priority[migration["source"]] > priority[
-                existing["source"]
-            ]:
-                discovered[key] = migration
+    local = discover_local_migrations(script_dir)
+    if local:
+        return local
 
-    return discovered
+    bundled = discover_bundled_migrations()
+    if bundled:
+        return bundled
+
+    return {}
 
 
 def resolve_migration_path(current_version, target_version, migrations):
@@ -1034,6 +1029,7 @@ def cmd_migrate(args):
     config = config_from_options(options)
     script_dir = os.path.dirname(os.path.abspath(__file__))
     target_version = options.to_version or ABSURD_SCHEMA_TARGET_VERSION
+
     from_version_supplied = options.from_version is not None
     current_version = options.from_version or get_recorded_schema_version(config)
 
@@ -1056,15 +1052,11 @@ def cmd_migrate(args):
         # Local/bundled migrations might not be complete (for example when
         # running a standalone absurdctl without migration files). Fall back to
         # GitHub to discover additional migrations.
-        try:
-            migrations = discover_migrations(
-                script_dir,
-                target_version,
-                include_remote=True,
-            )
-        except RemoteMigrationDiscoveryError as e:
-            print(f"Error discovering remote migrations: {e}", file=sys.stderr)
-            sys.exit(1)
+        migrations = discover_migrations(
+            script_dir,
+            target_version,
+            include_remote=True,
+        )
         path = resolve_migration_path(current_version, target_version, migrations)
 
     if path is None:

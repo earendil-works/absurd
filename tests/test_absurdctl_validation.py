@@ -391,6 +391,54 @@ def test_discover_remote_migrations_reports_fetch_failures(monkeypatch):
         discover_remote_migrations("main")
 
 
+def test_migrate_falls_back_to_remote_when_local_migrations_missing(monkeypatch):
+    applied = []
+    discovery_modes = []
+
+    monkeypatch.setitem(
+        cmd_migrate.__globals__,
+        "get_recorded_schema_version",
+        lambda config: "main",
+    )
+
+    def fake_discover_migrations(script_dir, target_ref, include_remote=False):
+        discovery_modes.append(include_remote)
+        if include_remote:
+            return {
+                ("0.1.0", "main"): {
+                    "name": "0.1.0-main.sql",
+                    "source": "github",
+                    "sql": """
+                        create or replace function absurd.get_schema_version ()
+                          returns text
+                          language sql
+                        as $$
+                          select 'main'::text;
+                        $$;
+                    """,
+                }
+            }
+        return {}
+
+    monkeypatch.setitem(
+        cmd_migrate.__globals__,
+        "discover_migrations",
+        fake_discover_migrations,
+    )
+
+    def fake_run_psql(config, query=None, **kwargs):
+        if kwargs.get("input_data"):
+            applied.append(kwargs["input_data"])
+        return ""
+
+    monkeypatch.setitem(cmd_migrate.__globals__, "run_psql", fake_run_psql)
+
+    cmd_migrate(["--from", "0.1.0", "--to", "main"])
+
+    assert discovery_modes == [False, True]
+    assert len(applied) == 1
+
+
 def test_migrate_surfaces_remote_discovery_failure(monkeypatch):
     monkeypatch.setitem(
         cmd_migrate.__globals__,
@@ -409,7 +457,7 @@ def test_migrate_surfaces_remote_discovery_failure(monkeypatch):
         fake_discover_migrations,
     )
 
-    with pytest.raises(SystemExit):
+    with pytest.raises(RemoteMigrationDiscoveryError):
         cmd_migrate([])
 
 
