@@ -19,7 +19,9 @@ and records every step and decision.
 ## Installation
 
 ```bash
-uv add absurd_sdk
+pip install absurd-sdk
+# or with uv
+uv add absurd-sdk
 ```
 
 ## Synchronous API

@@ -1,5 +1,5 @@
 [project]
-name = "absurd_sdk"
+name = "absurd-sdk"
 version = "0.0.1"
 description = "Python SDK for Absurd - PostgreSQL-based durable task execution"
 readme = "README.md"
@@ -7,7 +7,7 @@ requires-python = ">=3.9"
 license = "Apache-2.0"
 keywords = ["absurd", "postgresql", "queue", "task", "durable", "workflow"]
 authors = [
-    { name = "Absurd Contributors" }
+    { name = "Armin Ronacher", email = "armin.ronacher@active-4.com" }
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -17,6 +17,8 @@ classifiers = [
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Typing :: Typed",
 ]
 dependencies = [
@@ -31,8 +33,10 @@ dev = [
 
 [project.urls]
 Homepage = "https://github.com/earendil-works/absurd"
+Documentation = "https://github.com/earendil-works/absurd/tree/main/sdks/python"
 Repository = "https://github.com/earendil-works/absurd"
 Issues = "https://github.com/earendil-works/absurd/issues"
+Changelog = "https://github.com/earendil-works/absurd/blob/main/CHANGELOG.md"
 
 [build-system]
 requires = ["uv_build>=0.9.6,<0.11.0"]
