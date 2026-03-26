@@ -27,6 +27,7 @@ import {
 import { TaskDetailView } from "@/components/TaskDetailView";
 import { TaskStatusBadge } from "@/components/TaskStatusBadge";
 import { IdDisplay } from "@/components/IdDisplay";
+import { RelativeTimestamp } from "@/components/Timestamp";
 import {
   APIError,
   type TaskDetail,
@@ -332,6 +333,23 @@ export default function TaskRuns() {
     };
   });
 
+  const latestUpdatedAt = createMemo(() => {
+    const items = orderedRuns();
+    if (items.length === 0) {
+      return null;
+    }
+
+    let latest = Number.NEGATIVE_INFINITY;
+    for (const run of items) {
+      const updated = Date.parse(run.updatedAt);
+      if (!Number.isNaN(updated) && updated > latest) {
+        latest = updated;
+      }
+    }
+
+    return Number.isFinite(latest) ? new Date(latest).toISOString() : null;
+  });
+
   const handleRefresh = async () => {
     setDetailError(null);
     setRunsError(null);
@@ -416,40 +434,6 @@ export default function TaskRuns() {
       }
     } finally {
       setRetryInFlight(null);
-    }
-  };
-
-  const formatRelativeAge = (timestamp: string) => {
-    const date = new Date(timestamp);
-    if (Number.isNaN(date.getTime())) {
-      return "—";
-    }
-
-    const now = new Date();
-    const diffMs = now.getTime() - date.getTime();
-    const diffSec = Math.floor(diffMs / 1000);
-
-    if (diffSec < 60) return `${diffSec}s`;
-    const diffMin = Math.floor(diffSec / 60);
-    if (diffMin < 60) return `${diffMin}m`;
-    const diffHour = Math.floor(diffMin / 60);
-    if (diffHour < 24) return `${diffHour}h`;
-    const diffDay = Math.floor(diffHour / 24);
-    return `${diffDay}d`;
-  };
-
-  const formatAbsolute = (timestamp: string) => {
-    const date = new Date(timestamp);
-    if (Number.isNaN(date.getTime())) {
-      return "—";
-    }
-    try {
-      return new Intl.DateTimeFormat(undefined, {
-        dateStyle: "medium",
-        timeStyle: "medium",
-      }).format(date);
-    } catch {
-      return date.toISOString();
     }
   };
 
@@ -611,24 +595,11 @@ export default function TaskRuns() {
               </div>
               <div class="flex items-center gap-1">
                 <span class="text-muted-foreground">Updated</span>
-                <span class="font-medium text-foreground">
-                  {(() => {
-                    const items = orderedRuns();
-                    if (items.length === 0) {
-                      return "—";
-                    }
-                    const latest = items.reduce((acc, run) => {
-                      const updated = Date.parse(run.updatedAt);
-                      return Number.isNaN(updated)
-                        ? acc
-                        : Math.max(acc, updated);
-                    }, Number.NEGATIVE_INFINITY);
-                    if (!Number.isFinite(latest)) {
-                      return "—";
-                    }
-                    return `${formatRelativeAge(new Date(latest).toISOString())} ago`;
-                  })()}
-                </span>
+                <RelativeTimestamp
+                  class="font-medium text-foreground"
+                  value={latestUpdatedAt()}
+                  variant="long"
+                />
               </div>
             </CardContent>
           </Show>
@@ -693,23 +664,21 @@ export default function TaskRuns() {
                             <span class="text-muted-foreground opacity-80">
                               Created:
                             </span>
-                            <span
+                            <RelativeTimestamp
                               class="font-medium text-foreground"
-                              title={formatAbsolute(run.createdAt)}
-                            >
-                              {formatRelativeAge(run.createdAt)} ago
-                            </span>
+                              value={run.createdAt}
+                              variant="long"
+                            />
                           </span>
                           <span class="inline-flex items-center gap-1">
                             <span class="text-muted-foreground opacity-80">
                               Updated:
                             </span>
-                            <span
+                            <RelativeTimestamp
                               class="font-medium text-foreground"
-                              title={formatAbsolute(run.updatedAt)}
-                            >
-                              {formatRelativeAge(run.updatedAt)} ago
-                            </span>
+                              value={run.updatedAt}
+                              variant="long"
+                            />
                           </span>
                           <Show when={run.completedAt}>
                             {(completedAt) => (
@@ -717,12 +686,11 @@ export default function TaskRuns() {
                                 <span class="text-muted-foreground opacity-80">
                                   Completed:
                                 </span>
-                                <span
+                                <RelativeTimestamp
                                   class="font-medium text-foreground"
-                                  title={formatAbsolute(completedAt())}
-                                >
-                                  {formatRelativeAge(completedAt())} ago
-                                </span>
+                                  value={completedAt()}
+                                  variant="long"
+                                />
                               </span>
                             )}
                           </Show>

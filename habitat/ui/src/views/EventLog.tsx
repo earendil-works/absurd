@@ -34,6 +34,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { JSONViewer } from "@/components/JSONViewer";
+import { AbsoluteUtcTimestamp } from "@/components/Timestamp";
 
 export default function EventLog() {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -299,12 +300,25 @@ export default function EventLog() {
                       <div class="flex flex-wrap items-center justify-between gap-2">
                         <span class="font-medium">{event.eventName}</span>
                         <span class="text-xs text-muted-foreground">
-                          {formatEventTiming(event.emittedAt, event.createdAt)}{" "}
+                          <Show
+                            when={event.emittedAt}
+                            fallback={
+                              <>
+                                Created <AbsoluteUtcTimestamp value={event.createdAt} />
+                              </>
+                            }
+                          >
+                            {(emittedAt) => (
+                              <>
+                                Emitted <AbsoluteUtcTimestamp value={emittedAt()} />
+                              </>
+                            )}
+                          </Show>{" "}
                           • Queue {event.queueName}
                         </span>
                       </div>
                       <div class="mt-1 text-xs text-muted-foreground">
-                        Created {formatTimestamp(event.createdAt)}
+                        Created <AbsoluteUtcTimestamp value={event.createdAt} />
                       </div>
                       <Show when={event.payload}>
                         <div class="mt-2">
@@ -330,26 +344,3 @@ export default function EventLog() {
   );
 }
 
-function formatTimestamp(value?: string | null): string {
-  if (!value) {
-    return "—";
-  }
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return "—";
-  }
-  return new Intl.DateTimeFormat(undefined, {
-    dateStyle: "medium",
-    timeStyle: "short",
-  }).format(date);
-}
-
-function formatEventTiming(
-  emittedAt?: string | null,
-  createdAt?: string,
-): string {
-  if (emittedAt) {
-    return `Emitted ${formatTimestamp(emittedAt)}`;
-  }
-  return `Created ${formatTimestamp(createdAt)}`;
-}

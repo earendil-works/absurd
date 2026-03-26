@@ -10,8 +10,8 @@ export interface QueueMetrics {
   queueName: string;
   queueLength: number;
   queueVisibleLength: number;
-  newestMsgAgeSec?: number | null;
-  oldestMsgAgeSec?: number | null;
+  newestMsgAt?: string | null;
+  oldestMsgAt?: string | null;
   totalMessages: number;
   scrapeTime: string;
 }

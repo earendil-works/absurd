@@ -213,15 +213,15 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 				COUNT(*) as total_tasks,
 				COUNT(*) FILTER (WHERE t.state IN ('pending', 'sleeping')) as queued_tasks,
 				COUNT(*) FILTER (WHERE t.state = 'pending' AND r.available_at <= NOW()) as visible_tasks,
-				EXTRACT(EPOCH FROM (NOW() - MIN(CASE WHEN t.state IN ('pending', 'sleeping') THEN r.created_at END))) as oldest_age,
-				EXTRACT(EPOCH FROM (NOW() - MAX(CASE WHEN t.state IN ('pending', 'sleeping') THEN r.created_at END))) as newest_age
+				MIN(CASE WHEN t.state IN ('pending', 'sleeping') THEN r.created_at END) as oldest_at,
+				MAX(CASE WHEN t.state IN ('pending', 'sleeping') THEN r.created_at END) as newest_at
 			FROM absurd.%s t
 			LEFT JOIN absurd.%s r ON r.task_id = t.task_id AND r.run_id = t.last_attempt_run
 		`, ttable, rtable)
 
 		var totalTasks, queuedTasks, visibleTasks int64
-		var oldestAge, newestAge sql.NullInt64
-		err := s.db.QueryRowContext(ctx, query).Scan(&totalTasks, &queuedTasks, &visibleTasks, &oldestAge, &newestAge)
+		var oldestAt, newestAt sql.NullTime
+		err := s.db.QueryRowContext(ctx, query).Scan(&totalTasks, &queuedTasks, &visibleTasks, &oldestAt, &newestAt)
 		if err != nil {
 			log.Printf("handleMetrics: failed to query metrics for queue %s: %v", queueName, err)
 			continue
@@ -231,8 +231,8 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 			QueueName:          queueName,
 			QueueLength:        queuedTasks,
 			QueueVisibleLength: visibleTasks,
-			NewestMsgAgeSec:    nullableInt64(newestAge),
-			OldestMsgAgeSec:    nullableInt64(oldestAge),
+			NewestMsgAt:        nullableTime(newestAt),
+			OldestMsgAt:        nullableTime(oldestAt),
 			TotalMessages:      totalTasks,
 			ScrapeTime:         now,
 		})
@@ -251,8 +251,8 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 type queueMetricsRecord struct {
 	QueueName          string
 	QueueLength        int64
-	NewestMsgAgeSec    sql.NullInt64
-	OldestMsgAgeSec    sql.NullInt64
+	NewestMsgAt        sql.NullTime
+	OldestMsgAt        sql.NullTime
 	TotalMessages      int64
 	ScrapeTime         time.Time
 	QueueVisibleLength int64
@@ -260,33 +260,25 @@ type queueMetricsRecord struct {
 
 // QueueMetrics is the API representation of queue metrics.
 type QueueMetrics struct {
-	QueueName          string    `json:"queueName"`
-	QueueLength        int64     `json:"queueLength"`
-	NewestMsgAgeSec    *int64    `json:"newestMsgAgeSec,omitempty"`
-	OldestMsgAgeSec    *int64    `json:"oldestMsgAgeSec,omitempty"`
-	TotalMessages      int64     `json:"totalMessages"`
-	ScrapeTime         time.Time `json:"scrapeTime"`
-	QueueVisibleLength int64     `json:"queueVisibleLength"`
+	QueueName          string     `json:"queueName"`
+	QueueLength        int64      `json:"queueLength"`
+	NewestMsgAt        *time.Time `json:"newestMsgAt,omitempty"`
+	OldestMsgAt        *time.Time `json:"oldestMsgAt,omitempty"`
+	TotalMessages      int64      `json:"totalMessages"`
+	ScrapeTime         time.Time  `json:"scrapeTime"`
+	QueueVisibleLength int64      `json:"queueVisibleLength"`
 }
 
 func (r queueMetricsRecord) AsAPI() QueueMetrics {
 	return QueueMetrics{
 		QueueName:          r.QueueName,
 		QueueLength:        r.QueueLength,
-		NewestMsgAgeSec:    nullableInt64(r.NewestMsgAgeSec),
-		OldestMsgAgeSec:    nullableInt64(r.OldestMsgAgeSec),
+		NewestMsgAt:        nullableTime(r.NewestMsgAt),
+		OldestMsgAt:        nullableTime(r.OldestMsgAt),
 		TotalMessages:      r.TotalMessages,
 		ScrapeTime:         r.ScrapeTime,
 		QueueVisibleLength: r.QueueVisibleLength,
 	}
-}
-
-func nullableInt64(v sql.NullInt64) *int64 {
-	if !v.Valid {
-		return nil
-	}
-	value := v.Int64
-	return &value
 }
 
 func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {

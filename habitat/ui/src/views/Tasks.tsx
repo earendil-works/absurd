@@ -26,6 +26,7 @@ import {
 import { TaskStatusBadge } from "@/components/TaskStatusBadge";
 import { IdDisplay } from "@/components/IdDisplay";
 import { AutoRefreshToggle } from "@/components/AutoRefreshToggle";
+import { RelativeTimestamp } from "@/components/Timestamp";
 import { TaskDetailView } from "@/components/TaskDetailView";
 import { Highlight } from "@/components/Highlight";
 import {
@@ -387,21 +388,6 @@ export default function Tasks() {
     if (page() !== 1) setPage(1);
   };
 
-  const formatAge = (timestamp: string): string => {
-    const date = new Date(timestamp);
-    const now = new Date();
-    const diffMs = now.getTime() - date.getTime();
-    const diffSec = Math.floor(diffMs / 1000);
-
-    if (diffSec < 60) return `${diffSec}s`;
-    const diffMin = Math.floor(diffSec / 60);
-    if (diffMin < 60) return `${diffMin}m`;
-    const diffHour = Math.floor(diffMin / 60);
-    if (diffHour < 24) return `${diffHour}h`;
-    const diffDay = Math.floor(diffHour / 24);
-    return `${diffDay}d`;
-  };
-
   return (
     <>
       <header class="flex flex-col gap-4 border-b bg-background px-6 py-6 sm:flex-row sm:items-center sm:justify-between">
@@ -730,7 +716,7 @@ export default function Tasks() {
                                 <IdDisplay value={task.runId} />
                               </td>
                               <td class="px-3 py-2">
-                                {formatAge(task.createdAt)}
+                                <RelativeTimestamp value={task.createdAt} />
                               </td>
                               <td class="px-3 py-2 text-center">
                                 <span class="text-muted-foreground">

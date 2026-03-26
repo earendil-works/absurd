@@ -10,6 +10,10 @@ import {
 import { type QueueSummary, fetchQueues } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import {
+  AbsoluteUtcTimestamp,
+  RelativeTimestamp,
+} from "@/components/Timestamp";
+import {
   Card,
   CardContent,
   CardDescription,
@@ -94,12 +98,14 @@ export default function Queues() {
                         <CardTitle class="text-base">
                           {queue.queueName}
                         </CardTitle>
-                        <span class="text-xs text-muted-foreground">
-                          {formatRelativeTime(queue.createdAt)}
-                        </span>
+                        <RelativeTimestamp
+                          class="text-xs text-muted-foreground"
+                          value={queue.createdAt}
+                          variant="long"
+                        />
                       </div>
                       <CardDescription class="text-xs">
-                        Created {formatTimestamp(queue.createdAt)}
+                        Created <AbsoluteUtcTimestamp value={queue.createdAt} />
                       </CardDescription>
                     </CardHeader>
                     <CardContent class="space-y-3 pb-4">
@@ -166,44 +172,3 @@ function StatBlock(props: { label: string; value: number }) {
   );
 }
 
-function formatTimestamp(value?: string | null): string {
-  if (!value) {
-    return "—";
-  }
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return "—";
-  }
-  return new Intl.DateTimeFormat(undefined, {
-    dateStyle: "medium",
-    timeStyle: "short",
-  }).format(date);
-}
-
-function formatRelativeTime(value?: string | null): string {
-  if (!value) {
-    return "—";
-  }
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return "—";
-  }
-  const now = Date.now();
-  const diff = now - date.getTime();
-  if (!Number.isFinite(diff)) {
-    return "—";
-  }
-  const minutes = Math.round(diff / 60000);
-  if (minutes <= 0) {
-    return "just now";
-  }
-  if (minutes < 60) {
-    return `${minutes}m ago`;
-  }
-  const hours = Math.round(minutes / 60);
-  if (hours < 24) {
-    return `${hours}h ago`;
-  }
-  const days = Math.round(hours / 24);
-  return `${days}d ago`;
-}

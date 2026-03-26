@@ -5,6 +5,7 @@ import { TaskStatusBadge } from "@/components/TaskStatusBadge";
 import { IdDisplay } from "@/components/IdDisplay";
 import type { TaskDetail, TaskSummary } from "@/lib/api";
 import { buttonVariants } from "@/components/ui/button";
+import { AbsoluteUtcTimestamp } from "@/components/Timestamp";
 
 interface TaskDetailViewProps {
   task: TaskSummary;
@@ -165,7 +166,9 @@ function DetailContent(props: {
                   <dl class="space-y-1 text-xs">
                     <div class="flex gap-2">
                       <dt class="text-muted-foreground w-32">Wake at:</dt>
-                      <dd>{formatTimestamp(wait.wakeAt)}</dd>
+                      <dd>
+                        <AbsoluteUtcTimestamp value={wait.wakeAt} />
+                      </dd>
                     </div>
                     <Show when={wait.wakeEvent}>
                       {(eventName) => (
@@ -179,13 +182,17 @@ function DetailContent(props: {
                     </Show>
                     <div class="flex gap-2">
                       <dt class="text-muted-foreground w-32">Updated:</dt>
-                      <dd>{formatTimestamp(wait.updatedAt)}</dd>
+                      <dd>
+                        <AbsoluteUtcTimestamp value={wait.updatedAt} />
+                      </dd>
                     </div>
                     <Show when={wait.emittedAt}>
                       {(emitted) => (
                         <div class="flex gap-2">
                           <dt class="text-muted-foreground w-32">Last emit:</dt>
-                          <dd>{formatTimestamp(emitted())}</dd>
+                          <dd>
+                            <AbsoluteUtcTimestamp value={emitted()} />
+                          </dd>
                         </div>
                       )}
                     </Show>
@@ -259,10 +266,14 @@ function DetailContent(props: {
                     <TaskStatusBadge status={checkpoint.status} />
                   </div>
                   <div class="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground mb-2">
-                    <span>Updated {formatTimestamp(checkpoint.updatedAt)}</span>
+                    <span>
+                      Updated <AbsoluteUtcTimestamp value={checkpoint.updatedAt} />
+                    </span>
                     <Show when={checkpoint.expiresAt}>
                       {(expires) => (
-                        <span>Expires {formatTimestamp(expires())}</span>
+                        <span>
+                          Expires <AbsoluteUtcTimestamp value={expires()} />
+                        </span>
                       )}
                     </Show>
                   </div>
@@ -292,20 +303,3 @@ function formatWaitType(value: string | null | undefined): string {
   return value.charAt(0).toUpperCase() + value.slice(1);
 }
 
-function formatTimestamp(value: string | Date | null | undefined): string {
-  if (!value) return "—";
-
-  try {
-    const date = typeof value === "string" ? new Date(value) : value;
-    if (Number.isNaN(date.getTime())) {
-      return "—";
-    }
-
-    return new Intl.DateTimeFormat(undefined, {
-      dateStyle: "medium",
-      timeStyle: "medium",
-    }).format(date);
-  } catch {
-    return "—";
-  }
-}

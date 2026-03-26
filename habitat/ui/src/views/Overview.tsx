@@ -18,6 +18,10 @@ import {
 } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { readStoredAutoRefreshEnabled } from "@/components/AutoRefreshToggle";
+import {
+  AbsoluteUtcTimestamp,
+  RelativeTimestamp,
+} from "@/components/Timestamp";
 import { type QueueMetrics, fetchMetrics } from "@/lib/api";
 
 const REFRESH_INTERVAL_MS = 15_000;
@@ -183,16 +187,16 @@ export default function Overview() {
                               {queue.queueVisibleLength.toLocaleString()}
                             </td>
                             <td class="px-3 py-2">
-                              {formatDuration(queue.newestMsgAgeSec)}
+                              <RelativeTimestamp value={queue.newestMsgAt} variant="long" />
                             </td>
                             <td class="px-3 py-2">
-                              {formatDuration(queue.oldestMsgAgeSec)}
+                              <RelativeTimestamp value={queue.oldestMsgAt} variant="long" />
                             </td>
                             <td class="px-3 py-2 tabular-nums">
                               {queue.totalMessages.toLocaleString()}
                             </td>
                             <td class="px-3 py-2 text-xs text-muted-foreground">
-                              {formatTimestamp(new Date(queue.scrapeTime))}
+                              <AbsoluteUtcTimestamp value={queue.scrapeTime} />
                             </td>
                             <td class="px-3 py-2">
                               <div class="flex justify-end gap-3 text-xs font-medium">
@@ -261,38 +265,4 @@ function LoadingPlaceholder() {
   );
 }
 
-function formatDuration(value: number | null | undefined): string {
-  if (value == null || Number.isNaN(value) || value < 0) {
-    return "—";
-  }
 
-  const seconds = Math.floor(value);
-  if (seconds < 60) {
-    return `${seconds}s`;
-  }
-
-  const minutes = Math.floor(seconds / 60);
-  const remainderSeconds = seconds % 60;
-  if (minutes < 60) {
-    return remainderSeconds
-      ? `${minutes}m ${remainderSeconds}s`
-      : `${minutes}m`;
-  }
-
-  const hours = Math.floor(minutes / 60);
-  const remainderMinutes = minutes % 60;
-  return remainderMinutes ? `${hours}h ${remainderMinutes}m` : `${hours}h`;
-}
-
-const timeFormatter = new Intl.DateTimeFormat(undefined, {
-  dateStyle: "medium",
-  timeStyle: "medium",
-});
-
-function formatTimestamp(value: Date | null): string {
-  if (!value || Number.isNaN(value.getTime())) {
-    return "—";
-  }
-
-  return timeFormatter.format(value);
-}
