@@ -42,21 +42,17 @@ Edit the `CHANGELOG.md` file:
 - Change the `# Unreleased` heading to `# $NEW_VERSION`
 - Add a new `# Unreleased` section at the top (empty for now)
 
-### 5. Rename pending migrations
+### 5. Commit changelog and run the release script
 
-If there are any migration files with `-main.sql` suffix in `sql/migrations/`, rename them to use the new version number. Note that the format is `OLD-NEW.sql`:
+The changelog update must be committed before running the release script, because
+the script requires a clean working directory:
 
 ```bash
-# Check for pending migrations
-ls sql/migrations/*-main.sql 2>/dev/null || echo "No pending migrations"
-
-# If found, rename them (example)
-# mv sql/migrations/0.0.3-main.sql sql/migrations/0.0.3-0.0.4.sql
+git add CHANGELOG.md
+git commit -m "meta: update changelog for $NEW_VERSION"
 ```
 
-### 6. Run the release script
-
-Execute the release script with the explicit version number (NOT the release type):
+Then execute the release script with the explicit version number (NOT the release type):
 
 ```bash
 ./scripts/release.sh $NEW_VERSION
@@ -64,13 +60,18 @@ Execute the release script with the explicit version number (NOT the release typ
 
 **Important:** Always pass the explicit version number (e.g., `0.0.4`) to the release script, not the release type (e.g., `patch`). This ensures that aborted releases can be retried without incrementing the version.
 
-This script will:
-- Update the version in `sdks/typescript/package.json` (or skip if already set)
+The script will automatically:
+- Update the version in `sdks/typescript/package.json`
 - Update `package-lock.json`
-- Create a commit with message "Release $NEW_VERSION"
-- Create a git tag with the version number
+- Update `sql/absurd.sql` schema version to `$NEW_VERSION`
+- Rename any pending `-main.sql` migrations to `OLD-$NEW_VERSION.sql`
+- Create a commit with message "Release $NEW_VERSION" and a git tag
+- Reset `sql/absurd.sql` schema version back to `main` for development
+- Create a follow-up commit to keep the main branch in development mode
 
-### 7. Show push instructions
+**Do NOT** manually rename migrations or edit `sql/absurd.sql` — the script handles both.
+
+### 6. Show push instructions
 
 After the release script completes, show the user the commands to push:
 
@@ -78,11 +79,11 @@ After the release script completes, show the user the commands to push:
 git push origin main && git push origin $NEW_VERSION
 ```
 
-**Important:** Do NOT automatically push. Let the user review the commit and tag first, then they can manually run the push commands.
+**Important:** Do NOT automatically push. Let the user review the commits and tag first, then they can manually run the push commands.
 
 ## Notes
 
 - The release script will check for a clean working directory
 - It will verify that CHANGELOG.md has a section for the new version
-- It will check that no `-main.sql` migrations remain (they should have been renamed in step 5)
-- The user should review the commit and tag before pushing
+- It validates that schema version functions are correct in both `absurd.sql` and migrations
+- The user should review the commits and tag before pushing

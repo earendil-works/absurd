@@ -197,10 +197,18 @@ git commit -m "Release $NEW_VERSION"
 info "Creating git tag: $NEW_VERSION"
 git tag "$NEW_VERSION"
 
+# Reset schema version back to "main" for ongoing development.
+# This prevents the test_schema_version_defaults_to_main test from failing
+# on the main branch after a release.
+info "Resetting schema version to 'main' for development..."
+perl -0pi -e "s/select '$NEW_VERSION'::text;/select 'main'::text;/g" "$SCHEMA_FILE"
+git add sql/absurd.sql
+git commit -m "meta: reset schema version to main after $NEW_VERSION release"
+
 success "Successfully created release $NEW_VERSION"
 echo ""
 info "Next steps:"
-echo "  Review the commit and tag, then push with:"
+echo "  Review the commits and tag, then push with:"
 echo "    git push origin main && git push origin $NEW_VERSION"
 echo ""
 info "After pushing, the CI will:"
