@@ -2,3 +2,4 @@ node_modules
 .venv
 .pi/todos
 dist/
+site/

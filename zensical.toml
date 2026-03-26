@@ -1,0 +1,65 @@
+# Zensical configuration
+#
+# Docs: https://zensical.org/docs/get-started/
+
+[project]
+site_name = "Absurd"
+docs_dir = "docs"
+site_dir = "site"
+
+extra_css = [
+    "stylesheets/commit-mono.css",
+    "stylesheets/extra.css",
+]
+
+extra_javascript = [
+    "javascripts/home-link.js",
+]
+
+repo_url = "https://github.com/earendil-works/absurd"
+edit_uri = "edit/main/docs"
+
+copyright = "<a href=\"https://earendil.com/\">Earendil Inc.</a>"
+
+nav = [
+    {"Home" = "index.md"},
+
+    {"Getting Started" = [
+        {"Quickstart" = "quickstart.md"},
+        {"Concepts" = "concepts.md"},
+    ]},
+
+    {"SDKs" = [
+        {"TypeScript" = "sdk-typescript.md"},
+        {"Python" = "sdk-python.md"},
+    ]},
+
+    {"Tools" = [
+        {"absurdctl" = "absurdctl.md"},
+        {"Habitat" = "habitat.md"},
+    ]},
+]
+
+[project.theme]
+font = false
+features = [
+    "content.action.view",
+    "content.action.edit",
+    "content.code.copy",
+    "content.code.select",
+]
+
+[project.theme.icon]
+logo = "material/cube-outline"
+
+[[project.theme.palette]]
+scheme = "default"
+primary = "grey"
+accent = "grey"
+toggle = { icon = "material/weather-night", name = "Switch to dark mode" }
+
+[[project.theme.palette]]
+scheme = "slate"
+primary = "grey"
+accent = "grey"
+toggle = { icon = "material/weather-sunny", name = "Switch to light mode" }

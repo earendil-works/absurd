@@ -1,4 +1,4 @@
-.PHONY: format test test-core test-typescript test-python build-absurdctl
+.PHONY: format test test-core test-typescript test-python build-absurdctl docs serve-docs
 
 # Format all code
 format:
@@ -6,6 +6,17 @@ format:
 	@cd habitat/ui && npx prettier -w .
 	@uvx ruff format tests
 	@gofmt -w habitat
+
+ZENSICAL_VERSION ?= 0.0.21
+
+# Build documentation site
+docs:
+	@uvx --from "zensical==$(ZENSICAL_VERSION)" zensical build
+	@touch site/.nojekyll
+
+# Serve documentation locally with live reload
+serve-docs:
+	@uvx --from "zensical==$(ZENSICAL_VERSION)" zensical serve
 
 # Build bundled absurdctl with embedded schema + migrations
 build-absurdctl:

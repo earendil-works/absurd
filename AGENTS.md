@@ -12,7 +12,7 @@ lives in Postgres tables prefixed by queue name (`t_`, `r_`, `c_`, `e_`, `w_`).
 ## Repository Structure
 
 - **sql/absurd.sql** - Core Postgres schema and stored procedures. This is the heart of the system.
-- **sdks/typescript/** - TypeScript SDK (main SDK, currently unpublished, used from source)
+- **sdks/typescript/** - TypeScript SDK (`absurd-sdk` on npm)
 - **habitat/** - Go-based web UI for monitoring tasks, runs, and events
 - **absurdctl** - Python-based CLI tool for queue/task management and debugging
 - **tests/** - Python test suite using psycopg and testcontainers

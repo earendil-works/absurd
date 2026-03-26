@@ -1,0 +1,162 @@
+/* Site-wide overrides (Zensical / Material theme)
+ * - Commit Mono everywhere
+ * - Slightly smaller type
+ * - Grayscale UI (background stays white)
+ * - Remove default "book" logo icon
+ */
+
+:root {
+  /* Zensical/Material uses CSS variables for font selection */
+  --md-text-font: "Commit Mono";
+  --md-code-font: "Commit Mono";
+}
+
+/* Typography sizing */
+.md-typeset {
+  font-size: 0.65rem!important;
+  line-height: 1.65;
+}
+
+.md-typeset code {
+  font-size: 1em;
+}
+
+.md-nav {
+  font-size: 0.65rem;
+}
+
+/* Grayscale palette tweaks (light mode) */
+[data-md-color-scheme="default"] {
+  --md-default-bg-color: #fff;
+  --md-default-fg-color: rgba(28, 27, 26, 0.92);
+  --md-default-fg-color--light: rgba(28, 27, 26, 0.65);
+  --md-default-fg-color--lighter: rgba(28, 27, 26, 0.40);
+  --md-default-fg-color--lightest: rgba(28, 27, 26, 0.10);
+
+  /* Links / interactive elements */
+  --md-primary-fg-color: rgba(28, 27, 26, 0.86);
+  --md-accent-fg-color: rgba(28, 27, 26, 0.92);
+  --md-accent-fg-color--transparent: rgba(28, 27, 26, 0.10);
+
+  /* Main link color (body text links) */
+  --md-typeset-a-color: rgba(28, 27, 26, 0.78);
+
+  /* Subtle surfaces */
+  --md-code-bg-color: rgb(245, 245, 245);
+  --md-typeset-table-color: rgba(28, 27, 26, 0.12);
+}
+
+/* Dark mode */
+[data-md-color-scheme="slate"][data-md-color-primary="grey"][data-md-color-accent="grey"] {
+  --md-typeset-a-color: rgba(230, 230, 230, 0.85);
+  --md-primary-fg-color: rgba(230, 230, 230, 0.85);
+  --md-accent-fg-color: rgba(255, 255, 255, 0.9);
+  --md-accent-fg-color--transparent: rgba(255, 255, 255, 0.12);
+}
+
+/* Make links feel more "document"-like */
+.md-typeset a {
+  color: var(--md-typeset-a-color, var(--md-accent-fg-color));
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, currentColor 25%, transparent);
+  text-underline-offset: 0.12em;
+}
+
+.md-typeset a:hover {
+  color: var(--md-accent-fg-color);
+  text-decoration-color: color-mix(in srgb, currentColor 55%, transparent);
+}
+
+/* Sidebar link colors */
+.md-nav__link {
+  color: var(--md-default-fg-color--light);
+}
+
+.md-nav__link:hover,
+.md-nav__link--active {
+  color: var(--md-default-fg-color);
+}
+
+/* Make the header site name look like text, but behave like a link */
+header.md-header .md-header__topic > a.md-ellipsis {
+  color: inherit;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+header.md-header .md-header__topic > a.md-ellipsis:hover {
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, currentColor 35%, transparent);
+  text-underline-offset: 0.12em;
+}
+
+/* Tables: more compact */
+.md-typeset__table {
+  --absurd-table-pad-x: 0.4rem;
+  display: block;
+  width: 100%;
+  margin: 0;
+  padding: 0 0.8rem;
+}
+
+.md-typeset table:not([class]) {
+  width: 100%;
+  min-width: 100%;
+  font-size: 0.62rem;
+  line-height: 1.45;
+  border: 0;
+  border-top: 0.05rem solid var(--md-typeset-table-color);
+  border-bottom: 0.05rem solid var(--md-typeset-table-color);
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.md-typeset table:not([class]) th,
+.md-typeset table:not([class]) td {
+  padding: 0.35em var(--absurd-table-pad-x);
+  vertical-align: top;
+}
+
+.md-typeset table:not([class]) thead th {
+  padding-top: 0.45em;
+  padding-bottom: 0.45em;
+}
+
+.md-typeset table:not([class]) th:nth-child(1),
+.md-typeset table:not([class]) td:nth-child(1) {
+  width: 1%;
+  white-space: nowrap;
+}
+
+.md-typeset table:not([class]) th:nth-child(2),
+.md-typeset table:not([class]) td:nth-child(2) {
+  width: 1%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.md-typeset__table > table:not([class]) {
+  margin: 0 calc(-1 * var(--absurd-table-pad-x));
+  width: calc(100% + (var(--absurd-table-pad-x) * 2));
+  min-width: calc(100% + (var(--absurd-table-pad-x) * 2));
+}
+
+.md-typeset table:not([class]) th:nth-child(n + 3),
+.md-typeset table:not([class]) td:nth-child(n + 3) {
+  overflow-wrap: anywhere;
+}
+
+/* Code blocks */
+.md-typeset .highlight {
+  --absurd-code-pad-x: 0.6rem;
+}
+
+.md-typeset .highlight > pre {
+  margin-left: calc(-1 * var(--absurd-code-pad-x));
+  margin-right: calc(-1 * var(--absurd-code-pad-x));
+}
+
+.md-typeset .highlight > pre > code {
+  padding-left: var(--absurd-code-pad-x);
+  padding-right: var(--absurd-code-pad-x);
+}
