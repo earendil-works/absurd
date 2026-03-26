@@ -48,6 +48,11 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  DateRangeSelector,
+  type TimeRange,
+  type TimeSelectionParams,
+} from "@/components/DateRangeSelector";
 
 const REFRESH_INTERVAL_MS = 15_000;
 const PAGE_SIZE = 25;
@@ -136,6 +141,14 @@ export default function Tasks() {
   const [taskNameInput, setTaskNameInput] = createSignal(
     getParam("taskName") ?? "",
   );
+  const [timeRange, setTimeRange] = createSignal<TimeRange>({});
+  const initialTimeParams = (): TimeSelectionParams => ({
+    time: getParam("time"),
+    timeCenter: getParam("timeCenter"),
+    timeRadius: getParam("timeRadius"),
+    after: getParam("after"),
+    before: getParam("before"),
+  });
   const [page, setPage] = createSignal(parsePageParam(getParam("page")));
 
   const toParamValue = (value: string | null | undefined) => {
@@ -152,6 +165,7 @@ export default function Tasks() {
       queue: string | null;
       status: string | null;
       taskName: string | null;
+      timeParams: TimeSelectionParams;
       page: number | null;
     }>,
     options?: Partial<NavigateOptions>,
@@ -169,6 +183,14 @@ export default function Tasks() {
     }
     if ("taskName" in updates) {
       payload.taskName = toParamValue(updates.taskName);
+    }
+    if ("timeParams" in updates) {
+      const tp = updates.timeParams ?? {};
+      payload.time = tp.time ?? undefined;
+      payload.timeCenter = tp.timeCenter ?? undefined;
+      payload.timeRadius = tp.timeRadius ?? undefined;
+      payload.after = tp.after ?? undefined;
+      payload.before = tp.before ?? undefined;
     }
     if ("page" in updates) {
       const value = updates.page;
@@ -215,6 +237,8 @@ export default function Tasks() {
     queue: queueFilter(),
     status: statusFilter(),
     taskName: taskNameFilter(),
+    after: timeRange().after ?? null,
+    before: timeRange().before ?? null,
     page: page(),
     perPage: PAGE_SIZE,
   }));
@@ -399,6 +423,21 @@ export default function Tasks() {
         </div>
         <div class="flex flex-col-reverse gap-3 sm:flex-row sm:items-center">
           <div class="flex items-center gap-2">
+            <DateRangeSelector
+              params={initialTimeParams()}
+              onChange={(range: TimeRange) => {
+                setTimeRange(range);
+                if (page() !== 1) {
+                  setPage(1);
+                }
+              }}
+              onParamsChange={(tp: TimeSelectionParams) => {
+                syncSearchParams(
+                  { timeParams: tp, page: 1 },
+                  { replace: true },
+                );
+              }}
+            />
             <AutoRefreshToggle onToggle={setAutoRefreshEnabled} />
             <Button
               variant="outline"

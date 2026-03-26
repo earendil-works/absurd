@@ -35,6 +35,11 @@ import {
 } from "@/components/ui/select";
 import { JSONViewer } from "@/components/JSONViewer";
 import { AbsoluteUtcTimestamp } from "@/components/Timestamp";
+import {
+  DateRangeSelector,
+  type TimeRange,
+  type TimeSelectionParams,
+} from "@/components/DateRangeSelector";
 
 export default function EventLog() {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -55,6 +60,14 @@ export default function EventLog() {
   const [eventNameFilter, setEventNameFilter] = createSignal<string>(
     getParam("eventName") ?? "",
   );
+  const [timeRange, setTimeRange] = createSignal<TimeRange>({});
+  const initialTimeParams = (): TimeSelectionParams => ({
+    time: getParam("time"),
+    timeCenter: getParam("timeCenter"),
+    timeRadius: getParam("timeRadius"),
+    after: getParam("after"),
+    before: getParam("before"),
+  });
 
   const [queues, { refetch: refetchQueues }] =
     createResource<QueueSummary[]>(fetchQueues);
@@ -70,7 +83,11 @@ export default function EventLog() {
   };
 
   const syncSearchParams = (
-    updates: Partial<{ queue: string | null; eventName: string | null }>,
+    updates: Partial<{
+      queue: string | null;
+      eventName: string | null;
+      timeParams: TimeSelectionParams;
+    }>,
     options?: Partial<NavigateOptions>,
   ) => {
     const payload: Record<string, string | undefined> = {};
@@ -80,6 +97,14 @@ export default function EventLog() {
     }
     if ("eventName" in updates) {
       payload.eventName = toParamValue(updates.eventName ?? null);
+    }
+    if ("timeParams" in updates) {
+      const tp = updates.timeParams ?? {};
+      payload.time = tp.time ?? undefined;
+      payload.timeCenter = tp.timeCenter ?? undefined;
+      payload.timeRadius = tp.timeRadius ?? undefined;
+      payload.after = tp.after ?? undefined;
+      payload.before = tp.before ?? undefined;
     }
 
     if (Object.keys(payload).length > 0) {
@@ -118,6 +143,8 @@ export default function EventLog() {
     return {
       queue: queue && queue.length > 0 ? queue : null,
       eventName: eventName.length > 0 ? eventName : null,
+      after: timeRange().after ?? null,
+      before: timeRange().before ?? null,
     } as const;
   });
 
@@ -128,6 +155,8 @@ export default function EventLog() {
     return fetchEvents({
       queue: input.queue,
       eventName: input.eventName,
+      after: input.after,
+      before: input.before,
     });
   });
 
@@ -187,6 +216,18 @@ export default function EventLog() {
         </div>
         <div class="flex flex-col-reverse gap-3 sm:flex-row sm:items-center">
           <div class="flex items-center gap-2">
+            <DateRangeSelector
+              params={initialTimeParams()}
+              onChange={(range: TimeRange) => {
+                setTimeRange(range);
+              }}
+              onParamsChange={(tp: TimeSelectionParams) => {
+                syncSearchParams(
+                  { timeParams: tp },
+                  { replace: true },
+                );
+              }}
+            />
             <Button
               variant="outline"
               class="min-w-[96px]"

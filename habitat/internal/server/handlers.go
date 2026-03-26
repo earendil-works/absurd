@@ -281,6 +281,21 @@ func (r queueMetricsRecord) AsAPI() QueueMetrics {
 	}
 }
 
+func parseOptionalTime(value string) *time.Time {
+	if value == "" {
+		return nil
+	}
+	t, err := time.Parse(time.RFC3339, value)
+	if err != nil {
+		// Try RFC3339Nano as well
+		t, err = time.Parse(time.RFC3339Nano, value)
+		if err != nil {
+			return nil
+		}
+	}
+	return &t
+}
+
 func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 	queryValues := r.URL.Query()
 	search := strings.TrimSpace(queryValues.Get("q"))
@@ -298,6 +313,8 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 	queueFilter := strings.TrimSpace(queryValues.Get("queue"))
 	taskNameFilter := strings.TrimSpace(queryValues.Get("taskName"))
 	taskIDFilter := strings.TrimSpace(queryValues.Get("taskId"))
+	afterTime := parseOptionalTime(strings.TrimSpace(queryValues.Get("after")))
+	beforeTime := parseOptionalTime(strings.TrimSpace(queryValues.Get("before")))
 
 	page := parsePositiveInt(queryValues.Get("page"), 1)
 	perPage := parsePositiveInt(queryValues.Get("perPage"), 25)
@@ -383,6 +400,8 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 			taskIDFilter,
 			limitPerQueue,
 			includeParams,
+			afterTime,
+			beforeTime,
 		)
 		if err != nil {
 			if isContextQueryFailure(err, ctx) {
@@ -630,6 +649,8 @@ func (s *Server) fetchQueueTaskCandidates(
 	taskIDFilter string,
 	limit int,
 	includeParams bool,
+	afterTime *time.Time,
+	beforeTime *time.Time,
 ) ([]TaskSummary, bool, error) {
 	ttable := queueTableIdentifier("t", queueName)
 	rtable := queueTableIdentifier("r", queueName)
@@ -673,6 +694,14 @@ func (s *Server) fetchQueueTaskCandidates(
 	if taskIDFilter != "" {
 		params = append(params, taskIDFilter)
 		clauses = append(clauses, fmt.Sprintf("t.task_id = $%d", len(params)))
+	}
+	if afterTime != nil {
+		params = append(params, *afterTime)
+		clauses = append(clauses, fmt.Sprintf("r.created_at >= $%d", len(params)))
+	}
+	if beforeTime != nil {
+		params = append(params, *beforeTime)
+		clauses = append(clauses, fmt.Sprintf("r.created_at <= $%d", len(params)))
 	}
 
 	if len(clauses) > 0 {
@@ -1189,7 +1218,7 @@ func (s *Server) handleQueueEvents(w http.ResponseWriter, r *http.Request, queue
 
 	eventName := strings.TrimSpace(r.URL.Query().Get("eventName"))
 
-	events, err := s.fetchQueueEvents(ctx, queueName, limit, eventName)
+	events, err := s.fetchQueueEvents(ctx, queueName, limit, eventName, nil, nil)
 	if err != nil {
 		http.Error(w, "failed to query queue events", http.StatusInternalServerError)
 		return
@@ -1198,7 +1227,7 @@ func (s *Server) handleQueueEvents(w http.ResponseWriter, r *http.Request, queue
 	writeJSON(w, http.StatusOK, events)
 }
 
-func (s *Server) fetchQueueEvents(ctx context.Context, queueName string, limit int, eventName string) ([]QueueEvent, error) {
+func (s *Server) fetchQueueEvents(ctx context.Context, queueName string, limit int, eventName string, afterTime *time.Time, beforeTime *time.Time) ([]QueueEvent, error) {
 	if limit <= 0 {
 		limit = 100
 	}
@@ -1220,6 +1249,14 @@ func (s *Server) fetchQueueEvents(ctx context.Context, queueName string, limit i
 	if eventName != "" {
 		params = append(params, eventName)
 		clauses = append(clauses, fmt.Sprintf("event_name = $%d", len(params)))
+	}
+	if afterTime != nil {
+		params = append(params, *afterTime)
+		clauses = append(clauses, fmt.Sprintf("emitted_at >= $%d", len(params)))
+	}
+	if beforeTime != nil {
+		params = append(params, *beforeTime)
+		clauses = append(clauses, fmt.Sprintf("emitted_at <= $%d", len(params)))
 	}
 
 	params = append(params, limit)
@@ -1280,11 +1317,13 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 
 	queueFilter := strings.TrimSpace(r.URL.Query().Get("queue"))
 	eventFilter := strings.TrimSpace(r.URL.Query().Get("eventName"))
+	afterTime := parseOptionalTime(strings.TrimSpace(r.URL.Query().Get("after")))
+	beforeTime := parseOptionalTime(strings.TrimSpace(r.URL.Query().Get("before")))
 
 	var events []QueueEvent
 
 	if queueFilter != "" {
-		queueEvents, err := s.fetchQueueEvents(ctx, queueFilter, limit, eventFilter)
+		queueEvents, err := s.fetchQueueEvents(ctx, queueFilter, limit, eventFilter, afterTime, beforeTime)
 		if err != nil {
 			http.Error(w, "failed to query queue events", http.StatusInternalServerError)
 			return
@@ -1299,7 +1338,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		}
 
 		for _, queueName := range queueNames {
-			queueEvents, err := s.fetchQueueEvents(ctx, queueName, limit, eventFilter)
+			queueEvents, err := s.fetchQueueEvents(ctx, queueName, limit, eventFilter, afterTime, beforeTime)
 			if err != nil {
 				continue
 			}

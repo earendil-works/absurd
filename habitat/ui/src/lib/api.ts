@@ -165,6 +165,8 @@ export interface TaskListQuery {
   queue?: string | null;
   taskName?: string | null;
   taskId?: string | null;
+  after?: string | null;
+  before?: string | null;
   page?: number;
   perPage?: number;
 }
@@ -188,6 +190,12 @@ export async function fetchTasks(
   }
   if (filters.taskId) {
     params.set("taskId", filters.taskId);
+  }
+  if (filters.after) {
+    params.set("after", filters.after);
+  }
+  if (filters.before) {
+    params.set("before", filters.before);
   }
   if (typeof filters.page === "number" && Number.isFinite(filters.page)) {
     params.set("page", String(filters.page));
@@ -283,6 +291,8 @@ export async function fetchQueueEvents(
 export interface EventLogFilters {
   queue?: string | null;
   eventName?: string | null;
+  after?: string | null;
+  before?: string | null;
   limit?: number;
 }
 
@@ -295,6 +305,12 @@ export async function fetchEvents(
   }
   if (filters.eventName) {
     params.set("eventName", filters.eventName);
+  }
+  if (filters.after) {
+    params.set("after", filters.after);
+  }
+  if (filters.before) {
+    params.set("before", filters.before);
   }
   if (typeof filters.limit === "number" && Number.isFinite(filters.limit)) {
     params.set("limit", String(filters.limit));
