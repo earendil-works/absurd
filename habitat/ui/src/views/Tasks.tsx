@@ -423,6 +423,7 @@ export default function Tasks() {
         </div>
         <div class="flex flex-col-reverse gap-3 sm:flex-row sm:items-center">
           <div class="flex items-center gap-2">
+            <AutoRefreshToggle onToggle={setAutoRefreshEnabled} />
             <DateRangeSelector
               params={initialTimeParams()}
               onChange={(range: TimeRange) => {
@@ -438,7 +439,6 @@ export default function Tasks() {
                 );
               }}
             />
-            <AutoRefreshToggle onToggle={setAutoRefreshEnabled} />
             <Button
               variant="outline"
               class="min-w-[96px]"

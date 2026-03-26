@@ -5,6 +5,7 @@ import {
   createMemo,
   createResource,
   createSignal,
+  onCleanup,
 } from "solid-js";
 import {
   type QueueSummary,
@@ -14,6 +15,7 @@ import {
 } from "@/lib/api";
 import { useSearchParams, type NavigateOptions } from "@solidjs/router";
 import { Button } from "@/components/ui/button";
+import { AutoRefreshToggle } from "@/components/AutoRefreshToggle";
 import {
   Card,
   CardContent,
@@ -173,6 +175,17 @@ export default function EventLog() {
     setEventsError(message);
   });
 
+  const [autoRefreshEnabled, setAutoRefreshEnabled] = createSignal(false);
+
+  createEffect(() => {
+    if (!autoRefreshEnabled()) return;
+    const timer = setInterval(() => {
+      refetchQueues();
+      refetchEvents();
+    }, 15_000);
+    onCleanup(() => clearInterval(timer));
+  });
+
   const handleRefresh = async () => {
     await refetchQueues();
     await refetchEvents();
@@ -216,6 +229,7 @@ export default function EventLog() {
         </div>
         <div class="flex flex-col-reverse gap-3 sm:flex-row sm:items-center">
           <div class="flex items-center gap-2">
+            <AutoRefreshToggle onToggle={setAutoRefreshEnabled} />
             <DateRangeSelector
               params={initialTimeParams()}
               onChange={(range: TimeRange) => {
