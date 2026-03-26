@@ -35,10 +35,7 @@ export function RelativeTimestamp(props: RelativeTimestampProps) {
       {(parsed) => (
         <TimestampTooltip
           class={props.class}
-          lines={[
-            `UTC: ${formatUtcTimestamp(parsed())}`,
-            `Local: ${formatLocalTimestamp(parsed())}`,
-          ]}
+          lines={[formatUtcTimestamp(parsed()), formatLocalTimestamp(parsed())]}
         >
           {renderedLabel()}
         </TimestampTooltip>
@@ -60,7 +57,7 @@ export function AbsoluteUtcTimestamp(props: BaseTimestampProps) {
           class={props.class}
           lines={[
             `Relative: ${formatRelativeTimestamp(parsed(), "long")}`,
-            `Local: ${formatLocalTimestamp(parsed())}`,
+            formatLocalTimestamp(parsed()),
           ]}
         >
           {formatUtcTimestamp(parsed())}
@@ -156,7 +153,7 @@ export function formatUtcTimestamp(value: TimestampInput): string {
   const minutes = String(date.getUTCMinutes()).padStart(2, "0");
   const seconds = String(date.getUTCSeconds()).padStart(2, "0");
 
-  return `${year}-${month}-${day} ${hours}:${minutes}:${seconds} UTC`;
+  return `${year}-${month}-${day} ${hours}:${minutes}:${seconds} (UTC)`;
 }
 
 export function formatLocalTimestamp(value: TimestampInput): string {
@@ -171,10 +168,21 @@ export function formatLocalTimestamp(value: TimestampInput): string {
   const hours = String(date.getHours()).padStart(2, "0");
   const minutes = String(date.getMinutes()).padStart(2, "0");
   const seconds = String(date.getSeconds()).padStart(2, "0");
-  const timeZoneName =
-    new Intl.DateTimeFormat(undefined, { timeZoneName: "short" })
-      .formatToParts(date)
-      .find((part) => part.type === "timeZoneName")?.value ?? "LOCAL";
+  const gmtOffset = formatGmtOffset(date);
 
-  return `${year}-${month}-${day} ${hours}:${minutes}:${seconds} ${timeZoneName}`;
+  return `${year}-${month}-${day} ${hours}:${minutes}:${seconds} (${gmtOffset})`;
+}
+
+function formatGmtOffset(date: Date): string {
+  const offsetMinutes = -date.getTimezoneOffset();
+  const sign = offsetMinutes >= 0 ? "+" : "-";
+  const absMinutes = Math.abs(offsetMinutes);
+  const hours = Math.floor(absMinutes / 60);
+  const minutes = absMinutes % 60;
+
+  if (minutes === 0) {
+    return `GMT${sign}${hours}`;
+  }
+
+  return `GMT${sign}${hours}:${String(minutes).padStart(2, "0")}`;
 }
