@@ -103,13 +103,15 @@ Additionally, tasks can *sleep* or *suspend for events*.  Events are cached
 ## Components
 
 Absurd comes with two basic tools that help you work with it.  One is
-called [`absurdctl`](absurdctl) which allows you to create, drop, and list
-queues, as well as spawn tasks.  The other is [habitat](habitat) which is
-a Go application that serves up a web UI to show you the current state of
-running and executed tasks.
+called [`absurdctl`](absurdctl) which allows you to initialize and migrate the
+schema, inspect schema versions, create/drop/list queues, and spawn or retry
+tasks.  The other is [habitat](habitat) which is a Go application that serves
+up a web UI to show you the current state of running and executed tasks.
 
 ```bash
 absurdctl init -d database-name
+absurdctl schema-version -d database-name
+absurdctl migrate -d database-name
 absurdctl create-queue -d database-name default
 ```
 

@@ -91,6 +91,9 @@ jobs:
         with:
           path: artifacts
 
+      - name: Build bundled absurdctl
+        run: ./scripts/build-absurdctl
+
       - name: Prepare release assets
         run: |
           mkdir -p release
@@ -103,8 +106,8 @@ jobs:
           # Make binaries executable
           chmod +x release/habitat-*
 
-          # Copy absurdctl
-          cp absurdctl release/absurdctl
+          # Copy bundled absurdctl
+          cp dist/absurdctl release/absurdctl
           chmod +x release/absurdctl
 
           # Copy SQL file

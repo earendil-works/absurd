@@ -26,6 +26,22 @@ info() {
     echo -e "${YELLOW}$1${NC}"
 }
 
+validate_schema_version_function() {
+    local file="$1"
+    local expected_version="$2"
+    local context="$3"
+
+    if ! grep -qi "create or replace function absurd.get_schema_version" "$file"; then
+        error "$context is missing create or replace function absurd.get_schema_version"
+        exit 1
+    fi
+
+    if ! grep -q "select '$expected_version'::text;" "$file"; then
+        error "$context does not return schema version '$expected_version'"
+        exit 1
+    fi
+}
+
 # Check if we're in a git repository
 if ! git rev-parse --git-dir > /dev/null 2>&1; then
     error "Not in a git repository"
@@ -109,6 +125,14 @@ fi
 # Go back to project root for git operations
 cd "$PROJECT_ROOT"
 
+# Update schema version placeholder in base schema for the release.
+SCHEMA_FILE="$PROJECT_ROOT/sql/absurd.sql"
+if grep -q "select 'main'::text;" "$SCHEMA_FILE"; then
+    perl -0pi -e "s/select 'main'::text;/select '$NEW_VERSION'::text;/g" "$SCHEMA_FILE"
+fi
+
+validate_schema_version_function "$SCHEMA_FILE" "$NEW_VERSION" "sql/absurd.sql"
+
 # Check for pending migration (migration with -main.sql suffix) and rename automatically
 info "Checking for pending migrations..."
 if ls "$PROJECT_ROOT"/sql/migrations/*-main.sql 1> /dev/null 2>&1; then
@@ -120,6 +144,13 @@ if ls "$PROJECT_ROOT"/sql/migrations/*-main.sql 1> /dev/null 2>&1; then
         new_versioned="$dir_name/$base_name-$NEW_VERSION.sql"
         info "Renaming: $(basename "$migration") -> $(basename "$new_versioned")"
         mv "$migration" "$new_versioned"
+
+        # Replace development placeholder in migrations and validate function.
+        if grep -q "select 'main'::text;" "$new_versioned"; then
+            perl -0pi -e "s/select 'main'::text;/select '$NEW_VERSION'::text;/g" "$new_versioned"
+        fi
+
+        validate_schema_version_function "$new_versioned" "$NEW_VERSION" "$(basename "$new_versioned")"
     done
     success "Migrations renamed successfully"
 fi
@@ -147,6 +178,8 @@ if [[ ! -f "$MIGRATION_FILE" ]]; then
         error "Release cancelled. Please create the migration or fix the version."
         exit 1
     fi
+else
+    validate_schema_version_function "$MIGRATION_FILE" "$NEW_VERSION" "$(basename "$MIGRATION_FILE")"
 fi
 
 # Update package-lock.json to reflect the new version
@@ -157,7 +190,7 @@ cd "$PROJECT_ROOT"
 
 # Commit the version change
 info "Creating git commit..."
-git add sdks/typescript/package.json sdks/typescript/package-lock.json
+git add sdks/typescript/package.json sdks/typescript/package-lock.json sql/absurd.sql sql/migrations
 git commit -m "Release $NEW_VERSION"
 
 # Create git tag without 'v' prefix

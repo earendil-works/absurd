@@ -125,6 +125,11 @@ class AbsurdTestClient:
         result = self.conn.execute("select queue_name from absurd.list_queues()")
         return [row[0] for row in result.fetchall()]
 
+    def get_schema_version(self):
+        result = self.conn.execute("select absurd.get_schema_version()")
+        row = result.fetchone()
+        return row[0] if row else None
+
     def spawn_task(
         self,
         queue,

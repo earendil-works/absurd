@@ -57,6 +57,17 @@ create table if not exists absurd.queues (
   created_at timestamptz not null default absurd.current_time()
 );
 
+-- Returns the Absurd schema release version baked into this SQL file.
+-- During development this is usually "main" and release automation replaces
+-- it with the actual tag version.
+
+create or replace function absurd.get_schema_version ()
+  returns text
+  language sql
+as $$
+  select 'main'::text;
+$$;
+
 -- Queue names are used in generated table/index identifiers.
 -- We intentionally cap UTF-8 byte length so generated explicit index names
 -- (for instance r_<queue>_sai) stay within PostgreSQL's 63-byte identifier

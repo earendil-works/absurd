@@ -4,6 +4,13 @@
 -- in-place (with optional max-attempts adjustment) or by spawning a new task
 -- from the original inputs.
 
+create or replace function absurd.get_schema_version ()
+  returns text
+  language sql
+as $$
+  select 'main'::text;
+$$;
+
 create or replace function absurd.retry_task (
   p_queue_name text,
   p_task_id uuid,

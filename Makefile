@@ -1,4 +1,4 @@
-.PHONY: format test test-core test-typescript test-python
+.PHONY: format test test-core test-typescript test-python build-absurdctl
 
 # Format all code
 format:
@@ -6,6 +6,10 @@ format:
 	@cd habitat/ui && npx prettier -w .
 	@uvx ruff format tests
 	@gofmt -w habitat
+
+# Build bundled absurdctl with embedded schema + migrations
+build-absurdctl:
+	@./scripts/build-absurdctl
 
 # Run all tests
 test: test-core test-typescript test-python
