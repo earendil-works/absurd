@@ -27,7 +27,11 @@ nav = [
     {"Getting Started" = [
         {"Quickstart" = "quickstart.md"},
         {"Concepts" = "concepts.md"},
-        {"Patterns" = "patterns.md"},
+    ]},
+
+    {"Patterns" = [
+        {"Overview" = "patterns/index.md"},
+        {"Cron Jobs With Deduplication Keys" = "patterns/cron.md"},
     ]},
 
     {"SDKs" = [

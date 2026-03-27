@@ -1,11 +1,12 @@
-# Patterns
+# Cron Jobs With Deduplication Keys
 
-This page collects small, practical patterns for common Absurd use cases.
+It's quite common that you need to run tasks on a schedule.  Usually that is expressed
+in the form of [cron rules](https://en.wikipedia.org/wiki/Cron).  With absurd running
+cronjobs is pretty simple even though it does not have a scheduler itself.
 
-## Cron Jobs With Deduplication Keys
-
-If your scheduler runs twice (deploy overlap, crash restart, two replicas), you
-can still guarantee each cron slot is enqueued only once.
+The only tricky is to ensure that each cron only runs once.  If your scheduler
+runs twice (deploy overlap, crash restart, two replicas), you can still
+guarantee each cron slot is enqueued only once.
 
 The trick: derive `idempotency_key` / `idempotencyKey` from:
 
@@ -16,7 +17,7 @@ The trick: derive `idempotency_key` / `idempotencyKey` from:
 If two scheduler processes compute the same slot, they produce the same key, and
 Absurd returns the already-existing task instead of creating a duplicate.
 
-### Python (minimal)
+## Python
 
 ```python
 from datetime import datetime, timezone
@@ -50,7 +51,7 @@ for expr, task_name in CRONTAB:
     )
 ```
 
-### TypeScript (minimal)
+## TypeScript
 
 ```typescript
 import { createHash } from "node:crypto";
