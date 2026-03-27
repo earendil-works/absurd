@@ -39,7 +39,7 @@ const app = new Absurd();
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `db` | `pg.Pool \| string` | `ABSURD_DATABASE_URL` or `postgresql://localhost/absurd` | Database connection |
+| `db` | `pg.Pool` \| `string` | `ABSURD_DATABASE_URL` or `postgresql://localhost/absurd` | Database connection |
 | `queueName` | `string` | `"default"` | Default queue for operations |
 | `defaultMaxAttempts` | `number` | `5` | Default retry limit for spawned tasks |
 | `log` | `Log` | `console` | Logger (must have `log`, `info`, `warn`, `error`) |
@@ -127,6 +127,26 @@ const result = await ctx.step('fetch-data', async () => {
 ```
 
 The return value **must be JSON-serializable**.
+
+### `ctx.beginStep(name)` + `ctx.completeStep(handle, value)`
+
+Advanced form of `ctx.step()` when you need to split step handling into two
+calls (for example integrating with agent/event loops that expose separate
+"before" and "after" hooks).
+
+```typescript
+const handle = await ctx.beginStep<MyState>('agent-turn');
+
+if (handle.done) {
+  return handle.state; // cached checkpoint value
+}
+
+const state = await runTurn();
+await ctx.completeStep(handle, state);
+```
+
+`handle.checkpointName` contains the concrete checkpoint key (`name`, `name#2`,
+...) after Absurd's automatic step numbering.
 
 ### `ctx.sleepFor(stepName, seconds)`
 

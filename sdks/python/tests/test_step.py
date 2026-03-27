@@ -102,6 +102,48 @@ def test_step_result_is_cached_and_not_reexecuted_on_retry(conn, queue_name):
     assert task["attempts"] == 2
 
 
+def test_begin_complete_step_result_is_cached_and_not_reexecuted_on_retry(
+    conn, queue_name
+):
+    """Test that begin_step/complete_step results are cached and not re-executed."""
+    queue = queue_name("cache_step_decomposed")
+    client = Absurd(conn, queue_name=queue)
+    client.create_queue()
+
+    execution_count = []
+    attempt_count = []
+
+    @client.register_task("cache-decomposed", default_max_attempts=2)
+    def cache_task(params, ctx):
+        attempt_count.append(len(attempt_count) + 1)
+
+        handle = ctx.begin_step("generate")
+        if handle.done:
+            value = handle.state
+        else:
+            execution_count.append(len(execution_count) + 1)
+            value = ctx.complete_step(handle, 42)
+
+        if len(attempt_count) == 1:
+            raise Exception("Intentional failure")
+
+        return {"value": value, "count": len(execution_count)}
+
+    spawned = client.spawn("cache-decomposed", None)
+
+    client.work_batch("worker", 60, 1)
+    assert len(execution_count) == 1
+
+    client.work_batch("worker", 60, 1)
+    assert len(execution_count) == 1
+    assert len(attempt_count) == 2
+
+    task = _get_task(conn, queue, spawned["task_id"])
+    assert task["state"] == "completed"
+    assert task["completed_payload"]["count"] == 1
+    assert task["attempts"] == 2
+
+
 def test_multistep_task_only_reexecutes_uncompleted_steps(conn, queue_name):
     """Test that only uncompleted steps are re-executed on retry"""
     queue = queue_name("multistep")
@@ -157,6 +199,32 @@ def test_repeated_step_names_work_correctly(conn, queue_name):
         return {"results": results}
 
     spawned = client.spawn("deduplicate", None)
+    client.work_batch("worker", 60, 1)
+
+    task = _get_task(conn, queue, spawned["task_id"])
+    assert task["state"] == "completed"
+    assert task["completed_payload"] == {"results": [0, 10, 20]}
+
+
+def test_repeated_begin_complete_step_names_auto_number_correctly(conn, queue_name):
+    """Test repeated begin_step/complete_step names are auto-numbered."""
+    queue = queue_name("deduplicate_decomposed")
+    client = Absurd(conn, queue_name=queue)
+    client.create_queue()
+
+    @client.register_task("deduplicate-decomposed")
+    def deduplicate_task(params, ctx):
+        results = []
+        for i in range(3):
+            handle = ctx.begin_step("loop-step")
+            if handle.done:
+                value = handle.state
+            else:
+                value = ctx.complete_step(handle, i * 10)
+            results.append(value)
+        return {"results": results}
+
+    spawned = client.spawn("deduplicate-decomposed", None)
     client.work_batch("worker", 60, 1)
 
     task = _get_task(conn, queue, spawned["task_id"])

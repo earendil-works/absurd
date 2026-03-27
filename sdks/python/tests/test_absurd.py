@@ -16,6 +16,13 @@ def _fetch_run(conn, queue, run_id):
     return conn.execute(query, (run_id,)).fetchone()
 
 
+def _fetch_task(conn, queue, task_id):
+    query = sql.SQL(
+        "select state, attempts, completed_payload from absurd.{table} where task_id = %s"
+    ).format(table=sql.Identifier(f"t_{queue}"))
+    return conn.execute(query, (task_id,)).fetchone()
+
+
 def test_sync_worker_processes_task(conn, queue_name):
     queue = queue_name("emails")
     client = Absurd(conn, queue_name=queue)
@@ -99,3 +106,53 @@ def test_async_absurd_round_trip(db_dsn, queue_name):
         run_state, available_at, result = _fetch_run(check_conn, queue, spawned["run_id"])
         assert run_state == "completed"
         assert result == {"processed": 6}
+
+
+def test_async_begin_complete_step_is_cached_on_retry(db_dsn, queue_name):
+    queue = queue_name("uploads_decomposed")
+
+    with psycopg.connect(db_dsn, autocommit=True) as setup_conn:
+        Absurd(setup_conn, queue_name=queue).create_queue()
+
+    async def run():
+        client = AsyncAbsurd(db_dsn, queue_name=queue)
+
+        executions = []
+        attempts = []
+
+        @client.register_task("process-upload-decomposed", default_max_attempts=2)
+        async def process_upload(params, ctx):
+            attempts.append(len(attempts) + 1)
+
+            handle = await ctx.begin_step("double")
+            if handle.done:
+                value = handle.state
+            else:
+                executions.append(len(executions) + 1)
+                value = await ctx.complete_step(handle, params["value"] * 2)
+
+            if len(attempts) == 1:
+                raise Exception("Intentional failure")
+
+            return {"processed": value, "executions": len(executions)}
+
+        spawned = await client.spawn("process-upload-decomposed", {"value": 3})
+        await client.work_batch(worker_id="async-worker")
+        await client.work_batch(worker_id="async-worker")
+
+        if client._conn is not None:
+            await client._conn.commit()
+        await client.close()
+        return spawned, executions, attempts
+
+    spawned, executions, attempts = asyncio.run(run())
+    assert len(executions) == 1
+    assert len(attempts) == 2
+
+    with psycopg.connect(db_dsn, autocommit=True) as check_conn:
+        task_state, task_attempts, completed_payload = _fetch_task(
+            check_conn, queue, spawned["task_id"]
+        )
+        assert task_state == "completed"
+        assert task_attempts == 2
+        assert completed_payload == {"processed": 6, "executions": 1}

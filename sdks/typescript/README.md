@@ -94,6 +94,26 @@ const payment = await ctx.step("process-payment", async () => {
 });
 ```
 
+## Decomposed Steps
+
+If you need explicit before/after control, split `step()` into two calls:
+
+```typescript
+const handle = await ctx.beginStep<{ messages: any[] }>("agent-turn");
+
+let messages: any[];
+if (handle.done) {
+  // `handle.state` is fully typed when done=true.
+  messages = handle.state.messages;
+} else {
+  messages = await runTurn();
+  await ctx.completeStep(handle, { messages });
+}
+```
+
+This is useful when integrating with event-driven loops (for example agent
+runtimes) where the checkpoint boundary is not a single inline callback.
+
 ## License and Links
 
 - [Examples](https://github.com/earendil-works/absurd/tree/main/sdks/typescript/examples)

@@ -5,6 +5,7 @@ Absurd SDK for Python
 from __future__ import annotations
 
 import contextvars
+from dataclasses import dataclass
 import json
 import os
 import socket
@@ -16,6 +17,7 @@ from typing import (
     Awaitable,
     Callable,
     Dict,
+    Generic,
     List,
     Literal,
     Mapping,
@@ -43,6 +45,7 @@ __all__ = [
     "CancellationPolicy",
     "SpawnOptions",
     "RetryTaskResult",
+    "StepHandle",
     "ClaimedTask",
     "AbsurdHooks",
     "get_current_context",
@@ -70,6 +73,7 @@ JsonObject = Dict[str, JsonValue]
 
 P = TypeVar("P")
 R = TypeVar("R")
+T = TypeVar("T")
 
 
 class RetryStrategy(TypedDict, total=False):
@@ -129,6 +133,20 @@ class RetryTaskResult(TypedDict):
     run_id: str
     attempt: int
     created: bool
+
+
+@dataclass(frozen=True)
+class StepHandle(Generic[T]):
+    """Handle returned by ``begin_step()`` for decomposed step execution.
+
+    A handle represents one concrete checkpoint slot (including automatic
+    numbering for repeated step names).
+    """
+
+    name: str
+    checkpoint_name: str
+    done: bool
+    state: Optional[T] = None
 
 
 # Type aliases for hook callbacks
@@ -209,6 +227,7 @@ def _raise_task_state_exception(err: Exception) -> None:
 
 
 _MAX_QUEUE_NAME_LENGTH = 57
+_CHECKPOINT_NOT_FOUND = object()
 
 
 def _validate_queue_name(queue_name: str) -> str:
@@ -437,14 +456,34 @@ class TaskContext:
 
     def step(self, name: str, fn: Callable[[], R]) -> R:
         """Execute an idempotent step identified by name"""
-        checkpoint_name = self._get_checkpoint_name(name)
-        state = self._lookup_checkpoint(checkpoint_name)
-        if state is not None:
-            return state  # type: ignore
+        handle = self.begin_step(name)
+        if handle.done:
+            return cast(R, handle.state)
 
         rv = fn()
-        self._persist_checkpoint(checkpoint_name, rv)
-        return rv
+        return self.complete_step(handle, rv)
+
+    def begin_step(self, name: str) -> StepHandle[JsonValue]:
+        """Start a step and check if its checkpoint already exists."""
+        checkpoint_name = self._get_checkpoint_name(name)
+        state = self._lookup_checkpoint(checkpoint_name)
+        if state is not _CHECKPOINT_NOT_FOUND:
+            return StepHandle(
+                name=name,
+                checkpoint_name=checkpoint_name,
+                done=True,
+                state=cast(JsonValue, state),
+            )
+
+        return StepHandle(name=name, checkpoint_name=checkpoint_name, done=False)
+
+    def complete_step(self, handle: StepHandle[T], value: T) -> T:
+        """Complete a step started with ``begin_step()`` by persisting its state."""
+        if handle.done:
+            return cast(T, handle.state)
+
+        self._persist_checkpoint(handle.checkpoint_name, value)
+        return value
 
     @overload
     def run_step(self, name: Optional[str] = None) -> Callable[[Callable[[], R]], R]:
@@ -501,7 +540,7 @@ class TaskContext:
         checkpoint_name = self._get_checkpoint_name(step_name)
         state = self._lookup_checkpoint(checkpoint_name)
 
-        if state:
+        if state is not _CHECKPOINT_NOT_FOUND:
             actual_wake_at = (
                 datetime.fromisoformat(state) if isinstance(state, str) else wake_at
             )
@@ -524,8 +563,8 @@ class TaskContext:
         checkpoint_name = self._get_checkpoint_name(step_name)
         cached = self._lookup_checkpoint(checkpoint_name)
 
-        if cached is not None:
-            return cached
+        if cached is not _CHECKPOINT_NOT_FOUND:
+            return cast(JsonValue, cached)
 
         if (
             self._task["wake_event"] == event_name
@@ -598,7 +637,7 @@ class TaskContext:
         self._step_name_counter[name] = count
         return name if count == 1 else f"{name}#{count}"
 
-    def _lookup_checkpoint(self, checkpoint_name: str) -> Optional[JsonValue]:
+    def _lookup_checkpoint(self, checkpoint_name: str) -> Union[JsonValue, object]:
         """Look up a checkpoint by name"""
         if checkpoint_name in self._checkpoint_cache:
             return self._checkpoint_cache[checkpoint_name]
@@ -616,7 +655,7 @@ class TaskContext:
             self._checkpoint_cache[checkpoint_name] = state
             return state
 
-        return None
+        return _CHECKPOINT_NOT_FOUND
 
     def _persist_checkpoint(self, checkpoint_name: str, value: Any) -> None:
         """Persist a checkpoint value"""
@@ -668,14 +707,34 @@ class AsyncTaskContext:
 
     async def step(self, name: str, fn: Callable[[], Awaitable[R]]) -> R:
         """Execute an idempotent step identified by name"""
-        checkpoint_name = self._get_checkpoint_name(name)
-        state = await self._lookup_checkpoint(checkpoint_name)
-        if state is not None:
-            return state  # type: ignore
+        handle = await self.begin_step(name)
+        if handle.done:
+            return cast(R, handle.state)
 
         rv = await fn()
-        await self._persist_checkpoint(checkpoint_name, rv)
-        return rv
+        return await self.complete_step(handle, rv)
+
+    async def begin_step(self, name: str) -> StepHandle[JsonValue]:
+        """Start a step and check if its checkpoint already exists."""
+        checkpoint_name = self._get_checkpoint_name(name)
+        state = await self._lookup_checkpoint(checkpoint_name)
+        if state is not _CHECKPOINT_NOT_FOUND:
+            return StepHandle(
+                name=name,
+                checkpoint_name=checkpoint_name,
+                done=True,
+                state=cast(JsonValue, state),
+            )
+
+        return StepHandle(name=name, checkpoint_name=checkpoint_name, done=False)
+
+    async def complete_step(self, handle: StepHandle[T], value: T) -> T:
+        """Complete a step started with ``begin_step()`` by persisting its state."""
+        if handle.done:
+            return cast(T, handle.state)
+
+        await self._persist_checkpoint(handle.checkpoint_name, value)
+        return value
 
     async def sleep_for(self, step_name: str, duration: float) -> None:
         """Suspend the task for the given duration in seconds"""
@@ -692,7 +751,7 @@ class AsyncTaskContext:
         checkpoint_name = self._get_checkpoint_name(step_name)
         state = await self._lookup_checkpoint(checkpoint_name)
 
-        if state:
+        if state is not _CHECKPOINT_NOT_FOUND:
             actual_wake_at = (
                 datetime.fromisoformat(state) if isinstance(state, str) else wake_at
             )
@@ -715,8 +774,8 @@ class AsyncTaskContext:
         checkpoint_name = self._get_checkpoint_name(step_name)
         cached = await self._lookup_checkpoint(checkpoint_name)
 
-        if cached is not None:
-            return cached
+        if cached is not _CHECKPOINT_NOT_FOUND:
+            return cast(JsonValue, cached)
 
         if (
             self._task["wake_event"] == event_name
@@ -791,7 +850,9 @@ class AsyncTaskContext:
         self._step_name_counter[name] = count
         return name if count == 1 else f"{name}#{count}"
 
-    async def _lookup_checkpoint(self, checkpoint_name: str) -> Optional[JsonValue]:
+    async def _lookup_checkpoint(
+        self, checkpoint_name: str
+    ) -> Union[JsonValue, object]:
         """Look up a checkpoint by name"""
         if checkpoint_name in self._checkpoint_cache:
             return self._checkpoint_cache[checkpoint_name]
@@ -809,7 +870,7 @@ class AsyncTaskContext:
             self._checkpoint_cache[checkpoint_name] = state
             return state
 
-        return None
+        return _CHECKPOINT_NOT_FOUND
 
     async def _persist_checkpoint(self, checkpoint_name: str, value: Any) -> None:
         """Persist a checkpoint value"""

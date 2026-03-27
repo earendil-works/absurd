@@ -191,6 +191,34 @@ interface RegisteredTask {
   handler: TaskHandler<any, any>;
 }
 
+/**
+ * Handle returned by `beginStep()` for decomposed step execution.
+ *
+ * A handle represents one concrete checkpoint slot (including automatic
+ * numbering for repeated step names).
+ *
+ * This is a discriminated union keyed by `done` so TypeScript can narrow:
+ *
+ * ```ts
+ * if (handle.done) {
+ *   // handle.state is T here
+ * }
+ * ```
+ */
+export type StepHandle<T = JsonValue> = {
+  readonly name: string;
+  readonly checkpointName: string;
+} & (
+  | {
+      readonly done: false;
+      readonly state?: never;
+    }
+  | {
+      readonly done: true;
+      readonly state: T;
+    }
+);
+
 export class TaskContext {
   private stepNameCounter: Map<string, number> = new Map();
   private readonly log: Log;
@@ -284,15 +312,50 @@ export class TaskContext {
    * @param fn Async function computing the step result (must be JSON-serializable).
    */
   async step<T>(name: string, fn: () => Promise<T>): Promise<T> {
-    const checkpointName = this.getCheckpointName(name);
-    const state = await this.lookupCheckpoint(checkpointName);
-    if (state !== undefined) {
-      return state as T;
+    const handle = await this.beginStep<T>(name);
+    if (handle.done) {
+      return handle.state;
     }
 
     const rv = await fn();
-    await this.persistCheckpoint(checkpointName, rv as JsonValue);
-    return rv;
+    return await this.completeStep(handle, rv);
+  }
+
+  /**
+   * Starts a step and checks whether its checkpoint already exists.
+   *
+   * Use together with `completeStep()` when you need to decompose step handling
+   * across two calls (for example to integrate with external loops that expose
+   * before/after hooks).
+   */
+  async beginStep<T = JsonValue>(name: string): Promise<StepHandle<T>> {
+    const checkpointName = this.getCheckpointName(name);
+    const state = await this.lookupCheckpoint(checkpointName);
+    return state !== undefined
+      ? {
+          name,
+          checkpointName,
+          done: true,
+          state: state as T,
+        }
+      : {
+          name,
+          checkpointName,
+          done: false,
+        };
+  }
+
+  /**
+   * Completes a step started with `beginStep()` by persisting its state.
+   *
+   * If the handle is already done, this returns the cached state.
+   */
+  async completeStep<T>(handle: StepHandle<T>, value: T): Promise<T> {
+    if (handle.done) {
+      return handle.state;
+    }
+    await this.persistCheckpoint(handle.checkpointName, value as JsonValue);
+    return value;
   }
 
   /**

@@ -76,6 +76,49 @@ describe("Step functionality", () => {
     });
   });
 
+  test("beginStep/completeStep result is cached and not re-executed on retry", async () => {
+    let executionCount = 0;
+    let attemptCount = 0;
+
+    absurd.registerTask<void, { value: number; count: number }>(
+      { name: "cache-decomposed", defaultMaxAttempts: 2 },
+      async (_params, ctx) => {
+        attemptCount++;
+
+        const handle = await ctx.beginStep<number>("generate");
+        let value: number;
+        if (handle.done) {
+          value = handle.state;
+        } else {
+          executionCount++;
+          value = await ctx.completeStep(handle, Math.random());
+        }
+
+        if (attemptCount === 1) {
+          throw new Error("Intentional failure");
+        }
+
+        return { value, count: executionCount };
+      },
+    );
+
+    const { taskID } = await absurd.spawn("cache-decomposed", undefined);
+
+    const workerID = randomName("w");
+    await absurd.workBatch(workerID, 60, 1);
+    expect(executionCount).toBe(1);
+
+    await absurd.workBatch(workerID, 60, 1);
+    expect(executionCount).toBe(1);
+    expect(attemptCount).toBe(2);
+
+    expect(await ctx.getTask(taskID)).toMatchObject({
+      state: "completed",
+      completed_payload: { count: 1 },
+      attempts: 2,
+    });
+  });
+
   test("task with multiple steps only re-executes uncompleted steps on retry", async () => {
     const executed: string[] = [];
     let attemptCount = 0;
@@ -143,6 +186,31 @@ describe("Step functionality", () => {
     );
 
     const { taskID } = await absurd.spawn("deduplicate", undefined);
+    await absurd.workBatch(randomName("w"), 60, 1);
+
+    expect(await ctx.getTask(taskID)).toMatchObject({
+      state: "completed",
+      completed_payload: { results: [0, 10, 20] },
+    });
+  });
+
+  test("repeated beginStep/completeStep names auto-number correctly", async () => {
+    absurd.registerTask<void, { results: number[] }>(
+      { name: "deduplicate-decomposed" },
+      async (_params, ctx) => {
+        const results: number[] = [];
+        for (let i = 0; i < 3; i++) {
+          const handle = await ctx.beginStep<number>("loop-step");
+          const value = handle.done
+            ? handle.state
+            : await ctx.completeStep(handle, i * 10);
+          results.push(value);
+        }
+        return { results };
+      },
+    );
+
+    const { taskID } = await absurd.spawn("deduplicate-decomposed", undefined);
     await absurd.workBatch(randomName("w"), 60, 1);
 
     expect(await ctx.getTask(taskID)).toMatchObject({

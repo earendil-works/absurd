@@ -80,6 +80,27 @@ def my_task(params, ctx):
 The decorator is only implemented for synchronous tasks. In asynchronous tasks
 use `await ctx.step("step-name", lambda: ...)` directly.
 
+## Decomposed Steps
+
+When you need to split step handling into two phases (for instance around an
+external loop), use `begin_step()` / `complete_step()`:
+
+```python
+@app.register_task(name="agent-turn")
+def agent_turn(params, ctx):
+    handle = ctx.begin_step("persist-turn")
+    if handle.done:
+        persisted = handle.state
+    else:
+        payload = {"turn": params["turn"]}
+        persisted = ctx.complete_step(handle, payload)
+
+    return {"persisted": persisted}
+```
+
+The async API provides the same methods as `await ctx.begin_step(...)` and
+`await ctx.complete_step(...)`.
+
 ## License and Links
 
 - [Issue Tracker](https://github.com/earendil-works/absurd/issues)

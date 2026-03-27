@@ -45,7 +45,7 @@ app = AsyncAbsurd("postgresql://user:pass@localhost:5432/mydb", queue_name="defa
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `conn_or_url` | `Connection \| str \| None` | `ABSURD_DATABASE_URL` or `postgresql://localhost/absurd` | Database connection or URL |
+| `conn_or_url` | `Connection` \| `str` \| `None` | `ABSURD_DATABASE_URL` or `postgresql://localhost/absurd` | Database connection or URL |
 | `queue_name` | `str` | `"default"` | Default queue for operations |
 | `default_max_attempts` | `int` | `5` | Default retry limit |
 | `hooks` | `AbsurdHooks` | `None` | Lifecycle hooks |
@@ -134,6 +134,19 @@ is cached.
 result = ctx.step("fetch-data", lambda: fetch_from_api())
 ```
 
+#### `ctx.begin_step(name)` + `ctx.complete_step(handle, value)`
+
+Advanced form of `step()` when you need to split checkpoint handling across
+multiple calls.
+
+```python
+handle = ctx.begin_step("agent-turn")
+if handle.done:
+    state = handle.state
+else:
+    state = ctx.complete_step(handle, {"message": "hello"})
+```
+
 #### `ctx.run_step`
 
 Decorator form of `step()`.  The decorated function is immediately called and
@@ -206,6 +219,8 @@ The async context has the same methods, all `async`:
 
 ```python
 result = await ctx.step("fetch-data", fetch_from_api_async)
+handle = await ctx.begin_step("agent-turn")
+result = handle.state if handle.done else await ctx.complete_step(handle, {"ok": True})
 await ctx.sleep_for("cooldown", 3600)
 payload = await ctx.await_event("order.shipped")
 await ctx.heartbeat(300)

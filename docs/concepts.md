@@ -128,7 +128,7 @@ await app.spawn('send-email', { to: 'user@example.com' }, {
 ```
 
 For a concrete cron scheduler recipe built on this, see
-**[Patterns](./patterns.md)**.
+**[Cron Jobs With Deduplication Keys](./patterns/cron.md)**.
 
 ## Headers
 
