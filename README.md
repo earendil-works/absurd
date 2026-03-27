@@ -45,7 +45,7 @@ Absurd just needs a single `.sql` file ([`absurd.sql`](sql/absurd.sql)) which
 needs to be applied to a database of your choice.  You can plug it into your
 favorite migration system of choice.  Additionally if that file changes, we
 also release [migrations](sql/migrations) which should make upgrading easy. 
-See [[Getting Started]] for a short tutorial.
+See the [quickstart guide](https://earendil-works.github.io/absurd/quickstart/) for a short tutorial.
 
 ## Comparison
 
