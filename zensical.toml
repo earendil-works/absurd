@@ -27,6 +27,7 @@ nav = [
     {"Getting Started" = [
         {"Quickstart" = "quickstart.md"},
         {"Concepts" = "concepts.md"},
+        {"Patterns" = "patterns.md"},
     ]},
 
     {"SDKs" = [

@@ -127,6 +127,9 @@ await app.spawn('send-email', { to: 'user@example.com' }, {
 });
 ```
 
+For a concrete cron scheduler recipe built on this, see
+**[Patterns](./patterns.md)**.
+
 ## Headers
 
 Tasks can carry **headers** — a JSON object of metadata that travels with the

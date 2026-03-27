@@ -52,6 +52,7 @@ await app.startWorker();
 
 - **[Quickstart](./quickstart.md)** — install the schema, create a queue, run your first task
 - **[Concepts](./concepts.md)** — tasks, steps, runs, events, and retry semantics
+- **[Patterns](./patterns.md)** — practical recipes for common workflow and scheduling setups
 
 ## SDKs
 
