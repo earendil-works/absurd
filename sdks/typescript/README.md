@@ -71,6 +71,30 @@ await app.spawn("order-fulfillment", {
 });
 ```
 
+## Task Result Snapshots
+
+You can inspect or wait for a task's terminal result:
+
+```typescript
+const snapshot = await app.fetchTaskResult(taskID);
+// { state: "pending" } | { state: "running" } | { state: "sleeping" }
+// { state: "completed", result: ... }
+// { state: "failed", failure: ... }
+// { state: "cancelled" }
+
+const final = await app.awaitTaskResult(taskID, { timeout: 30 });
+```
+
+Inside a task, you can also wait for child tasks durably:
+
+```typescript
+const child = await app.spawn("child-task", {}, { queue: "child-workers" });
+const childResult = await ctx.awaitTaskResult(child.taskID, {
+  queue: "child-workers",
+  timeout: 30,
+});
+```
+
 ## Emitting Events
 
 ```typescript

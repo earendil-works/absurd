@@ -103,6 +103,25 @@ const { taskID, runID, attempt, created } = await app.spawn(
 | `attempt` | `number` | Attempt number |
 | `created` | `boolean` | `false` if an existing task was returned (idempotency) |
 
+## Task Results
+
+### `app.fetchTaskResult(taskID, options?)`
+
+Returns the current task result snapshot, or `null` if the task does not exist.
+
+```typescript
+const snapshot = await app.fetchTaskResult(taskID);
+```
+
+### `app.awaitTaskResult(taskID, options?)`
+
+Polls until the task reaches a terminal state (`completed`, `failed`,
+`cancelled`). Throws `TimeoutError` if `options.timeout` is reached.
+
+```typescript
+const final = await app.awaitTaskResult(taskID, { timeout: 30 });
+```
+
 ## Task Context (`TaskContext`)
 
 The context object passed to every task handler.
@@ -176,6 +195,23 @@ const payload = await ctx.awaitEvent('order.shipped', {
 ```
 
 Throws `TimeoutError` if the timeout expires before the event arrives.
+
+### `ctx.awaitTaskResult(taskID, options?)`
+
+Durably wait for another task's terminal result from inside a running task.
+The wait itself is checkpointed as a step (default step name:
+`$awaitTaskResult:<taskID>`).
+
+`options.queue` must point to a **different queue** than the current task
+context queue.
+
+```typescript
+const child = await app.spawn('child-task', {}, { queue: 'child-workers' });
+const childResult = await ctx.awaitTaskResult(child.taskID, {
+  queue: 'child-workers',
+  timeout: 60,
+});
+```
 
 ### `ctx.heartbeat(seconds?)`
 
@@ -317,7 +353,7 @@ const app = new Absurd({
 | `SuspendTask` | Internal — task suspended (sleep/event). Never visible to user code. |
 | `CancelledTask` | Internal — task was cancelled. Never visible to user code. |
 | `FailedTask` | Internal — run already failed (e.g., claim expired). |
-| `TimeoutError` | Thrown by `awaitEvent()` when the timeout expires. |
+| `TimeoutError` | Thrown by `awaitEvent()` / `awaitTaskResult()` when the timeout expires. |
 
 ## Closing
 

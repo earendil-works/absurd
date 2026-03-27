@@ -4,6 +4,7 @@ Absurd SDK for Python
 
 from __future__ import annotations
 
+import asyncio
 import contextvars
 from dataclasses import dataclass
 import json
@@ -45,6 +46,8 @@ __all__ = [
     "CancellationPolicy",
     "SpawnOptions",
     "RetryTaskResult",
+    "TaskResultState",
+    "TaskResultSnapshot",
     "StepHandle",
     "ClaimedTask",
     "AbsurdHooks",
@@ -135,6 +138,20 @@ class RetryTaskResult(TypedDict):
     created: bool
 
 
+TaskResultState = Literal[
+    "pending", "running", "sleeping", "completed", "failed", "cancelled"
+]
+
+
+@dataclass(frozen=True)
+class TaskResultSnapshot:
+    """Current state (and optional terminal payload) of a task."""
+
+    state: TaskResultState
+    result: Optional[JsonValue] = None
+    failure: Optional[JsonValue] = None
+
+
 @dataclass(frozen=True)
 class StepHandle(Generic[T]):
     """Handle returned by ``begin_step()`` for decomposed step execution.
@@ -215,7 +232,7 @@ class FailedTask(Exception):
 
 
 class TimeoutError(Exception):
-    """Error thrown when awaiting an event times out."""
+    """Error thrown when waiting for an event or task result times out."""
 
 
 def _raise_task_state_exception(err: Exception) -> None:
@@ -316,6 +333,137 @@ async def _fail_task_run_async(
             fatal_error,
         ),
     )
+
+
+def _fetch_task_result_snapshot(
+    conn: Connection[Any], queue_name: str, task_id: str
+) -> Optional[TaskResultSnapshot]:
+    query = """SELECT state, result, failure_reason
+               FROM absurd.get_task_result(%s, %s)"""
+    cursor = conn.cursor(row_factory=dict_row)
+    cursor.execute(query, (queue_name, task_id))
+    row = cursor.fetchone()
+    return _task_result_snapshot_from_row(row)
+
+
+async def _fetch_task_result_snapshot_async(
+    conn: AsyncConnection[Any], queue_name: str, task_id: str
+) -> Optional[TaskResultSnapshot]:
+    query = """SELECT state, result, failure_reason
+               FROM absurd.get_task_result(%s, %s)"""
+    cursor = conn.cursor(row_factory=dict_row)
+    await cursor.execute(query, (queue_name, task_id))
+    row = await cursor.fetchone()
+    return _task_result_snapshot_from_row(row)
+
+
+def _task_result_snapshot_from_row(row: Optional[Mapping[str, Any]]) -> Optional[TaskResultSnapshot]:
+    if not row:
+        return None
+
+    state = cast(TaskResultState, row["state"])
+    if state == "completed":
+        return TaskResultSnapshot(state="completed", result=row["result"])
+    if state == "failed":
+        return TaskResultSnapshot(state="failed", failure=row["failure_reason"])
+    return TaskResultSnapshot(state=state)
+
+
+def _is_terminal_task_state(state: TaskResultState) -> bool:
+    return state in ("completed", "failed", "cancelled")
+
+
+def _task_result_snapshot_to_json(snapshot: TaskResultSnapshot) -> JsonObject:
+    payload: JsonObject = {"state": snapshot.state}
+    if snapshot.state == "completed":
+        payload["result"] = snapshot.result
+    elif snapshot.state == "failed":
+        payload["failure"] = snapshot.failure
+    return payload
+
+
+def _task_result_snapshot_from_json(value: JsonValue) -> TaskResultSnapshot:
+    if isinstance(value, TaskResultSnapshot):
+        return value
+    if not isinstance(value, dict) or "state" not in value:
+        raise TypeError("Invalid task result snapshot checkpoint payload")
+
+    state = cast(TaskResultState, value["state"])
+    if state == "completed":
+        return TaskResultSnapshot(state="completed", result=value.get("result"))
+    if state == "failed":
+        return TaskResultSnapshot(state="failed", failure=value.get("failure"))
+    return TaskResultSnapshot(state=state)
+
+
+def _evaluate_task_result_poll(
+    snapshot: Optional[TaskResultSnapshot],
+    task_id: str,
+    started_at: float,
+    timeout_ms: Optional[float],
+    delay_ms: float,
+) -> tuple[Optional[TaskResultSnapshot], float, float]:
+    if snapshot is None:
+        raise Exception(f'Task "{task_id}" not found')
+
+    if _is_terminal_task_state(snapshot.state):
+        return snapshot, 0.0, delay_ms
+
+    sleep_ms = delay_ms
+    if timeout_ms is not None:
+        elapsed_ms = (time.monotonic() - started_at) * 1000
+        remaining_ms = timeout_ms - elapsed_ms
+        if remaining_ms <= 0:
+            raise TimeoutError(f'Timed out waiting for task "{task_id}"')
+        sleep_ms = min(sleep_ms, remaining_ms)
+
+    next_delay_ms = min(sleep_ms * 2, 1000)
+    return None, max(sleep_ms, 0), next_delay_ms
+
+
+def _await_task_result_with_backoff(
+    fetch_snapshot: Callable[[], Optional[TaskResultSnapshot]],
+    task_id: str,
+    timeout: Optional[float] = None,
+    on_before_sleep: Optional[Callable[[], None]] = None,
+) -> TaskResultSnapshot:
+    timeout_ms = None if timeout is None else max(timeout, 0) * 1000
+    started_at = time.monotonic()
+    delay_ms = 50.0
+
+    while True:
+        snapshot, sleep_ms, delay_ms = _evaluate_task_result_poll(
+            fetch_snapshot(), task_id, started_at, timeout_ms, delay_ms
+        )
+        if snapshot is not None:
+            return snapshot
+        elif on_before_sleep is not None:
+            on_before_sleep()
+
+        time.sleep(sleep_ms / 1000)
+
+
+async def _await_task_result_with_backoff_async(
+    fetch_snapshot: Callable[[], Awaitable[Optional[TaskResultSnapshot]]],
+    task_id: str,
+    timeout: Optional[float] = None,
+    on_before_sleep: Optional[Callable[[], Awaitable[None]]] = None,
+) -> TaskResultSnapshot:
+    timeout_ms = None if timeout is None else max(timeout, 0) * 1000
+    started_at = time.monotonic()
+    delay_ms = 50.0
+
+    while True:
+        snapshot, sleep_ms, delay_ms = _evaluate_task_result_poll(
+            await fetch_snapshot(), task_id, started_at, timeout_ms, delay_ms
+        )
+        if snapshot is not None:
+            return snapshot
+
+        if on_before_sleep is not None:
+            await on_before_sleep()
+
+        await asyncio.sleep(sleep_ms / 1000)
 
 
 def _normalize_spawn_options(
@@ -604,6 +752,46 @@ class TaskContext:
 
         raise SuspendTask()
 
+    def await_task_result(
+        self,
+        task_id: str,
+        queue_name: Optional[str] = None,
+        timeout: Optional[float] = None,
+        step_name: Optional[str] = None,
+    ) -> TaskResultSnapshot:
+        """Wait for another task to reach a terminal state."""
+        queue = _validate_queue_name(
+            queue_name if queue_name is not None else self._queue_name
+        )
+        if queue == self._queue_name:
+            raise ValueError(
+                "TaskContext.await_task_result cannot wait on tasks in the same queue because this can deadlock workers. Spawn the child in a different queue and pass queue_name."
+            )
+
+        checkpoint_step_name = step_name or f"$awaitTaskResult:{task_id}"
+
+        def wait_for_terminal_result() -> JsonObject:
+            heartbeat_interval_ms = max(500, int((self._claim_timeout * 1000) / 2))
+            next_heartbeat_at = time.monotonic() * 1000 + heartbeat_interval_ms
+
+            def maybe_heartbeat() -> None:
+                nonlocal next_heartbeat_at
+                now_ms = time.monotonic() * 1000
+                if now_ms >= next_heartbeat_at:
+                    self.heartbeat()
+                    next_heartbeat_at = time.monotonic() * 1000 + heartbeat_interval_ms
+
+            snapshot = _await_task_result_with_backoff(
+                lambda: _fetch_task_result_snapshot(self._conn, queue, task_id),
+                task_id,
+                timeout,
+                maybe_heartbeat,
+            )
+            return _task_result_snapshot_to_json(snapshot)
+
+        stored = self.step(checkpoint_step_name, wait_for_terminal_result)
+        return _task_result_snapshot_from_json(stored)
+
     def emit_event(self, event_name: str, payload: Optional[JsonValue] = None) -> None:
         """Emit an event to this task's queue (first emit per name wins)."""
         if not event_name:
@@ -814,6 +1002,46 @@ class AsyncTaskContext:
             return result["payload"]
 
         raise SuspendTask()
+
+    async def await_task_result(
+        self,
+        task_id: str,
+        queue_name: Optional[str] = None,
+        timeout: Optional[float] = None,
+        step_name: Optional[str] = None,
+    ) -> TaskResultSnapshot:
+        """Wait for another task to reach a terminal state."""
+        queue = _validate_queue_name(
+            queue_name if queue_name is not None else self._queue_name
+        )
+        if queue == self._queue_name:
+            raise ValueError(
+                "AsyncTaskContext.await_task_result cannot wait on tasks in the same queue because this can deadlock workers. Spawn the child in a different queue and pass queue_name."
+            )
+
+        checkpoint_step_name = step_name or f"$awaitTaskResult:{task_id}"
+
+        async def wait_for_terminal_result() -> JsonObject:
+            heartbeat_interval_ms = max(500, int((self._claim_timeout * 1000) / 2))
+            next_heartbeat_at = time.monotonic() * 1000 + heartbeat_interval_ms
+
+            async def maybe_heartbeat() -> None:
+                nonlocal next_heartbeat_at
+                now_ms = time.monotonic() * 1000
+                if now_ms >= next_heartbeat_at:
+                    await self.heartbeat()
+                    next_heartbeat_at = time.monotonic() * 1000 + heartbeat_interval_ms
+
+            snapshot = await _await_task_result_with_backoff_async(
+                lambda: _fetch_task_result_snapshot_async(self._conn, queue, task_id),
+                task_id,
+                timeout,
+                maybe_heartbeat,
+            )
+            return _task_result_snapshot_to_json(snapshot)
+
+        stored = await self.step(checkpoint_step_name, wait_for_terminal_result)
+        return _task_result_snapshot_from_json(stored)
 
     async def emit_event(
         self, event_name: str, payload: Optional[JsonValue] = None
@@ -1094,6 +1322,31 @@ class Absurd(_AbsurdBase):
             "run_id": row["run_id"],
             "attempt": row["attempt"],
         }
+
+    def fetch_task_result(
+        self, task_id: str, queue_name: Optional[str] = None
+    ) -> Optional[TaskResultSnapshot]:
+        """Fetch the current result snapshot for a task."""
+        queue = _validate_queue_name(
+            queue_name if queue_name is not None else self._queue_name
+        )
+        return _fetch_task_result_snapshot(self._conn, queue, task_id)
+
+    def await_task_result(
+        self,
+        task_id: str,
+        timeout: Optional[float] = None,
+        queue_name: Optional[str] = None,
+    ) -> TaskResultSnapshot:
+        """Wait for a task to reach a terminal state by polling."""
+        queue = _validate_queue_name(
+            queue_name if queue_name is not None else self._queue_name
+        )
+        return _await_task_result_with_backoff(
+            lambda: _fetch_task_result_snapshot(self._conn, queue, task_id),
+            task_id,
+            timeout,
+        )
 
     def emit_event(
         self,
@@ -1398,6 +1651,37 @@ class AsyncAbsurd(_AbsurdBase):
             "run_id": row["run_id"],
             "attempt": row["attempt"],
         }
+
+    async def fetch_task_result(
+        self, task_id: str, queue_name: Optional[str] = None
+    ) -> Optional[TaskResultSnapshot]:
+        """Fetch the current result snapshot for a task."""
+        await self._ensure_connected()
+        assert self._conn is not None
+
+        queue = _validate_queue_name(
+            queue_name if queue_name is not None else self._queue_name
+        )
+        return await _fetch_task_result_snapshot_async(self._conn, queue, task_id)
+
+    async def await_task_result(
+        self,
+        task_id: str,
+        timeout: Optional[float] = None,
+        queue_name: Optional[str] = None,
+    ) -> TaskResultSnapshot:
+        """Wait for a task to reach a terminal state by polling."""
+        await self._ensure_connected()
+        assert self._conn is not None
+
+        queue = _validate_queue_name(
+            queue_name if queue_name is not None else self._queue_name
+        )
+        return await _await_task_result_with_backoff_async(
+            lambda: _fetch_task_result_snapshot_async(self._conn, queue, task_id),
+            task_id,
+            timeout,
+        )
 
     async def emit_event(
         self,

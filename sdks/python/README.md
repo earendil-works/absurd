@@ -101,6 +101,24 @@ def agent_turn(params, ctx):
 The async API provides the same methods as `await ctx.begin_step(...)` and
 `await ctx.complete_step(...)`.
 
+## Task Result Snapshots
+
+You can inspect or await a task's result state. Both methods return a
+`TaskResultSnapshot` dataclass:
+
+```python
+snapshot = app.fetch_task_result(task_id)
+if snapshot is not None:
+    print(snapshot.state, snapshot.result, snapshot.failure)
+
+final = app.await_task_result(task_id, timeout=30)
+if final.state == "completed":
+    print(final.result)
+```
+
+From inside a task handler, `TaskContext` / `AsyncTaskContext` also provide
+`await_task_result(...)` so parent tasks can durably wait for child tasks.
+
 ## License and Links
 
 - [Issue Tracker](https://github.com/earendil-works/absurd/issues)

@@ -84,6 +84,20 @@ export interface SpawnResult {
   created: boolean;
 }
 
+export type TaskResultState =
+  | "pending"
+  | "running"
+  | "sleeping"
+  | "completed"
+  | "failed"
+  | "cancelled";
+
+export type TaskResultSnapshot =
+  | { state: "pending" | "running" | "sleeping" }
+  | { state: "completed"; result: JsonValue | null }
+  | { state: "failed"; failure: JsonValue | null }
+  | { state: "cancelled" };
+
 export type TaskHandler<P = any, R = any> = (
   params: P,
   ctx: TaskContext,
@@ -298,8 +312,7 @@ export class TaskContext {
     } catch (err: any) {
       if (err?.code === "AB001") {
         throw new CancelledTask();
-      }
-      if (err?.code === "AB002") {
+      } else if (err?.code === "AB002") {
         throw new FailedTask();
       }
       throw err;
@@ -506,6 +519,47 @@ export class TaskContext {
     }
 
     throw new SuspendTask();
+  }
+
+  /**
+   * Awaits another task's terminal result by polling.
+   *
+   * This helper must target a different queue than the current task context to
+   * avoid worker-slot deadlocks.
+   */
+  async awaitTaskResult(
+    taskID: string,
+    options: { queue?: string; timeout?: number; stepName?: string } = {},
+  ): Promise<TaskResultSnapshot> {
+    const queue = validateQueueName(options.queue ?? this.queueName);
+    if (queue === this.queueName) {
+      throw new Error(
+        "TaskContext.awaitTaskResult cannot wait on tasks in the same queue because this can deadlock workers. Spawn the child in a different queue and pass options.queue.",
+      );
+    }
+
+    const stepName = options.stepName ?? `$awaitTaskResult:${taskID}`;
+
+    return await this.step(stepName, async () => {
+      const heartbeatIntervalMs = Math.max(
+        500,
+        Math.floor((this.claimTimeout * 1000) / 2),
+      );
+      let nextHeartbeatAt = Date.now() + heartbeatIntervalMs;
+
+      return await awaitTaskResultWithBackoff(
+        () => fetchTaskResultSnapshot(this.con, queue, taskID),
+        taskID,
+        options.timeout,
+        async () => {
+          const now = Date.now();
+          if (now >= nextHeartbeatAt) {
+            await this.heartbeat();
+            nextHeartbeatAt = Date.now() + heartbeatIntervalMs;
+          }
+        },
+      );
+    });
   }
 
   /**
@@ -778,6 +832,33 @@ export class Absurd {
       eventName,
       JSON.stringify(payload ?? null),
     ]);
+  }
+
+  /**
+   * Fetches the current result snapshot for a task.
+   * Returns null if the task does not exist in the selected queue.
+   */
+  async fetchTaskResult(
+    taskID: string,
+    options: { queue?: string } = {},
+  ): Promise<TaskResultSnapshot | null> {
+    const queue = validateQueueName(options.queue ?? this.queueName);
+    return await fetchTaskResultSnapshot(this.con, queue, taskID);
+  }
+
+  /**
+   * Awaits a task's terminal result by polling with exponential backoff.
+   */
+  async awaitTaskResult(
+    taskID: string,
+    options: { queue?: string; timeout?: number } = {},
+  ): Promise<TaskResultSnapshot> {
+    const queue = validateQueueName(options.queue ?? this.queueName);
+    return await awaitTaskResultWithBackoff(
+      () => fetchTaskResultSnapshot(this.con, queue, taskID),
+      taskID,
+      options.timeout,
+    );
   }
 
   /**
@@ -1153,6 +1234,90 @@ async function failTaskRun(
     JSON.stringify(serializeError(err)),
     null,
   ]);
+}
+
+async function fetchTaskResultSnapshot(
+  con: Queryable,
+  queueName: string,
+  taskID: string,
+): Promise<TaskResultSnapshot | null> {
+  const result = await con.query<{
+    state: TaskResultState;
+    result: JsonValue | null;
+    failure_reason: JsonValue | null;
+  }>(
+    `SELECT state, result, failure_reason
+     FROM absurd.get_task_result($1, $2)`,
+    [queueName, taskID],
+  );
+
+  const row = result.rows[0];
+  if (!row) {
+    return null;
+  }
+
+  if (row.state === "completed") {
+    return { state: "completed", result: row.result };
+  } else if (row.state === "failed") {
+    return { state: "failed", failure: row.failure_reason };
+  } else if (row.state === "cancelled") {
+    return { state: "cancelled" };
+  }
+  return {
+    state: row.state,
+  };
+}
+
+function isTerminalTaskState(state: TaskResultState): boolean {
+  return state === "completed" || state === "failed" || state === "cancelled";
+}
+
+function normalizeTimeoutSecondsToMs(
+  timeoutSeconds?: number,
+): number | null {
+  if (timeoutSeconds === undefined) {
+    return null;
+  } else if (timeoutSeconds < 0) {
+    return 0;
+  }
+  return Math.floor(timeoutSeconds * 1000);
+}
+
+async function awaitTaskResultWithBackoff(
+  fetchSnapshot: () => Promise<TaskResultSnapshot | null>,
+  taskID: string,
+  timeoutSeconds?: number,
+  onBeforeSleep?: () => Promise<void>,
+): Promise<TaskResultSnapshot> {
+  const timeoutMs = normalizeTimeoutSecondsToMs(timeoutSeconds);
+  const startedAt = Date.now();
+  let delayMs = 50;
+
+  while (true) {
+    const snapshot = await fetchSnapshot();
+    if (snapshot === null) {
+      throw new Error(`Task "${taskID}" not found`);
+    }
+    if (isTerminalTaskState(snapshot.state)) {
+      return snapshot;
+    }
+
+    if (timeoutMs !== null) {
+      const elapsed = Date.now() - startedAt;
+      const remaining = timeoutMs - elapsed;
+      if (remaining <= 0) {
+        throw new TimeoutError(`Timed out waiting for task "${taskID}"`);
+      }
+      delayMs = Math.min(delayMs, remaining);
+    }
+
+    if (onBeforeSleep) {
+      await onBeforeSleep();
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, Math.max(0, delayMs)));
+    delayMs = Math.min(delayMs * 2, 1000);
+  }
 }
 
 function normalizeSpawnOptions(options: SpawnOptions): JsonObject {

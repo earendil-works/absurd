@@ -113,6 +113,33 @@ print(result["task_id"], result["run_id"])
 
 A `TypedDict` with fields: `task_id`, `run_id`, `attempt`.
 
+## Task Results
+
+### `fetch_task_result(task_id, queue_name=None)`
+
+Returns the current task result snapshot dataclass, or `None` if the task does
+not exist.
+
+```python
+snapshot = app.fetch_task_result(task_id)
+if snapshot is not None:
+    print(snapshot.state, snapshot.result, snapshot.failure)
+```
+
+### `await_task_result(task_id, timeout=None, queue_name=None)`
+
+Polls until the task reaches a terminal state (`completed`, `failed`,
+`cancelled`). Raises `TimeoutError` if `timeout` is reached.
+
+```python
+final = app.await_task_result(task_id, timeout=30)
+if final.state == "failed":
+    print(final.failure)
+```
+
+(Async client equivalents are `await app.fetch_task_result(...)` and
+`await app.await_task_result(...)` and return the same dataclass type.)
+
 ## Task Context
 
 ### Synchronous (`TaskContext`)
@@ -197,6 +224,26 @@ payload = ctx.await_event("order.shipped", timeout=86400)
 
 Raises `TimeoutError` if the timeout expires.
 
+#### `ctx.await_task_result(task_id, queue_name=None, timeout=None, step_name=None)`
+
+Durably wait for another task's terminal result from inside a task handler.
+The wait is checkpointed as a step (default step name:
+`$awaitTaskResult:<task_id>`).
+
+`queue_name` must point to a **different queue** than the currently running
+task context queue.
+
+```python
+child = app.spawn("child-task", {}, queue="child-workers")
+child_result = ctx.await_task_result(
+    child["task_id"],
+    queue_name="child-workers",
+    timeout=60,
+)
+if child_result.state == "completed":
+    print(child_result.result)
+```
+
 #### `ctx.heartbeat(seconds=None)`
 
 Extend the current run's lease.
@@ -223,6 +270,11 @@ handle = await ctx.begin_step("agent-turn")
 result = handle.state if handle.done else await ctx.complete_step(handle, {"ok": True})
 await ctx.sleep_for("cooldown", 3600)
 payload = await ctx.await_event("order.shipped")
+child_result = await ctx.await_task_result(
+    child_task_id,
+    queue_name="child-workers",
+    timeout=60,
+)
 await ctx.heartbeat(300)
 await ctx.emit_event("order.completed", {"order_id": "42"})
 ```
@@ -348,7 +400,7 @@ Both hooks also accept async callables when used with `AsyncAbsurd`.
 | `SuspendTask` | Internal — task suspended. Never visible to user code. |
 | `CancelledTask` | Internal — task was cancelled. |
 | `FailedTask` | Internal — run already failed. |
-| `TimeoutError` | Thrown by `await_event()` when timeout expires. |
+| `TimeoutError` | Thrown by `await_event()` / `await_task_result()` when timeout expires. |
 
 ## Closing
 

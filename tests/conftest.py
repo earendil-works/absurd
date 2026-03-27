@@ -322,6 +322,16 @@ class AbsurdTestClient:
         result = self.conn.execute(query, (run_id,))
         return _fetchone_dict(result)
 
+    def get_task_result(self, queue, task_id):
+        result = self.conn.execute(
+            """
+            select task_id, state, result, failure_reason
+            from absurd.get_task_result(%s, %s)
+            """,
+            (queue, task_id),
+        )
+        return _fetchone_dict(result)
+
     def get_checkpoint(
         self,
         queue,
