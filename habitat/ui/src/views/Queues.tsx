@@ -171,4 +171,3 @@ function StatBlock(props: { label: string; value: number }) {
     </div>
   );
 }
-

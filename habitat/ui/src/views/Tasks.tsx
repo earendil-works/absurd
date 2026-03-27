@@ -262,7 +262,9 @@ export default function Tasks() {
     fetchTasks,
   );
   const [tasksError, setTasksError] = createSignal<string | null>(null);
-  const [expandedRunIds, setExpandedRunIds] = createSignal<Set<string>>(new Set());
+  const [expandedRunIds, setExpandedRunIds] = createSignal<Set<string>>(
+    new Set(),
+  );
   const [autoRefreshEnabled, setAutoRefreshEnabled] = createSignal(false);
   const [taskDetails, setTaskDetails] = createSignal<
     Record<string, TaskDetail>
@@ -307,9 +309,7 @@ export default function Tasks() {
       return null;
     }
 
-    return (
-      taskNameOptions().find((option) => option.value === value) ?? null
-    );
+    return taskNameOptions().find((option) => option.value === value) ?? null;
   });
   const pageStart = createMemo(() => {
     if (!allTasks().length) {
@@ -629,7 +629,8 @@ export default function Tasks() {
                             return;
                           }
 
-                          const nextValue = toParamValue(taskNameInput()) ?? null;
+                          const nextValue =
+                            toParamValue(taskNameInput()) ?? null;
                           setTaskNameInput(nextValue ?? "");
                           if (nextValue === taskNameFilter()) {
                             return;
@@ -654,7 +655,11 @@ export default function Tasks() {
                 <Show when={allTasks().length > 0}>
                   <Show
                     when={totalTasks() !== null}
-                    fallback={<span>Showing {pageStart()}–{pageEnd()} tasks</span>}
+                    fallback={
+                      <span>
+                        Showing {pageStart()}–{pageEnd()} tasks
+                      </span>
+                    }
                   >
                     <span>
                       Showing {pageStart()}–{pageEnd()} of {totalTasks()} task
@@ -717,10 +722,20 @@ export default function Tasks() {
                                         ? "opacity-100 text-foreground"
                                         : "opacity-0 group-hover/filter:opacity-60 text-muted-foreground"
                                     }`}
-                                    title={taskNameFilter() === task.taskName ? "Clear task name filter" : `Filter by task name: ${task.taskName}`}
-                                    onClick={(e) => applyFilter(e, "taskName", task.taskName)}
+                                    title={
+                                      taskNameFilter() === task.taskName
+                                        ? "Clear task name filter"
+                                        : `Filter by task name: ${task.taskName}`
+                                    }
+                                    onClick={(e) =>
+                                      applyFilter(e, "taskName", task.taskName)
+                                    }
                                   >
-                                    <FilterIcon active={taskNameFilter() === task.taskName} />
+                                    <FilterIcon
+                                      active={
+                                        taskNameFilter() === task.taskName
+                                      }
+                                    />
                                   </button>
                                 </span>
                               </td>
@@ -736,10 +751,18 @@ export default function Tasks() {
                                         ? "opacity-100 text-foreground"
                                         : "opacity-0 group-hover/filter:opacity-60 text-muted-foreground"
                                     }`}
-                                    title={queueFilter() === task.queueName ? "Clear queue filter" : `Filter by queue: ${task.queueName}`}
-                                    onClick={(e) => applyFilter(e, "queue", task.queueName)}
+                                    title={
+                                      queueFilter() === task.queueName
+                                        ? "Clear queue filter"
+                                        : `Filter by queue: ${task.queueName}`
+                                    }
+                                    onClick={(e) =>
+                                      applyFilter(e, "queue", task.queueName)
+                                    }
                                   >
-                                    <FilterIcon active={queueFilter() === task.queueName} />
+                                    <FilterIcon
+                                      active={queueFilter() === task.queueName}
+                                    />
                                   </button>
                                 </span>
                               </td>
@@ -752,10 +775,18 @@ export default function Tasks() {
                                         ? "opacity-100 text-foreground"
                                         : "opacity-0 group-hover/filter:opacity-60 text-muted-foreground"
                                     }`}
-                                    title={statusFilter() === task.status ? "Clear status filter" : `Filter by status: ${task.status}`}
-                                    onClick={(e) => applyFilter(e, "status", task.status)}
+                                    title={
+                                      statusFilter() === task.status
+                                        ? "Clear status filter"
+                                        : `Filter by status: ${task.status}`
+                                    }
+                                    onClick={(e) =>
+                                      applyFilter(e, "status", task.status)
+                                    }
                                   >
-                                    <FilterIcon active={statusFilter() === task.status} />
+                                    <FilterIcon
+                                      active={statusFilter() === task.status}
+                                    />
                                   </button>
                                 </span>
                               </td>
@@ -864,7 +895,9 @@ export default function Tasks() {
 }
 
 function FilterIcon(props: { active?: boolean }) {
-  return <span class="text-[10px] leading-none">{props.active ? "▼" : "▽"}</span>;
+  return (
+    <span class="text-[10px] leading-none">{props.active ? "▼" : "▽"}</span>
+  );
 }
 
 function LoadingPlaceholder() {

@@ -115,7 +115,6 @@ def test_checkpoint_write_on_failed_run_raises_ab002(client):
     client.conn.execute(f"release savepoint {savepoint}")
 
 
-
 def test_checkpoint_preloading_survives_retry(client):
     queue = "checkpoint-retry"
     client.create_queue(queue)
@@ -382,9 +381,9 @@ def test_get_task_checkpoint_state_respects_include_pending(client):
     )
 
     client.conn.execute(
-        sql.SQL("update absurd.{c} set status = 'pending' where task_id = %s and checkpoint_name = %s").format(
-            c=client.get_table("c", queue)
-        ),
+        sql.SQL(
+            "update absurd.{c} set status = 'pending' where task_id = %s and checkpoint_name = %s"
+        ).format(c=client.get_table("c", queue)),
         (spawn.task_id, "step-1"),
     )
 

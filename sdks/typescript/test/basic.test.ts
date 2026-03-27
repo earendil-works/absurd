@@ -594,14 +594,20 @@ describe("Basic SDK Operations", () => {
       });
 
       try {
-        await vi.waitFor(() => {
-          expect(heartbeatFired).toBe(true);
-        }, { timeout: 500 });
+        await vi.waitFor(
+          () => {
+            expect(heartbeatFired).toBe(true);
+          },
+          { timeout: 500 },
+        );
 
-        await vi.waitFor(async () => {
-          const task = await ctx.getTask(taskID);
-          expect(task?.state).toBe("completed");
-        }, { timeout: longWorkMs + 2000 });
+        await vi.waitFor(
+          async () => {
+            const task = await ctx.getTask(taskID);
+            expect(task?.state).toBe("completed");
+          },
+          { timeout: longWorkMs + 2000 },
+        );
 
         const runs = await ctx.getRuns(taskID);
         expect(runs).toHaveLength(1);

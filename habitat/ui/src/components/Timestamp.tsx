@@ -24,7 +24,9 @@ export function RelativeTimestamp(props: RelativeTimestampProps) {
     if (!parsed) {
       return props.fallback ?? "—";
     }
-    return props.label ?? formatRelativeTimestamp(parsed, props.variant ?? "long");
+    return (
+      props.label ?? formatRelativeTimestamp(parsed, props.variant ?? "long")
+    );
   });
 
   return (
@@ -74,13 +76,18 @@ function TimestampTooltip(props: {
 }) {
   return (
     <Tooltip openDelay={120}>
-      <Tooltip.Trigger as="span" class={cn("inline-flex cursor-help", props.class)}>
+      <Tooltip.Trigger
+        as="span"
+        class={cn("inline-flex cursor-help", props.class)}
+      >
         {props.children}
       </Tooltip.Trigger>
       <Tooltip.Portal>
         <Tooltip.Content class="z-50 max-w-xs rounded-md border border-border bg-popover px-2.5 py-2 text-xs text-popover-foreground shadow-md">
           <div class="space-y-1 font-mono tabular-nums">
-            <For each={props.lines}>{(line) => <div class="whitespace-nowrap">{line}</div>}</For>
+            <For each={props.lines}>
+              {(line) => <div class="whitespace-nowrap">{line}</div>}
+            </For>
           </div>
         </Tooltip.Content>
       </Tooltip.Portal>

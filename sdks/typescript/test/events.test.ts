@@ -88,7 +88,10 @@ describe("Event system", () => {
     await ctx.setFakeNow(new Date(firstEmitAt.getTime() + 30 * 1000));
     await absurd.emitEvent(eventName, secondPayload);
 
-    const eventRows = await ctx.pool.query<{ payload: unknown; emitted_at: Date }>(
+    const eventRows = await ctx.pool.query<{
+      payload: unknown;
+      emitted_at: Date;
+    }>(
       `SELECT payload, emitted_at FROM absurd.e_${ctx.queueName} WHERE event_name = $1`,
       [eventName],
     );
@@ -98,10 +101,13 @@ describe("Event system", () => {
       firstEmitAt.getTime(),
     );
 
-    absurd.registerTask({ name: "late-first-write-waiter" }, async (_params, ctx) => {
-      const received = await ctx.awaitEvent(eventName);
-      return { received };
-    });
+    absurd.registerTask(
+      { name: "late-first-write-waiter" },
+      async (_params, ctx) => {
+        const received = await ctx.awaitEvent(eventName);
+        return { received };
+      },
+    );
 
     const { taskID } = await absurd.spawn("late-first-write-waiter", undefined);
     await absurd.workBatch("worker1", 60, 1);

@@ -184,7 +184,9 @@ describe("Retry and cancellation", () => {
     const spawned = await absurd.spawn("retry-spawn-new", { payload: 1 });
     await absurd.workBatch("worker1", 60, 1);
 
-    const retried = await absurd.retryTask(spawned.taskID, { spawnNewTask: true });
+    const retried = await absurd.retryTask(spawned.taskID, {
+      spawnNewTask: true,
+    });
 
     expect(retried.created).toBe(true);
     expect(retried.attempt).toBe(1);
@@ -283,10 +285,13 @@ describe("Retry and cancellation", () => {
   });
 
   test("executeTask swallows AB002 from heartbeat on failed run", async () => {
-    absurd.registerTask({ name: "failed-heartbeat" }, async (_params, taskCtx) => {
-      await taskCtx.heartbeat(30);
-      return { ok: true };
-    });
+    absurd.registerTask(
+      { name: "failed-heartbeat" },
+      async (_params, taskCtx) => {
+        await taskCtx.heartbeat(30);
+        return { ok: true };
+      },
+    );
 
     const { runID } = await absurd.spawn("failed-heartbeat", { data: 1 });
     const [claim] = await absurd.claimTasks({
@@ -309,12 +314,17 @@ describe("Retry and cancellation", () => {
   });
 
   test("executeTask swallows AB002 from checkpoint writes on failed run", async () => {
-    absurd.registerTask({ name: "failed-checkpoint" }, async (_params, taskCtx) => {
-      await taskCtx.step("persist", async () => ({ value: 1 }));
-      return { ok: true };
-    });
+    absurd.registerTask(
+      { name: "failed-checkpoint" },
+      async (_params, taskCtx) => {
+        await taskCtx.step("persist", async () => ({ value: 1 }));
+        return { ok: true };
+      },
+    );
 
-    const { taskID, runID } = await absurd.spawn("failed-checkpoint", { data: 1 });
+    const { taskID, runID } = await absurd.spawn("failed-checkpoint", {
+      data: 1,
+    });
     const [claim] = await absurd.claimTasks({
       workerId: "worker-1",
       claimTimeout: 60,

@@ -87,7 +87,9 @@ export default function TaskRuns() {
 
       hasMore = pageResult.hasMore;
       if (hasMore && pageResult.items.length === 0) {
-        throw new Error("Task run pagination stalled: backend reported more pages but returned no rows.");
+        throw new Error(
+          "Task run pagination stalled: backend reported more pages but returned no rows.",
+        );
       }
 
       currentPage += 1;

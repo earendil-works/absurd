@@ -40,7 +40,8 @@ export function getRuntimeConfig(): RuntimeConfig {
   const raw = window.__HABITAT_RUNTIME_CONFIG__;
 
   const basePath = normalizePrefix(raw?.basePath);
-  const apiBasePath = normalizePrefix(raw?.apiBasePath) || joinPrefixes(basePath, "/api");
+  const apiBasePath =
+    normalizePrefix(raw?.apiBasePath) || joinPrefixes(basePath, "/api");
   const staticBasePath =
     normalizePrefix(raw?.staticBasePath) || joinPrefixes(basePath, "/_static");
 

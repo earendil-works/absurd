@@ -236,10 +236,7 @@ export default function EventLog() {
                 setTimeRange(range);
               }}
               onParamsChange={(tp: TimeSelectionParams) => {
-                syncSearchParams(
-                  { timeParams: tp },
-                  { replace: true },
-                );
+                syncSearchParams({ timeParams: tp }, { replace: true });
               }}
             />
             <Button
@@ -359,13 +356,15 @@ export default function EventLog() {
                             when={event.emittedAt}
                             fallback={
                               <>
-                                Created <AbsoluteUtcTimestamp value={event.createdAt} />
+                                Created{" "}
+                                <AbsoluteUtcTimestamp value={event.createdAt} />
                               </>
                             }
                           >
                             {(emittedAt) => (
                               <>
-                                Emitted <AbsoluteUtcTimestamp value={emittedAt()} />
+                                Emitted{" "}
+                                <AbsoluteUtcTimestamp value={emittedAt()} />
                               </>
                             )}
                           </Show>{" "}
@@ -398,4 +397,3 @@ export default function EventLog() {
     </>
   );
 }
-

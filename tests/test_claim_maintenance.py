@@ -65,11 +65,14 @@ def test_claim_expired_sweep_is_bounded_by_qty(client):
 
     _ = client.claim_tasks(queue, worker="sweeper", claim_timeout=30, qty=1)
 
-    states_after_first = [client.get_run(queue, run_id)["state"] for run_id in original_run_ids]
+    states_after_first = [
+        client.get_run(queue, run_id)["state"] for run_id in original_run_ids
+    ]
     assert states_after_first.count("failed") == 1
 
     _ = client.claim_tasks(queue, worker="sweeper", claim_timeout=30, qty=2)
 
-    states_after_second = [client.get_run(queue, run_id)["state"] for run_id in original_run_ids]
+    states_after_second = [
+        client.get_run(queue, run_id)["state"] for run_id in original_run_ids
+    ]
     assert states_after_second.count("failed") == 3
-

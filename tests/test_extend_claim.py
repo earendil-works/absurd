@@ -94,7 +94,11 @@ def test_extend_claim_failed_run_raises_ab002(client):
     assert getattr(exc_info.value, "sqlstate", None) == "AB002"
     client.conn.execute(f"rollback to savepoint {savepoint}")
     client.conn.execute(f"release savepoint {savepoint}")
-    assert client.get_task(queue, spawn.task_id)["state"] in ("pending", "sleeping", "failed")
+    assert client.get_task(queue, spawn.task_id)["state"] in (
+        "pending",
+        "sleeping",
+        "failed",
+    )
 
 
 def test_extend_claim_non_running_run_errors(client):

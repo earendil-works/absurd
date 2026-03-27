@@ -29,9 +29,12 @@ type Spy = {
 
 const activeSpies = new Set<Spy>();
 
-const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+const sleep = (ms: number) =>
+  new Promise<void>((resolve) => setTimeout(resolve, ms));
 
-function isObjectContainingMatcher(value: unknown): value is ObjectContainingMatcher {
+function isObjectContainingMatcher(
+  value: unknown,
+): value is ObjectContainingMatcher {
   return (
     typeof value === "object" &&
     value !== null &&
@@ -90,20 +93,32 @@ class Expectation {
   }
 
   toBe(expected: unknown): void {
-    this.check(Object.is(this.actual, expected), `Expected ${this.actual} to be ${expected}`);
+    this.check(
+      Object.is(this.actual, expected),
+      `Expected ${this.actual} to be ${expected}`,
+    );
   }
 
   toEqual(expected: unknown): void {
-    this.check(isDeepStrictEqual(this.actual, expected), "Expected values to be deeply equal");
+    this.check(
+      isDeepStrictEqual(this.actual, expected),
+      "Expected values to be deeply equal",
+    );
   }
 
   toMatchObject(expected: unknown): void {
-    this.check(matchesObject(this.actual, expected), "Expected object to match");
+    this.check(
+      matchesObject(this.actual, expected),
+      "Expected object to match",
+    );
   }
 
   toContain(expected: unknown): void {
     if (typeof this.actual === "string") {
-      this.check(this.actual.includes(String(expected)), `Expected string to contain ${expected}`);
+      this.check(
+        this.actual.includes(String(expected)),
+        `Expected string to contain ${expected}`,
+      );
       return;
     }
     if (Array.isArray(this.actual)) {
@@ -117,8 +132,12 @@ class Expectation {
   }
 
   toHaveLength(expected: number): void {
-    const length = (this.actual as { length?: number } | null | undefined)?.length;
-    this.check(length === expected, `Expected length ${expected}, got ${String(length)}`);
+    const length = (this.actual as { length?: number } | null | undefined)
+      ?.length;
+    this.check(
+      length === expected,
+      `Expected length ${expected}, got ${String(length)}`,
+    );
   }
 
   toBeDefined(): void {
@@ -144,25 +163,38 @@ class Expectation {
     const keys = path.split(".");
     let current: unknown = this.actual;
     for (const key of keys) {
-      if (typeof current !== "object" || current === null || !(key in (current as Record<string, unknown>))) {
+      if (
+        typeof current !== "object" ||
+        current === null ||
+        !(key in (current as Record<string, unknown>))
+      ) {
         this.check(false, `Expected object to have property ${path}`);
         return;
       }
       current = (current as Record<string, unknown>)[key];
     }
     if (arguments.length > 1) {
-      this.check(isDeepStrictEqual(current, expected), `Expected property ${path} to equal ${String(expected)}`);
+      this.check(
+        isDeepStrictEqual(current, expected),
+        `Expected property ${path} to equal ${String(expected)}`,
+      );
     }
   }
 
   toHaveBeenCalledTimes(expected: number): void {
     const calls = (this.actual as Spy)?.mock?.calls;
-    this.check(Array.isArray(calls) && calls.length === expected, `Expected spy to be called ${expected} times`);
+    this.check(
+      Array.isArray(calls) && calls.length === expected,
+      `Expected spy to be called ${expected} times`,
+    );
   }
 
   toHaveBeenCalled(): void {
     const calls = (this.actual as Spy)?.mock?.calls;
-    this.check(Array.isArray(calls) && calls.length > 0, "Expected spy to have been called");
+    this.check(
+      Array.isArray(calls) && calls.length > 0,
+      "Expected spy to have been called",
+    );
   }
 
   toHaveBeenCalledWith(...expectedArgs: unknown[]): void {
@@ -175,7 +207,10 @@ class Expectation {
         }
         return args.every((arg, idx) => matchesObject(arg, expectedArgs[idx]));
       });
-    this.check(Boolean(found), "Expected spy to be called with matching arguments");
+    this.check(
+      Boolean(found),
+      "Expected spy to be called with matching arguments",
+    );
   }
 
   get rejects() {
@@ -192,18 +227,23 @@ class Expectation {
 
     const toThrowError = async (expected?: string | RegExp) => {
       const rejected = await getRejection();
-      const message = rejected instanceof Error ? rejected.message : String(rejected);
+      const message =
+        rejected instanceof Error ? rejected.message : String(rejected);
       if (expected === undefined) {
         return;
       }
       if (typeof expected === "string") {
         if (!message.includes(expected)) {
-          throw new Error(`Expected rejection message to include ${expected}, got: ${message}`);
+          throw new Error(
+            `Expected rejection message to include ${expected}, got: ${message}`,
+          );
         }
         return;
       }
       if (!expected.test(message)) {
-        throw new Error(`Expected rejection message to match ${expected}, got: ${message}`);
+        throw new Error(
+          `Expected rejection message to match ${expected}, got: ${message}`,
+        );
       }
     };
 
@@ -228,7 +268,10 @@ expectImpl.objectContaining = (expected: unknown) => ({
   expected,
 });
 
-function spyOn<T extends object, K extends keyof T & string>(obj: T, method: K): Spy {
+function spyOn<T extends object, K extends keyof T & string>(
+  obj: T,
+  method: K,
+): Spy {
   const original = obj[method] as unknown as (...args: unknown[]) => unknown;
   if (typeof original !== "function") {
     throw new Error(`Cannot spy on ${String(method)}; not a function`);
@@ -303,7 +346,10 @@ function useRealTimers(): void {
   realDateNow = null;
 }
 
-async function waitFor(fn: () => unknown | Promise<unknown>, options: WaitForOptions = {}): Promise<void> {
+async function waitFor(
+  fn: () => unknown | Promise<unknown>,
+  options: WaitForOptions = {},
+): Promise<void> {
   const timeout = options.timeout ?? 1000;
   const interval = options.interval ?? 10;
   const start = Date.now();
@@ -335,10 +381,18 @@ function restoreAllMocks(): void {
 const _capturedLogs: { level: string; args: unknown[] }[] = [];
 
 export const testLog = {
-  log(...args: unknown[]) { _capturedLogs.push({ level: "log", args }); },
-  info(...args: unknown[]) { _capturedLogs.push({ level: "info", args }); },
-  warn(...args: unknown[]) { _capturedLogs.push({ level: "warn", args }); },
-  error(...args: unknown[]) { _capturedLogs.push({ level: "error", args }); },
+  log(...args: unknown[]) {
+    _capturedLogs.push({ level: "log", args });
+  },
+  info(...args: unknown[]) {
+    _capturedLogs.push({ level: "info", args });
+  },
+  warn(...args: unknown[]) {
+    _capturedLogs.push({ level: "warn", args });
+  },
+  error(...args: unknown[]) {
+    _capturedLogs.push({ level: "error", args });
+  },
 };
 
 function clearCapturedLogs() {
@@ -347,7 +401,9 @@ function clearCapturedLogs() {
 
 function flushCapturedLogs() {
   for (const entry of _capturedLogs) {
-    const fn = (console as unknown as Record<string, Function>)[entry.level] ?? console.error;
+    const fn =
+      (console as unknown as Record<string, Function>)[entry.level] ??
+      console.error;
     fn.call(console, ...entry.args);
   }
   _capturedLogs.length = 0;
@@ -376,7 +432,16 @@ const wrappedIt = wrapTestFn(it as (name: string, fn: TestFn) => void);
 const wrappedTest = wrapTestFn(test as (name: string, fn: TestFn) => void);
 
 export const expect = expectImpl;
-export { assert, describe, wrappedIt as it, wrappedTest as test, before as beforeAll, beforeEach, after as afterAll, afterEach };
+export {
+  assert,
+  describe,
+  wrappedIt as it,
+  wrappedTest as test,
+  before as beforeAll,
+  beforeEach,
+  after as afterAll,
+  afterEach,
+};
 
 export const vi = {
   spyOn,

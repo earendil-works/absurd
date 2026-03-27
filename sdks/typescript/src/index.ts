@@ -451,11 +451,10 @@ export class TaskContext {
    */
   async heartbeat(seconds?: number): Promise<void> {
     const leaseSeconds = seconds ?? this.claimTimeout;
-    await this.queryWithTaskStateCheck(`SELECT absurd.extend_claim($1, $2, $3)`, [
-      this.queueName,
-      this.task.run_id,
-      leaseSeconds,
-    ]);
+    await this.queryWithTaskStateCheck(
+      `SELECT absurd.extend_claim($1, $2, $3)`,
+      [this.queueName, this.task.run_id, leaseSeconds],
+    );
     this.onLeaseExtended(leaseSeconds);
   }
 
@@ -497,7 +496,9 @@ export class Absurd {
       options = { db: options };
     }
 
-    const validatedQueueName = validateQueueName(options?.queueName ?? "default");
+    const validatedQueueName = validateQueueName(
+      options?.queueName ?? "default",
+    );
 
     let connectionOrUrl = options.db;
     if (!connectionOrUrl) {

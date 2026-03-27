@@ -230,7 +230,9 @@ export interface RetryTaskInput {
   extraAttempts?: number;
 }
 
-export async function retryTask(input: RetryTaskInput): Promise<RetryTaskResult> {
+export async function retryTask(
+  input: RetryTaskInput,
+): Promise<RetryTaskResult> {
   return handleResponse<RetryTaskResult>(
     await fetch(apiURL("/tasks/retry"), {
       method: "POST",

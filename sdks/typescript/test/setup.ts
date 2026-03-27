@@ -63,28 +63,31 @@ export let pool: Pool;
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-beforeAll(async () => {
-  console.time("Test container startup");
-  container = await new PostgreSqlContainer("postgres:16-alpine")
-    .withExposedPorts(5432)
-    .start();
-  console.timeEnd("Test container startup");
+beforeAll(
+  async () => {
+    console.time("Test container startup");
+    container = await new PostgreSqlContainer("postgres:16-alpine")
+      .withExposedPorts(5432)
+      .start();
+    console.timeEnd("Test container startup");
 
-  pool = new Pool({
-    host: container.getHost(),
-    port: container.getPort(),
-    database: container.getDatabase(),
-    user: container.getUsername(),
-    password: container.getPassword(),
-    max: 1,
-  });
+    pool = new Pool({
+      host: container.getHost(),
+      port: container.getPort(),
+      database: container.getDatabase(),
+      user: container.getUsername(),
+      password: container.getPassword(),
+      max: 1,
+    });
 
-  const schemaPath = join(__dirname, "../../../sql/absurd.sql");
-  const schema = readFileSync(schemaPath, "utf-8");
-  await pool.query(schema);
+    const schemaPath = join(__dirname, "../../../sql/absurd.sql");
+    const schema = readFileSync(schemaPath, "utf-8");
+    await pool.query(schema);
 
-  console.log("✓ Test container started and schema loaded");
-}, { timeout: 60000 });
+    console.log("✓ Test container started and schema loaded");
+  },
+  { timeout: 60000 },
+);
 
 afterAll(async () => {
   console.time("Test container cleanup");

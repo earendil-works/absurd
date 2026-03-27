@@ -3,6 +3,7 @@ from datetime import datetime, timedelta, timezone
 from psycopg import sql
 import pytest
 
+
 def test_cleanup_tasks_and_events(client):
     queue = "cleanup"
     client.create_queue(queue)
@@ -64,7 +65,14 @@ def test_queue_name_validation_limits(client):
 
 
 def test_queue_name_validation_allows_permissive_postgres_names(client):
-    for valid_name in ["queue-1", "UpperCase", "bad space", "_bad", "-bad", "bad'quote"]:
+    for valid_name in [
+        "queue-1",
+        "UpperCase",
+        "bad space",
+        "_bad",
+        "-bad",
+        "bad'quote",
+    ]:
         client.create_queue(valid_name)
         assert valid_name in client.list_queues()
         client.drop_queue(valid_name)

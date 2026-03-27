@@ -1,4 +1,11 @@
-import { createSignal, createEffect, createMemo, onMount, onCleanup, untrack } from "solid-js";
+import {
+  createSignal,
+  createEffect,
+  createMemo,
+  onMount,
+  onCleanup,
+  untrack,
+} from "solid-js";
 import { Popover } from "@kobalte/core/popover";
 import { cn } from "@/lib/cn";
 
@@ -126,7 +133,8 @@ export function DateRangeSelector(props: DateRangeSelectorProps) {
   /* --- Restore state from URL params --- */
   const restoreState = () => {
     const p = props.params;
-    if (!p?.time) return { kind: "all" as const, relKey: null as string | null };
+    if (!p?.time)
+      return { kind: "all" as const, relKey: null as string | null };
 
     const preset = PRESET_BY_KEY.get(p.time);
     if (preset) return { kind: "relative" as const, relKey: p.time };
@@ -167,7 +175,9 @@ export function DateRangeSelector(props: DateRangeSelectorProps) {
       const preset = key ? PRESET_BY_KEY.get(key) : null;
       if (!preset) return {};
       void relativeTick();
-      return { after: new Date(Date.now() - preset.seconds * 1000).toISOString() };
+      return {
+        after: new Date(Date.now() - preset.seconds * 1000).toISOString(),
+      };
     }
     if (k === "around") {
       const center = new Date(aroundCenter());
@@ -182,8 +192,14 @@ export function DateRangeSelector(props: DateRangeSelectorProps) {
       const rv: TimeRange = {};
       const s = absStart();
       const e = absEnd();
-      if (s) { const d = new Date(s); if (!isNaN(d.getTime())) rv.after = d.toISOString(); }
-      if (e) { const d = new Date(e); if (!isNaN(d.getTime())) rv.before = d.toISOString(); }
+      if (s) {
+        const d = new Date(s);
+        if (!isNaN(d.getTime())) rv.after = d.toISOString();
+      }
+      if (e) {
+        const d = new Date(e);
+        if (!isNaN(d.getTime())) rv.before = d.toISOString();
+      }
       return rv;
     }
     return {};
@@ -256,13 +272,25 @@ export function DateRangeSelector(props: DateRangeSelectorProps) {
   };
 
   const label = () =>
-    formatTriggerLabel(kind(), relKey(), aroundCenter(), aroundRadius(), absStart(), absEnd());
+    formatTriggerLabel(
+      kind(),
+      relKey(),
+      aroundCenter(),
+      aroundRadius(),
+      absStart(),
+      absEnd(),
+    );
 
   const isAroundActive = () => kind() === "around";
   const isAbsoluteActive = () => kind() === "absolute";
 
   return (
-    <Popover open={open()} onOpenChange={setOpen} gutter={4} placement="bottom-end">
+    <Popover
+      open={open()}
+      onOpenChange={setOpen}
+      gutter={4}
+      placement="bottom-end"
+    >
       <Popover.Trigger
         class={cn(
           "inline-flex items-center gap-2 rounded-md border border-input bg-background",
@@ -314,7 +342,9 @@ export function DateRangeSelector(props: DateRangeSelectorProps) {
                 <div
                   class={cn(
                     "space-y-2 pl-2 transition-opacity",
-                    isAroundActive() ? "opacity-100" : "opacity-40 pointer-events-none",
+                    isAroundActive()
+                      ? "opacity-100"
+                      : "opacity-40 pointer-events-none",
                   )}
                 >
                   <input
@@ -359,7 +389,9 @@ export function DateRangeSelector(props: DateRangeSelectorProps) {
                 <div
                   class={cn(
                     "space-y-2 pl-2 transition-opacity",
-                    isAbsoluteActive() ? "opacity-100" : "opacity-40 pointer-events-none",
+                    isAbsoluteActive()
+                      ? "opacity-100"
+                      : "opacity-40 pointer-events-none",
                   )}
                 >
                   <div class="space-y-1">

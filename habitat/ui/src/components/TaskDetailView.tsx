@@ -267,7 +267,8 @@ function DetailContent(props: {
                   </div>
                   <div class="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground mb-2">
                     <span>
-                      Updated <AbsoluteUtcTimestamp value={checkpoint.updatedAt} />
+                      Updated{" "}
+                      <AbsoluteUtcTimestamp value={checkpoint.updatedAt} />
                     </span>
                     <Show when={checkpoint.expiresAt}>
                       {(expires) => (
@@ -302,4 +303,3 @@ function formatWaitType(value: string | null | undefined): string {
   }
   return value.charAt(0).toUpperCase() + value.slice(1);
 }
-

@@ -187,10 +187,16 @@ export default function Overview() {
                               {queue.queueVisibleLength.toLocaleString()}
                             </td>
                             <td class="px-3 py-2">
-                              <RelativeTimestamp value={queue.newestMsgAt} variant="long" />
+                              <RelativeTimestamp
+                                value={queue.newestMsgAt}
+                                variant="long"
+                              />
                             </td>
                             <td class="px-3 py-2">
-                              <RelativeTimestamp value={queue.oldestMsgAt} variant="long" />
+                              <RelativeTimestamp
+                                value={queue.oldestMsgAt}
+                                variant="long"
+                              />
                             </td>
                             <td class="px-3 py-2 tabular-nums">
                               {queue.totalMessages.toLocaleString()}
@@ -264,5 +270,3 @@ function LoadingPlaceholder() {
     </div>
   );
 }
-
-
