@@ -32,6 +32,7 @@ nav = [
     {"Patterns" = [
         {"Overview" = "patterns/index.md"},
         {"Cron Jobs With Deduplication Keys" = "patterns/cron.md"},
+        {"Pi AI Agent Durable Turns" = "patterns/pi-ai-agent.md"},
     ]},
 
     {"SDKs" = [
