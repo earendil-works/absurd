@@ -65,7 +65,17 @@ Migrations are bundled into built copies of `absurdctl` (via
 ```bash
 absurdctl migrate
 absurdctl migrate -d mydb
+absurdctl migrate --from 0.1.0 --to main --dump-sql > absurd-migrations.sql
 ```
+
+Options:
+
+| Flag | Description |
+|------|-------------|
+| `--from VERSION` | Starting schema version (overrides value recorded in DB) |
+| `--to VERSION` | Target schema version (default: `main`) |
+| `--dry-run` | Show migration plan without applying SQL |
+| `--dump-sql` | Print one combined SQL script for all migrations in range and exit (requires `--from`; does not connect to Postgres) |
 
 ## Queue Management
 

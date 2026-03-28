@@ -262,6 +262,65 @@ def test_migrate_requires_from_for_legacy_steps(monkeypatch):
     assert applied == []
 
 
+def test_migrate_dump_sql_outputs_combined_sql_without_applying(monkeypatch, capsys):
+    applied = []
+
+    monkeypatch.setitem(
+        cmd_migrate.__globals__,
+        "get_recorded_schema_version",
+        lambda config: (_ for _ in ()).throw(
+            AssertionError("dump-sql must not read schema version from DB")
+        ),
+    )
+
+    monkeypatch.setitem(
+        cmd_migrate.__globals__,
+        "discover_migrations",
+        lambda script_dir, target_ref, include_remote=True: {
+            ("0.1.0", "0.1.1"): {
+                "name": "0.1.0-0.1.1.sql",
+                "source": "local",
+                "sql": "-- migration a\nselect 1;",
+            },
+            ("0.1.1", "main"): {
+                "name": "0.1.1-main.sql",
+                "source": "local",
+                "sql": "-- migration b\nselect 2;",
+            },
+        },
+    )
+
+    def fake_run_psql(config, query=None, **kwargs):
+        if kwargs.get("input_data"):
+            applied.append(kwargs["input_data"])
+        return ""
+
+    monkeypatch.setitem(cmd_migrate.__globals__, "run_psql", fake_run_psql)
+
+    cmd_migrate(["--from", "0.1.0", "--to", "main", "--dump-sql"])
+
+    out = capsys.readouterr().out
+    assert "-- begin migration: 0.1.0-0.1.1.sql [local]" in out
+    assert "-- migration a\nselect 1;" in out
+    assert "-- begin migration: 0.1.1-main.sql [local]" in out
+    assert "-- migration b\nselect 2;" in out
+    assert "Absurd schema migrated successfully" not in out
+    assert applied == []
+
+
+def test_migrate_dump_sql_requires_from(monkeypatch):
+    monkeypatch.setitem(
+        cmd_migrate.__globals__,
+        "get_recorded_schema_version",
+        lambda config: (_ for _ in ()).throw(
+            AssertionError("dump-sql must not read schema version from DB")
+        ),
+    )
+
+    with pytest.raises(SystemExit):
+        cmd_migrate(["--dump-sql"])
+
+
 def test_migrate_applies_migrations_with_from_and_validates_version_progress(
     monkeypatch,
 ):

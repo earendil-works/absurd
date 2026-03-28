@@ -671,6 +671,27 @@ def get_migration_sql(migration):
         sys.exit(1)
 
 
+def render_combined_migration_sql(current_version, target_version, resolved_steps):
+    parts = [
+        "-- Absurd migration SQL bundle",
+        f"-- Range: {current_version} -> {target_version}",
+        "",
+    ]
+
+    for step in resolved_steps:
+        migration = step["migration"]
+        sql_content = step["sql"]
+        parts.append(
+            f"-- begin migration: {migration['name']} [{migration['source']}]"
+        )
+        if sql_content:
+            parts.append(sql_content)
+        parts.append(f"-- end migration: {migration['name']}")
+        parts.append("")
+
+    return "\n".join(parts)
+
+
 def cmd_cleanup(args):
     """Clean up old completed, failed, or cancelled tasks and events."""
     usage = "usage: %prog cleanup [options] QUEUE_NAME TTL_DAYS"
@@ -1010,6 +1031,13 @@ def cmd_migrate(args):
         default=False,
         help="Show the migration plan without applying SQL",
     )
+    parser.add_option(
+        "--dump-sql",
+        dest="dump_sql",
+        action="store_true",
+        default=False,
+        help="Print combined migration SQL for the selected range and exit",
+    )
 
     options, args = parse_args_with_help(
         parser,
@@ -1018,6 +1046,7 @@ def cmd_migrate(args):
             "absurdctl migrate",
             "absurdctl migrate --to 0.1.1",
             "absurdctl migrate --from 0.0.8 --to main",
+            "absurdctl migrate --from 0.1.0 --to main --dump-sql > absurd-migrations.sql",
         ],
     )
 
@@ -1026,12 +1055,24 @@ def cmd_migrate(args):
         parser.print_help()
         sys.exit(1)
 
-    config = config_from_options(options)
     script_dir = os.path.dirname(os.path.abspath(__file__))
     target_version = options.to_version or ABSURD_SCHEMA_TARGET_VERSION
 
+    if options.dump_sql and options.from_version is None:
+        print(
+            "Error: --dump-sql requires --from VERSION so SQL can be generated from an explicit range.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    config = None
     from_version_supplied = options.from_version is not None
-    current_version = options.from_version or get_recorded_schema_version(config)
+
+    if options.dump_sql:
+        current_version = options.from_version
+    else:
+        config = config_from_options(options)
+        current_version = options.from_version or get_recorded_schema_version(config)
 
     if current_version is None:
         print(
@@ -1067,23 +1108,25 @@ def cmd_migrate(args):
         sys.exit(1)
 
     if not path and compare_versions(current_version, target_version) == 0:
-        print(f"Absurd schema is already at {target_version}")
+        if not options.dump_sql:
+            print(f"Absurd schema is already at {target_version}")
         return
 
     if not path and compare_versions(current_version, target_version) < 0:
-        print(
-            f"No migration files found between {current_version} and {target_version}; "
-            "treating intermediate releases as null migrations."
-        )
-        print(f"Absurd schema migrated successfully to {target_version}")
+        if not options.dump_sql:
+            print(
+                f"No migration files found between {current_version} and {target_version}; "
+                "treating intermediate releases as null migrations."
+            )
+            print(f"Absurd schema migrated successfully to {target_version}")
         return
 
-    if options.verbose or options.dry_run:
+    if (options.verbose or options.dry_run) and not options.dump_sql:
         print(f"Migration plan ({current_version} -> {target_version}):")
         for migration in path:
             print(f"  - {migration['name']} [{migration['source']}]")
 
-    if options.dry_run:
+    if options.dry_run and not options.dump_sql:
         return
 
     resolved_steps = []
@@ -1119,6 +1162,17 @@ def cmd_migrate(args):
         for migration_name in legacy_steps:
             print(f"  - {migration_name}", file=sys.stderr)
         sys.exit(1)
+
+    if options.dump_sql:
+        print(
+            render_combined_migration_sql(
+                current_version,
+                target_version,
+                resolved_steps,
+            ),
+            end="",
+        )
+        return
 
     for step in resolved_steps:
         migration = step["migration"]
