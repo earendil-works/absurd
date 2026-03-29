@@ -72,12 +72,6 @@ describe("Task result APIs", () => {
 
     await expect(
       absurd.awaitTaskResult(spawned.taskID, {
-        timeout: Number.POSITIVE_INFINITY,
-      }),
-    ).rejects.toThrow("timeout must be a finite non-negative number");
-
-    await expect(
-      absurd.awaitTaskResult(spawned.taskID, {
         timeout: -1,
       }),
     ).rejects.toThrow("timeout must be a finite non-negative number");

@@ -1275,10 +1275,15 @@ function isTerminalTaskState(state: TaskResultState): boolean {
 function normalizeTimeoutSecondsToMs(
   timeoutSeconds?: number,
 ): number | null {
-  if (timeoutSeconds === undefined) {
+  if (timeoutSeconds === undefined || timeoutSeconds === Infinity) {
     return null;
-  } else if (timeoutSeconds < 0) {
-    return 0;
+  }
+  if (
+    typeof timeoutSeconds !== "number" ||
+    Number.isNaN(timeoutSeconds) ||
+    timeoutSeconds < 0
+  ) {
+    throw new Error("timeout must be a finite non-negative number");
   }
   return Math.floor(timeoutSeconds * 1000);
 }
