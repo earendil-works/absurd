@@ -694,7 +694,6 @@ declare
   v_first_started timestamptz;
   v_cancellation jsonb;
   v_max_duration bigint;
-  v_task_state text;
   v_task_cancel boolean := false;
   v_new_run_id uuid;
   v_task_state_after text;
@@ -718,13 +717,13 @@ begin
   end if;
 
   execute format(
-    'select retry_strategy, max_attempts, first_started_at, cancellation, state
+    'select retry_strategy, max_attempts, first_started_at, cancellation
        from absurd.%I
       where task_id = $1
       for update',
     't_' || p_queue_name
   )
-  into v_retry_strategy, v_max_attempts, v_first_started, v_cancellation, v_task_state
+  into v_retry_strategy, v_max_attempts, v_first_started, v_cancellation
   using v_task_id;
 
   execute format(
@@ -783,11 +782,10 @@ begin
       v_last_attempt_run := v_new_run_id;
       execute format(
         'insert into absurd.%I (run_id, task_id, attempt, state, available_at, wake_event, event_payload, result, failure_reason)
-         values ($1, $2, $3, %L, $4, null, null, null, null)',
-        'r_' || p_queue_name,
-        v_task_state_after
+         values ($1, $2, $3, $4, $5, null, null, null, null)',
+        'r_' || p_queue_name
       )
-      using v_new_run_id, v_task_id, v_next_attempt, v_next_available;
+      using v_new_run_id, v_task_id, v_next_attempt, v_task_state_after, v_next_available;
     end if;
   end if;
 
@@ -800,13 +798,12 @@ begin
 
   execute format(
     'update absurd.%I
-        set state = %L,
+        set state = $2,
             attempts = greatest(attempts, $3),
             last_attempt_run = $4,
             cancelled_at = coalesce(cancelled_at, $5)
       where task_id = $1',
-    't_' || p_queue_name,
-    v_task_state_after
+    't_' || p_queue_name
   ) using v_task_id, v_task_state_after, v_recorded_attempt, v_last_attempt_run, v_cancelled_at;
 
   execute format(
