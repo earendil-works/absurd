@@ -125,6 +125,14 @@ Retries happen at the **task** level, not the step level.  When a task fails:
 2. A new run is scheduled with backoff (configurable via retry strategy)
 3. The new run replays completed checkpoints and continues from where it left off
 
+This task-level model also explains how worker crashes are handled.  A worker
+claims a task for a limited amount of time, and that claim is extended whenever
+the task writes a checkpoint.  If the worker crashes or stops making progress
+before the claim expires, the task becomes available again and another worker
+can pick it up.  That means brief overlapping execution is possible, so tasks
+should make observable progress well within the claim timeout and leave ample
+headroom.
+
 Retry strategies can be `fixed`, `exponential`, or `none`:
 
 ```typescript

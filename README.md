@@ -12,11 +12,10 @@ needing any other services to run in addition to Postgres.
 
 *… because it's absurd how much you can over-design such a simple thing.*
 
-**Warning:** *this is an early experiment and should not be used in production.
-It's an exploration of whether such a system can be built in a way that the majority
-of the complexity sits with the database and not the client SDKs.*
-
 More about it can be found [in the announcement post](https://lucumr.pocoo.org/2025/11/3/absurd-workflows/).
+
+You can read in the docs [how Absurd compares to PGMQ, Cadence, Temporal,
+Inngest, and DBOS](docs/comparison.md).
 
 ## What is Durable Execution?
 
@@ -47,15 +46,6 @@ favorite migration system of choice.  Additionally if that file changes, we
 also release [migrations](sql/migrations) which should make upgrading easy.
 See the [quickstart guide](docs/quickstart.md) for a short tutorial and the
 [documentation index](docs/index.md) for everything else.
-
-## Comparison
-
-The expanded comparison now lives in the documentation:
-
-- [How Absurd compares to PGMQ, Cadence, Temporal, Inngest, and DBOS](docs/comparison.md)
-
-The short version is that Absurd optimizes for the smallest possible durable
-execution stack: Postgres plus workers, with most of the behavior living in SQL.
 
 ## Client SDKs
 
@@ -112,7 +102,7 @@ Install the SDK for your language of choice:
 npm install absurd-sdk
 
 # Python
-pip install absurd-sdk
+uv add absurd-sdk
 ```
 
 <div style="text-align: center" align="center">
@@ -189,21 +179,9 @@ More detail lives in the docs:
 
 - [Quickstart](docs/quickstart.md)
 - [Database Setup and Migrations](docs/database.md)
-- [Concepts](docs/concepts.md) — includes idempotency keys and retry semantics
+- [Concepts](docs/concepts.md) — includes retry semantics, worker claims, and idempotency keys
 - [Living with Code Changes](docs/patterns/living-with-code-changes.md)
 - [Cleanup and Retention](docs/cleanup.md)
-
-## Retries
-
-Unlike some other durable execution systems, Absurd only knows about tasks. Tasks
-are the unit that gets retried, and they happen to be composed of steps that act
-as checkpoints. Retries therefore happen at the task level. When a worker starts
-on a task it "claims" it, reserving the task for a configured duration. Each time
-the task stores a checkpoint, the claim is extended. If the worker crashes or does
-not make progress before the claim times out, the task resets and is handed to
-another worker. This overlap can lead to two workers running the same task. Write 
-tasks so that they always make observable progress well inside the claim timeout,
-with ample headroom.
 
 ## Working With Agents
 
