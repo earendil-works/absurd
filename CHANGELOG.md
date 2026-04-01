@@ -4,6 +4,11 @@ This contains the changes between releases.
 
 # Unreleased
 
+* Added task-result inspection and waiting APIs across SQL and SDKs, including `absurd.get_task_result()`, `app.fetchTaskResult()` / `app.awaitTaskResult()` in TypeScript, `fetch_task_result()` / `await_task_result()` in Python, and durable child-task waits from task contexts.
+* Added decomposed step support to the TypeScript and Python SDKs with `beginStep()` / `completeStep()` and `begin_step()` / `complete_step()`.
+* Added range-based SQL export to `absurdctl migrate --dump-sql`, making it possible to generate a bundled migration script for an explicit `--from` / `--to` version range without connecting to Postgres.
+* Fixed SDK task-result waiting to reject invalid timeout values, prevent infinite polling on `NaN`, and fail fast when a task tries to wait on another task in the same queue.
+
 # 0.2.0
 
 * Added `absurd.retry_task()` stored procedure for retrying permanently failed tasks, either in-place or by spawning a new task from original inputs.  #75
