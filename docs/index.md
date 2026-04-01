@@ -51,7 +51,10 @@ await app.startWorker();
 ## Quick Links
 
 - **[Quickstart](./quickstart.md)** — install the schema, create a queue, run your first task
-- **[Concepts](./concepts.md)** — tasks, steps, runs, events, and retry semantics
+- **[Database Setup and Migrations](./database.md)** — initialize the schema, upgrade releases, and generate SQL for your own migration system
+- **[Concepts](./concepts.md)** — what durable execution is, plus tasks, steps, runs, events, and retry semantics
+- **[Cleanup and Retention](./cleanup.md)** — set retention policies and automate cleanup with SQL, `absurdctl`, or cron
+- **[Comparison](./comparison.md)** — where Absurd fits relative to PGMQ, Cadence, Temporal, Inngest, and DBOS
 - **[Patterns](./patterns/)** — practical recipes for common workflow and scheduling setups
 
 ## SDKs

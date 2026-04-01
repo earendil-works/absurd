@@ -38,6 +38,9 @@ export PGDATABASE="postgresql://user:pass@localhost:5432/mydb"
 
 ## Schema Management
 
+For a full guide to fresh installs, upgrades, and generating SQL for your own
+migration system, see **[Database Setup and Migrations](./database.md)**.
+
 ### `init`
 
 Apply the Absurd schema (`absurd.sql`) to the database.  Safe to run on a fresh
@@ -46,7 +49,14 @@ database.
 ```bash
 absurdctl init
 absurdctl init -d mydb
+absurdctl init --ref 0.2.0
 ```
+
+Options:
+
+| Flag | Description |
+|------|-------------|
+| `--ref REF` | Install `absurd.sql` from a specific Git ref or release tag instead of `main` |
 
 ### `schema-version`
 
@@ -65,8 +75,14 @@ Migrations are bundled into built copies of `absurdctl` (via
 ```bash
 absurdctl migrate
 absurdctl migrate -d mydb
+absurdctl migrate --dry-run
+absurdctl migrate --to 0.2.0
 absurdctl migrate --from 0.1.0 --to main --dump-sql > absurd-migrations.sql
 ```
+
+For production, a good pattern is to generate SQL with `--dump-sql`, check that
+file into your application's migration directory, and let your usual migration
+system apply it.
 
 Options:
 
@@ -191,6 +207,9 @@ and a TTL in days.
 absurdctl cleanup default 7     # delete data older than 7 days
 absurdctl cleanup emails 30     # 30-day retention
 ```
+
+For batching, direct SQL usage, and cron/job examples, see
+**[Cleanup and Retention](./cleanup.md)**.
 
 ## Agent Help
 

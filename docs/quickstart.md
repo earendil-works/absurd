@@ -25,6 +25,11 @@ This creates the `absurd` schema with all stored procedures and helper
 functions.  If you prefer, you can also apply `sql/absurd.sql` directly with
 `psql` or plug it into your migration system.
 
+For production deployments, it is usually better to keep Absurd schema changes
+inside your existing database migration flow.  See
+**[Database Setup and Migrations](./database.md)** for the recommended workflow,
+including how to generate upgrade SQL with `absurdctl migrate --dump-sql`.
+
 ## 2. Create a Queue
 
 Queues are logical groups of tasks.  Each queue gets its own set of tables
@@ -136,6 +141,8 @@ app.start_worker()
 ## Next Steps
 
 - Read the **[Concepts](./concepts.md)** page to understand the full model
+- Read **[Cleanup and Retention](./cleanup.md)** before production so task and event data do not grow forever
+- Read the **[Living with Code Changes](./patterns/living-with-code-changes.md)** pattern if your tasks may survive deploys or long sleeps
 - Explore the **[TypeScript SDK](./sdk-typescript.md)** or **[Python SDK](./sdk-python.md)** API reference
 - Use **[Habitat](./habitat.md)** to monitor tasks in a web dashboard
 - Use **[absurdctl](./absurdctl.md)** for advanced queue and task management

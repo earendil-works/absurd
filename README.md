@@ -44,28 +44,18 @@ read and reason about.
 Absurd just needs a single `.sql` file ([`absurd.sql`](sql/absurd.sql)) which
 needs to be applied to a database of your choice.  You can plug it into your
 favorite migration system of choice.  Additionally if that file changes, we
-also release [migrations](sql/migrations) which should make upgrading easy. 
-See the [quickstart guide](https://earendil-works.github.io/absurd/quickstart/) for a short tutorial.
+also release [migrations](sql/migrations) which should make upgrading easy.
+See the [quickstart guide](docs/quickstart.md) for a short tutorial and the
+[documentation index](docs/index.md) for everything else.
 
 ## Comparison
 
-Absurd wants to be absurdly simple.  There are many systems on the market you
-might want to look at if you think you need more:
+The expanded comparison now lives in the documentation:
 
-* [pgmq](https://github.com/pgmq/pgmq) is a lightweight message queue built on
-  top of just Postgres.  Absurd has been heavily influenced by it.
-* [Cadence](https://github.com/cadence-workflow/cadence) in many ways is the
-  OG of durable execution systems.  It was built at Uber and has inspired many
-  systems since.
-* [Temporal](https://temporal.io/) was built by the Cadence authors to be a
-  more modern interpretation of it.  What sets it apart is that it takes strong
-  control of the runtime environment within the target language to help you build
-  deterministic workflows.
-* [Inngest](https://www.inngest.com/) is an event-driven workflow system.  It's
-  self-hostable and can run locally, but it's licensed under a fair-source-inspired
-  license.
-* [DBOS](https://docs.dbos.dev/) is also attempting to implement durable workflows
-  on top of Postgres.
+- [How Absurd compares to PGMQ, Cadence, Temporal, Inngest, and DBOS](docs/comparison.md)
+
+The short version is that Absurd optimizes for the smallest possible durable
+execution stack: Postgres plus workers, with most of the behavior living in SQL.
 
 ## Client SDKs
 
@@ -193,40 +183,15 @@ app.spawn('order-fulfillment', {
 });
 ```
 
-## Idempotency Keys
+## Documentation
 
-Because steps have their return values cached, for all intents and purposes
-they simulate "exactly-once" semantics.  However, all the code outside of steps
-will run multiple times.  Sometimes you want to integrate into systems that
-themselves have some sort of idempotency mechanism (like the `idempotency-key`
-HTTP header).  In that case, it's recommended to use `taskID` from the
-context to derive one:
+More detail lives in the docs:
 
-```typescript
-const payment = await ctx.step('process-payment', async () => {
-  const idempotencyKey = `${ctx.taskID}:payment`;
-  return await somesdk.charges.create({
-    amount: params.amount,
-    idempotencyKey,
-  });
-});
-```
-
-## Living with Code Changes
-
-One of the fun perks of working with durable execution systems is that your
-tasks might keep running for... well, geological timescales.  The codebase
-evolves but that workflow you kicked off six months ago?  If you sleep long
-enough, that is still ticking.  There's no magic fix for this, just awareness.
-
-In practice, it means that if you change what a step returns, some future code
-might suddenly receive old results from a bygone era.  That's part of the
-deal.  So what can you do? Two options:
-
-1. Rename the step (the old state is never going to be seen again)
-2. Handle the relics gracefully when they come crawling back.
-
-Both work. The first is cleaner, the second is braver.
+- [Quickstart](docs/quickstart.md)
+- [Database Setup and Migrations](docs/database.md)
+- [Concepts](docs/concepts.md) — includes idempotency keys and retry semantics
+- [Living with Code Changes](docs/patterns/living-with-code-changes.md)
+- [Cleanup and Retention](docs/cleanup.md)
 
 ## Retries
 
@@ -239,19 +204,6 @@ not make progress before the claim times out, the task resets and is handed to
 another worker. This overlap can lead to two workers running the same task. Write 
 tasks so that they always make observable progress well inside the claim timeout,
 with ample headroom.
-
-## Cleanup
-
-By default, data will live forever, which is unlikely to be what you want.  Currently,
-there is no support for time-based partitioning.  To get rid of data, you can run
-the cleanup functions (`absurd.cleanup_tasks` and `absurd.cleanup_events`)
-manually or use the `absurdctl cleanup` command which lets you define a queue name
-and a TTL in days.  For instance, the following command deletes runs older than 7
-days on the default queue:
-
-```
-absurdctl cleanup default 7
-```
 
 ## Working With Agents
 
@@ -267,72 +219,6 @@ absurdctl agent-help >> AGENTS.md
 ```
 
 You might have to tweak the outputs afterwards to work best for your setup.
-
-## Getting Started
-
-To get the Absurd running locally, you'll need:
-
-1. nodejs & postgres - to spawn and process tasks.
-2. go-lang toolchain - to build and run habitat
-3. python - to use `absurdctl`
-
-First install create a new postgres database and install the absurd schema:
-
-```bash
-export PGDATABASE="postgres://apps:sekrets@localhost:5432"
-./absurdctl init
-./absurdctl create-queue reports
-```
-This will create the a schema for `absurd` and install the initial tables and stored procedures,
-and then create our first queue. Queues give you a way to create logical groups of tasks, and scale
-workers. Next, we can create a simple task, schedule it and then run it.
-
-```typescript
-import { Absurd } from '../sdks/typescript/dist/index.js';
-
-const app = new Absurd({
-  db: process.env.PGDATABASE,
-  queueName: 'reports',
-});
-
-// A task represents a series of operations.  It can be decomposed into
-// steps, which act as checkpoints.  Once a step has been passed
-// successfully, the return value is retained and it won't execute again.
-// If it fails, the entire task is retried.  Code that runs outside of
-// steps will potentially be executed multiple times.
-app.registerTask({ name: 'hello-world' }, async (params, ctx) => {
-  console.log('Hello');
-  let result = await ctx.step('step-1', async () => {
-    console.log('World');
-    return 'done';
-  });
-  console.log('step-1 result:', result);
-  result = await ctx.step('step-2', async () => {
-    console.log('From Absurd');
-    return 'done too';
-  });
-  console.log('step-2 result:', result);
-});
-
-// Start a worker that pulls tasks from Postgres
-await app.startWorker();
-```
-Save this file into `examples/hello.ts`. Next, we can spawn our task with:
-
-```bash
-./absurdctl spawn-task --queue reports hello-world -P name=Lily
-```
-
-With a task enqueued, we can run our tasks by starting our worker:
-
-```bash
-pushd sdks/typescript
-npm install
-npm run build
-popd
-
-node --experimental-strip-types examples/hello.ts
-```
 
 ## AI Use Disclaimer
 

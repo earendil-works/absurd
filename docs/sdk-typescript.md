@@ -15,6 +15,10 @@ Then import it:
 import { Absurd } from 'absurd-sdk';
 ```
 
+Before using the SDK, initialize the Absurd schema in Postgres and create at
+least one queue.  See **[Database Setup and Migrations](./database.md)** and the
+**[Quickstart](./quickstart.md)**.
+
 ## Creating a Client
 
 ```typescript
