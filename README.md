@@ -89,11 +89,14 @@ tasks.  The other is [habitat](habitat) which is a Go application that serves
 up a web UI to show you the current state of running and executed tasks.
 
 ```bash
-absurdctl init -d database-name
-absurdctl schema-version -d database-name
-absurdctl migrate -d database-name
-absurdctl create-queue -d database-name default
+uvx absurdctl init -d database-name
+uvx absurdctl schema-version -d database-name
+uvx absurdctl migrate -d database-name
+uvx absurdctl create-queue -d database-name default
 ```
+
+If you prefer a standalone file, you can also download `absurdctl` from GitHub
+Releases and put it on your `PATH`.
 
 Install the SDK for your language of choice:
 

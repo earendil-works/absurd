@@ -6,9 +6,15 @@ and events.  It talks directly to Postgres using `--database`,
 
 ## Installation
 
-`absurdctl` is available from
-[GitHub Releases](https://github.com/earendil-works/absurd/releases).  Download
-it and place it on your `PATH`.  It requires Python 3 and `psql`.
+The easiest way to run `absurdctl` is with `uvx`:
+
+```bash
+uvx absurdctl --help
+```
+
+You can also download the standalone bundled script from
+[GitHub Releases](https://github.com/earendil-works/absurd/releases), place it
+on your `PATH`, and run it directly.  Both forms require Python 3 and `psql`.
 
 ```bash
 # Set your database connection

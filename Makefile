@@ -1,4 +1,4 @@
-.PHONY: format test test-core test-typescript test-python build-absurdctl docs serve-docs
+.PHONY: format test test-core test-typescript test-python build-absurdctl build-absurdctl-pypi docs serve-docs
 
 # Format all code
 format:
@@ -18,9 +18,13 @@ docs:
 serve-docs:
 	@uvx --from "zensical==$(ZENSICAL_VERSION)" zensical serve
 
-# Build bundled absurdctl with embedded schema + migrations
+# Build bundled absurdctl artifacts with embedded schema + migrations
 build-absurdctl:
 	@./scripts/build-absurdctl
+
+# Build the PyPI staging directory for absurdctl
+build-absurdctl-pypi:
+	@./scripts/build-absurdctl --pypi-only
 
 # Run all tests
 test: test-core test-typescript test-python

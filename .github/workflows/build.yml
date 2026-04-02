@@ -9,6 +9,53 @@ on:
   pull_request:
 
 jobs:
+  validate-release-versions:
+    name: Validate Release Versions
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Validate SDK package versions against tag
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "${GITHUB_REF}" != refs/tags/* ]]; then
+            echo "Not a tag build; skipping release version validation."
+            exit 0
+          fi
+
+          tag="${GITHUB_REF#refs/tags/}"
+          python3 - <<'PY' "$tag"
+          import json
+          import pathlib
+          import sys
+          import tomllib
+
+          tag = sys.argv[1]
+          root = pathlib.Path('.')
+
+          ts_version = json.loads((root / 'sdks/typescript/package.json').read_text())['version']
+          py_version = tomllib.loads((root / 'sdks/python/pyproject.toml').read_text())['project']['version']
+
+          mismatches = []
+          if ts_version != tag:
+              mismatches.append(f"TypeScript SDK version is {ts_version}, expected {tag}")
+          if py_version != tag:
+              mismatches.append(f"Python SDK version is {py_version}, expected {tag}")
+
+          if mismatches:
+              for mismatch in mismatches:
+                  print(f"::error::{mismatch}")
+              raise SystemExit(1)
+
+          print(f"Validated release tag {tag} against TypeScript and Python SDK versions.")
+          PY
+
   build-habitat:
     name: Build Habitat (${{ matrix.os }}-${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
@@ -34,6 +81,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -77,7 +126,7 @@ jobs:
   release:
     name: Create Release
     if: startsWith(github.ref, 'refs/tags/')
-    needs: [build-habitat]
+    needs: [build-habitat, validate-release-versions]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -85,6 +134,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
 
       - name: Download all artifacts
         uses: actions/download-artifact@v5
@@ -92,7 +143,7 @@ jobs:
           path: artifacts
 
       - name: Build bundled absurdctl
-        run: ./scripts/build-absurdctl
+        run: ./scripts/build-absurdctl --standalone-only
 
       - name: Prepare release assets
         run: |
@@ -137,13 +188,16 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  test-pypi-build:
-    name: Test PyPI Package Build
+  test-python-sdk-pypi-build:
+    name: Test Python SDK PyPI Build
     runs-on: ubuntu-latest
+    needs: [validate-release-versions]
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -171,6 +225,7 @@ jobs:
   test-npm-build:
     name: Test npm Package Build
     runs-on: ubuntu-latest
+    needs: [validate-release-versions]
 
     steps:
       - name: Checkout code
@@ -225,10 +280,51 @@ jobs:
         working-directory: sdks/typescript
         run: npm publish --provenance --access public
 
+  test-absurdctl-pypi-build:
+    name: Test absurdctl PyPI Build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Generate absurdctl PyPI staging tree
+        run: ./scripts/build-absurdctl --pypi-only
+
+      - name: Build absurdctl package
+        run: uv build .build/absurdctl-pypi
+
+      - name: Check package metadata
+        run: uvx twine check .build/absurdctl-pypi/dist/*
+
+      - name: Smoke test wheel with uvx
+        shell: bash
+        run: |
+          set -euo pipefail
+          wheel=$(echo .build/absurdctl-pypi/dist/absurdctl-*.whl)
+          uvx --from "$wheel" absurdctl --help
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v5
+        with:
+          name: absurdctl-dist
+          path: .build/absurdctl-pypi/dist/
+          if-no-files-found: error
+
   publish-pypi:
-    name: Publish to PyPI
+    name: Publish Python SDK to PyPI
     if: startsWith(github.ref, 'refs/tags/')
-    needs: [test-pypi-build]
+    needs: [test-python-sdk-pypi-build]
     runs-on: ubuntu-latest
     environment: pypi-publish
     permissions:
@@ -238,6 +334,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -255,3 +353,38 @@ jobs:
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: sdks/python/dist/
+
+  publish-absurdctl-pypi:
+    name: Publish absurdctl to PyPI
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [test-absurdctl-pypi-build]
+    runs-on: ubuntu-latest
+    environment: pypi-publish
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Generate absurdctl PyPI staging tree
+        run: ./scripts/build-absurdctl --pypi-only
+
+      - name: Build absurdctl package
+        run: uv build .build/absurdctl-pypi
+
+      - name: Publish absurdctl to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: .build/absurdctl-pypi/dist/

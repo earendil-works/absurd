@@ -12,6 +12,7 @@ NC='\033[0m' # No Color
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 SDK_DIR="$PROJECT_ROOT/sdks/typescript"
+PYTHON_SDK_DIR="$PROJECT_ROOT/sdks/python"
 
 # Function to print colored messages
 error() {
@@ -59,7 +60,7 @@ usage() {
     cat << EOF
 Usage: $0 [VERSION_TYPE|VERSION]
 
-Bump the npm package version and create a git tag for release.
+Bump the SDK package versions and create a git tag for release.
 
 Arguments:
     VERSION_TYPE    One of: major, minor, patch (uses npm version)
@@ -73,9 +74,10 @@ Examples:
 
 The script will:
 1. Update the version in sdks/typescript/package.json
-2. Create a git commit with the version change
-3. Create a git tag (without 'v' prefix, e.g., '1.0.0')
-4. Ask if you want to push the changes and tag
+2. Update the version in sdks/python/pyproject.toml
+3. Create a git commit with the version change
+4. Create a git tag (without 'v' prefix, e.g., '1.0.0')
+5. Ask if you want to push the changes and tag
 EOF
 }
 
@@ -124,6 +126,10 @@ fi
 
 # Go back to project root for git operations
 cd "$PROJECT_ROOT"
+
+# Synchronize Python SDK version with the release version.
+info "Synchronizing Python SDK version to $NEW_VERSION..."
+perl -0pi -e "s/^version = \"[^\"]+\"$/version = \"$NEW_VERSION\"/m" "$PYTHON_SDK_DIR/pyproject.toml"
 
 # Update schema version placeholder in base schema for the release.
 SCHEMA_FILE="$PROJECT_ROOT/sql/absurd.sql"
@@ -182,15 +188,17 @@ else
     validate_schema_version_function "$MIGRATION_FILE" "$NEW_VERSION" "$(basename "$MIGRATION_FILE")"
 fi
 
-# Update package-lock.json to reflect the new version
-info "Updating lockfile..."
+# Update lockfiles to reflect the new version
+info "Updating lockfiles..."
 cd "$SDK_DIR"
 npm install --package-lock-only
+cd "$PYTHON_SDK_DIR"
+uv lock
 cd "$PROJECT_ROOT"
 
 # Commit the version change
 info "Creating git commit..."
-git add sdks/typescript/package.json sdks/typescript/package-lock.json sql/absurd.sql sql/migrations
+git add sdks/typescript/package.json sdks/typescript/package-lock.json sdks/python/pyproject.toml sdks/python/uv.lock sql/absurd.sql sql/migrations
 git commit -m "Release $NEW_VERSION"
 
 # Create git tag without 'v' prefix
@@ -215,3 +223,4 @@ info "After pushing, the CI will:"
 echo "  - Build habitat binaries for multiple platforms"
 echo "  - Create a GitHub release with the binaries"
 echo "  - Publish the npm package to the registry"
+echo "  - Publish the Python SDK to PyPI"
