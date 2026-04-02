@@ -50,11 +50,23 @@ checkpoint: once a step completes successfully, its return value is persisted in
 Postgres and the step will never execute again — even across process restarts or
 retries.
 
-```typescript
-const result = await ctx.step('process-payment', async () => {
-  return await stripe.charges.create({ amount: params.amount });
-});
-```
+=== "TypeScript"
+
+    ```typescript
+    const result = await ctx.step('process-payment', async () => {
+      return await stripe.charges.create({ amount: params.amount });
+    });
+    ```
+
+=== "Python"
+
+    ```python
+    def process_payment():
+        return stripe.charges.create(amount=params["amount"])
+
+
+    result = ctx.step("process-payment", process_payment)
+    ```
 
 Code **outside** steps may execute multiple times across retries.  Keep
 side-effects inside steps.
@@ -96,13 +108,25 @@ Tasks can **await events** by name.  Events are emitted with `emitEvent()` and
 carry an optional JSON payload.  Event payloads are immutable: the first emit
 for a given name wins, subsequent emits are ignored.
 
-```typescript
-// In a task handler — suspend until the event arrives
-const shipment = await ctx.awaitEvent('shipment.packed:order-42');
+=== "TypeScript"
 
-// From anywhere (another task, an API handler, etc.)
-await app.emitEvent('shipment.packed:order-42', { trackingNumber: 'XYZ' });
-```
+    ```typescript
+    // In a task handler — suspend until the event arrives
+    const shipment = await ctx.awaitEvent('shipment.packed:order-42');
+
+    // From anywhere (another task, an API handler, etc.)
+    await app.emitEvent('shipment.packed:order-42', { trackingNumber: 'XYZ' });
+    ```
+
+=== "Python"
+
+    ```python
+    # In a task handler — suspend until the event arrives
+    shipment = ctx.await_event("shipment.packed:order-42")
+
+    # From anywhere (another task, an API handler, etc.)
+    app.emit_event("shipment.packed:order-42", {"tracking_number": "XYZ"})
+    ```
 
 Events can also have **timeouts**.  If the event doesn't arrive before the
 timeout expires, a `TimeoutError` is thrown.
@@ -112,10 +136,21 @@ timeout expires, a `TimeoutError` is thrown.
 Tasks can **sleep** for a duration or until an absolute time.  Sleep suspends
 the task and schedules a future run.
 
-```typescript
-await ctx.sleepFor('wait-for-cooldown', 3600); // 1 hour
-await ctx.sleepUntil('wait-for-deadline', new Date('2025-12-31'));
-```
+=== "TypeScript"
+
+    ```typescript
+    await ctx.sleepFor('wait-for-cooldown', 3600); // 1 hour
+    await ctx.sleepUntil('wait-for-deadline', new Date('2025-12-31'));
+    ```
+
+=== "Python"
+
+    ```python
+    from datetime import datetime, timezone
+
+    ctx.sleep_for("wait-for-cooldown", 3600)  # 1 hour
+    ctx.sleep_until("wait-for-deadline", datetime(2025, 12, 31, tzinfo=timezone.utc))
+    ```
 
 ## Retries
 
@@ -135,17 +170,35 @@ headroom.
 
 Retry strategies can be `fixed`, `exponential`, or `none`:
 
-```typescript
-await app.spawn('my-task', params, {
-  maxAttempts: 10,
-  retryStrategy: {
-    kind: 'exponential',
-    baseSeconds: 2,
-    factor: 2,
-    maxSeconds: 300,
-  },
-});
-```
+=== "TypeScript"
+
+    ```typescript
+    await app.spawn('my-task', params, {
+      maxAttempts: 10,
+      retryStrategy: {
+        kind: 'exponential',
+        baseSeconds: 2,
+        factor: 2,
+        maxSeconds: 300,
+      },
+    });
+    ```
+
+=== "Python"
+
+    ```python
+    app.spawn(
+        "my-task",
+        params,
+        max_attempts=10,
+        retry_strategy={
+            "kind": "exponential",
+            "base_seconds": 2,
+            "factor": 2,
+            "max_seconds": 300,
+        },
+    )
+    ```
 
 ## Cancellation
 
@@ -171,11 +224,23 @@ When spawning tasks, you can provide an **idempotency key**.  If a task with the
 same key already exists on the queue, the existing task is returned instead of
 creating a new one.
 
-```typescript
-await app.spawn('send-email', { to: 'user@example.com' }, {
-  idempotencyKey: 'welcome-email:user-42',
-});
-```
+=== "TypeScript"
+
+    ```typescript
+    await app.spawn('send-email', { to: 'user@example.com' }, {
+      idempotencyKey: 'welcome-email:user-42',
+    });
+    ```
+
+=== "Python"
+
+    ```python
+    app.spawn(
+        "send-email",
+        {"to": "user@example.com"},
+        idempotency_key="welcome-email:user-42",
+    )
+    ```
 
 This is useful whenever your scheduler or API endpoint might try to enqueue the
 same logical work more than once.
@@ -186,17 +251,31 @@ Completed steps are cached, but ordinary code around steps may still run again
 across retries.  If a step calls an external system that supports its own
 idempotency keys, derive one from the task identity.
 
-```typescript
-const payment = await ctx.step('process-payment', async () => {
-  const idempotencyKey = `${ctx.taskID}:payment`;
-  return await stripe.charges.create({
-    amount: params.amount,
-    idempotencyKey,
-  });
-});
-```
+=== "TypeScript"
 
-In Python, use `ctx.task_id` the same way.
+    ```typescript
+    const payment = await ctx.step('process-payment', async () => {
+      const idempotencyKey = `${ctx.taskID}:payment`;
+      return await stripe.charges.create({
+        amount: params.amount,
+        idempotencyKey,
+      });
+    });
+    ```
+
+=== "Python"
+
+    ```python
+    def process_payment():
+        idempotency_key = f"{ctx.task_id}:payment"
+        return stripe.charges.create(
+            amount=params["amount"],
+            idempotency_key=idempotency_key,
+        )
+
+
+    payment = ctx.step("process-payment", process_payment)
+    ```
 
 The important thing is that the key should come from something stable, such as
 the task ID or a business identifier, not from the current time.

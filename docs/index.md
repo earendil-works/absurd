@@ -27,27 +27,67 @@ Tasks can also **sleep** (suspend until a time) or **await events** (suspend
 until a named event is emitted).  Events are cached — first emit wins — making
 them race-free.
 
-```typescript
-import { Absurd } from 'absurd-sdk';
+=== "TypeScript"
 
-const app = new Absurd();
+    ```typescript
+    import { Absurd } from 'absurd-sdk';
 
-app.registerTask({ name: 'order-fulfillment' }, async (params, ctx) => {
-  const payment = await ctx.step('process-payment', async () => {
-    return { paymentId: `pay-${params.orderId}`, amount: params.amount };
-  });
+    const app = new Absurd();
 
-  const shipment = await ctx.awaitEvent(`shipment.packed:${params.orderId}`);
+    app.registerTask({ name: 'order-fulfillment' }, async (params, ctx) => {
+      const payment = await ctx.step('process-payment', async () => {
+        return { paymentId: `pay-${params.orderId}`, amount: params.amount };
+      });
 
-  await ctx.step('send-notification', async () => {
-    return { sentTo: params.email, trackingNumber: shipment.trackingNumber };
-  });
+      const shipment = await ctx.awaitEvent(`shipment.packed:${params.orderId}`);
 
-  return { orderId: params.orderId, payment, trackingNumber: shipment.trackingNumber };
-});
+      await ctx.step('send-notification', async () => {
+        return { sentTo: params.email, trackingNumber: shipment.trackingNumber };
+      });
 
-await app.startWorker();
-```
+      return { orderId: params.orderId, payment, trackingNumber: shipment.trackingNumber };
+    });
+
+    await app.startWorker();
+    ```
+
+=== "Python"
+
+    ```python
+    from absurd_sdk import Absurd
+
+    app = Absurd()
+
+
+    @app.register_task(name="order-fulfillment")
+    def process_order(params, ctx):
+        def process_payment():
+            return {
+                "payment_id": f"pay-{params['order_id']}",
+                "amount": params["amount"],
+            }
+
+        payment = ctx.step("process-payment", process_payment)
+
+        shipment = ctx.await_event(f"shipment.packed:{params['order_id']}")
+
+        def send_notification():
+            return {
+                "sent_to": params["email"],
+                "tracking_number": shipment["tracking_number"],
+            }
+
+        ctx.step("send-notification", send_notification)
+
+        return {
+            "order_id": params["order_id"],
+            "payment": payment,
+            "tracking_number": shipment["tracking_number"],
+        }
+
+
+    app.start_worker()
+    ```
 
 ## Quick Links
 

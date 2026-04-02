@@ -169,77 +169,163 @@ A practical way to do that is:
 3. schedule that task from cron or another scheduler
 4. use a daily idempotency key so duplicate cron runs collapse into one task
 
-### Example: TypeScript cleanup task
+### Example: cleanup task
 
-```typescript
-import * as pg from 'pg';
-import { Absurd } from 'absurd-sdk';
+=== "TypeScript"
 
-const pool = new pg.Pool({ connectionString: process.env.PGDATABASE });
-const app = new Absurd({ db: pool, queueName: 'ops' });
+    ```typescript
+    import * as pg from 'pg';
+    import { Absurd } from 'absurd-sdk';
 
-app.registerTask({ name: 'cleanup-retention' }, async (params, ctx) => {
-  const ttlSeconds = params.ttlDays * 86400;
-  const limit = params.limit ?? 1000;
+    const pool = new pg.Pool({ connectionString: process.env.PGDATABASE });
+    const app = new Absurd({ db: pool, queueName: 'ops' });
 
-  const deletedTasks = await ctx.step('cleanup-tasks', async () => {
-    const result = await pool.query(
-      'select absurd.cleanup_tasks($1, $2, $3) as deleted',
-      [params.targetQueue, ttlSeconds, limit],
-    );
-    return result.rows[0].deleted as number;
-  });
+    app.registerTask({ name: 'cleanup-retention' }, async (params, ctx) => {
+      const ttlSeconds = params.ttlDays * 86400;
+      const limit = params.limit ?? 1000;
 
-  const deletedEvents = await ctx.step('cleanup-events', async () => {
-    const result = await pool.query(
-      'select absurd.cleanup_events($1, $2, $3) as deleted',
-      [params.targetQueue, ttlSeconds, limit],
-    );
-    return result.rows[0].deleted as number;
-  });
+      const deletedTasks = await ctx.step('cleanup-tasks', async () => {
+        const result = await pool.query(
+          'select absurd.cleanup_tasks($1, $2, $3) as deleted',
+          [params.targetQueue, ttlSeconds, limit],
+        );
+        return result.rows[0].deleted as number;
+      });
 
-  return {
-    targetQueue: params.targetQueue,
-    ttlDays: params.ttlDays,
-    deletedTasks,
-    deletedEvents,
-  };
-});
+      const deletedEvents = await ctx.step('cleanup-events', async () => {
+        const result = await pool.query(
+          'select absurd.cleanup_events($1, $2, $3) as deleted',
+          [params.targetQueue, ttlSeconds, limit],
+        );
+        return result.rows[0].deleted as number;
+      });
 
-await app.startWorker();
-```
+      return {
+        targetQueue: params.targetQueue,
+        ttlDays: params.ttlDays,
+        deletedTasks,
+        deletedEvents,
+      };
+    });
+
+    await app.startWorker();
+    ```
+
+=== "Python"
+
+    ```python
+    import os
+
+    from psycopg import Connection
+
+    from absurd_sdk import Absurd
+
+    conn = Connection.connect(os.environ["PGDATABASE"], autocommit=True)
+    app = Absurd(conn, queue_name="ops")
+
+
+    @app.register_task(name="cleanup-retention")
+    def cleanup_retention(params, ctx):
+        ttl_seconds = params["ttl_days"] * 86400
+        limit = params.get("limit", 1000)
+
+        def cleanup_tasks():
+            return conn.execute(
+                "select absurd.cleanup_tasks(%s, %s, %s)",
+                (params["target_queue"], ttl_seconds, limit),
+            ).fetchone()[0]
+
+        deleted_tasks = ctx.step("cleanup-tasks", cleanup_tasks)
+
+        def cleanup_events():
+            return conn.execute(
+                "select absurd.cleanup_events(%s, %s, %s)",
+                (params["target_queue"], ttl_seconds, limit),
+            ).fetchone()[0]
+
+        deleted_events = ctx.step("cleanup-events", cleanup_events)
+
+        return {
+            "target_queue": params["target_queue"],
+            "ttl_days": params["ttl_days"],
+            "deleted_tasks": deleted_tasks,
+            "deleted_events": deleted_events,
+        }
+
+
+    app.start_worker()
+    ```
 
 And a small script that enqueues it once per day:
 
-```typescript
-import * as pg from 'pg';
-import { Absurd } from 'absurd-sdk';
+=== "TypeScript"
 
-const pool = new pg.Pool({ connectionString: process.env.PGDATABASE });
-const app = new Absurd({ db: pool, queueName: 'ops' });
+    ```typescript
+    import * as pg from 'pg';
+    import { Absurd } from 'absurd-sdk';
 
-const day = new Date().toISOString().slice(0, 10);
+    const pool = new pg.Pool({ connectionString: process.env.PGDATABASE });
+    const app = new Absurd({ db: pool, queueName: 'ops' });
 
-await app.spawn(
-  'cleanup-retention',
-  {
-    targetQueue: 'default',
-    ttlDays: 30,
-    limit: 1000,
-  },
-  {
-    idempotencyKey: `cleanup:default:${day}`,
-  },
-);
+    const day = new Date().toISOString().slice(0, 10);
 
-await app.close();
-```
+    await app.spawn(
+      'cleanup-retention',
+      {
+        targetQueue: 'default',
+        ttlDays: 30,
+        limit: 1000,
+      },
+      {
+        idempotencyKey: `cleanup:default:${day}`,
+      },
+    );
+
+    await app.close();
+    ```
+
+=== "Python"
+
+    ```python
+    import os
+    from datetime import date
+
+    from psycopg import Connection
+
+    from absurd_sdk import Absurd
+
+    conn = Connection.connect(os.environ["PGDATABASE"], autocommit=True)
+    app = Absurd(conn, queue_name="ops")
+
+    day = date.today().isoformat()
+
+    app.spawn(
+        "cleanup-retention",
+        {
+            "target_queue": "default",
+            "ttl_days": 30,
+            "limit": 1000,
+        },
+        idempotency_key=f"cleanup:default:{day}",
+    )
+
+    app.close()
+    conn.close()
+    ```
 
 Then run that enqueue script from cron:
 
-```cron
-17 3 * * * PGDATABASE=postgresql://user:pass@db/app node /srv/app/bin/spawn-cleanup.js
-```
+=== "TypeScript"
+
+    ```cron
+    17 3 * * * PGDATABASE=postgresql://user:pass@db/app node /srv/app/bin/spawn-cleanup.js
+    ```
+
+=== "Python"
+
+    ```cron
+    17 3 * * * PGDATABASE=postgresql://user:pass@db/app uv run /srv/app/bin/spawn-cleanup.py
+    ```
 
 This example handles one cleanup batch per task run.  For steady-state daily
 retention that is often enough.  If you are draining a large backlog, prefer the

@@ -21,23 +21,51 @@ A completed step returns its cached value forever.
 
 That means if you change what this step returns:
 
-```typescript
-const payment = await ctx.step('process-payment', async () => {
-  return { chargeId: 'ch_123' };
-});
-```
+=== "TypeScript"
+
+    ```typescript
+    const payment = await ctx.step('process-payment', async () => {
+      return { chargeId: 'ch_123' };
+    });
+    ```
+
+=== "Python"
+
+    ```python
+    def process_payment():
+        return {"charge_id": "ch_123"}
+
+
+    payment = ctx.step("process-payment", process_payment)
+    ```
 
 into this:
 
-```typescript
-const payment = await ctx.step('process-payment', async () => {
-  return {
-    chargeId: 'ch_123',
-    provider: 'stripe',
-    receiptEmail: 'jane@example.com',
-  };
-});
-```
+=== "TypeScript"
+
+    ```typescript
+    const payment = await ctx.step('process-payment', async () => {
+      return {
+        chargeId: 'ch_123',
+        provider: 'stripe',
+        receiptEmail: 'jane@example.com',
+      };
+    });
+    ```
+
+=== "Python"
+
+    ```python
+    def process_payment():
+        return {
+            "charge_id": "ch_123",
+            "provider": "stripe",
+            "receipt_email": "jane@example.com",
+        }
+
+
+    payment = ctx.step("process-payment", process_payment)
+    ```
 
 then old tasks may still resume with the **old** value shape.
 
@@ -48,15 +76,31 @@ That is normal.  Durable systems remember the past on purpose.
 If the meaning or shape changed in a way that is not safely compatible, the
 cleanest move is to version the step name.
 
-```typescript
-const payment = await ctx.step('process-payment:v2', async () => {
-  return {
-    chargeId: `charge-${params.amount}`,
-    provider: 'stripe',
-    receiptEmail: params.email ?? null,
-  };
-});
-```
+=== "TypeScript"
+
+    ```typescript
+    const payment = await ctx.step('process-payment:v2', async () => {
+      return {
+        chargeId: `charge-${params.amount}`,
+        provider: 'stripe',
+        receiptEmail: params.email ?? null,
+      };
+    });
+    ```
+
+=== "Python"
+
+    ```python
+    def process_payment_v2():
+        return {
+            "charge_id": f"charge-{params['amount']}",
+            "provider": "stripe",
+            "receipt_email": params.get("email"),
+        }
+
+
+    payment = ctx.step("process-payment:v2", process_payment_v2)
+    ```
 
 This makes old tasks keep using `process-payment`, while new tasks use
 `process-payment:v2`.
@@ -73,57 +117,104 @@ Use this when:
 If the change is compatible enough, keep the step name and normalize the cached
 result before using it.
 
-```typescript
-type LegacyPayment = string;
+=== "TypeScript"
 
-type PaymentV2 = {
-  chargeId: string;
-  provider: 'stripe';
-  receiptEmail: string | null;
-};
+    ```typescript
+    type LegacyPayment = string;
 
-function normalizePayment(value: LegacyPayment | PaymentV2): PaymentV2 {
-  if (typeof value === 'string') {
-    return {
-      chargeId: value,
-      provider: 'stripe',
-      receiptEmail: null,
+    type PaymentV2 = {
+      chargeId: string;
+      provider: 'stripe';
+      receiptEmail: string | null;
     };
-  }
 
-  return {
-    chargeId: value.chargeId,
-    provider: value.provider ?? 'stripe',
-    receiptEmail: value.receiptEmail ?? null,
-  };
-}
+    function normalizePayment(value: LegacyPayment | PaymentV2): PaymentV2 {
+      if (typeof value === 'string') {
+        return {
+          chargeId: value,
+          provider: 'stripe',
+          receiptEmail: null,
+        };
+      }
 
-app.registerTask({ name: 'charge-order' }, async (params, ctx) => {
-  const rawPayment = await ctx.step('process-payment', async () => {
-    return {
-      chargeId: `charge-${params.amount}`,
-      provider: 'stripe' as const,
-      receiptEmail: params.email ?? null,
-    };
-  });
-
-  const payment = normalizePayment(rawPayment);
-
-  await ctx.step('send-receipt:v2', async () => {
-    if (!payment.receiptEmail) {
-      return { skipped: true };
+      return {
+        chargeId: value.chargeId,
+        provider: value.provider ?? 'stripe',
+        receiptEmail: value.receiptEmail ?? null,
+      };
     }
 
-    return {
-      skipped: false,
-      sentTo: payment.receiptEmail,
-      chargeId: payment.chargeId,
-    };
-  });
+    app.registerTask({ name: 'charge-order' }, async (params, ctx) => {
+      const rawPayment = await ctx.step('process-payment', async () => {
+        return {
+          chargeId: `charge-${params.amount}`,
+          provider: 'stripe' as const,
+          receiptEmail: params.email ?? null,
+        };
+      });
 
-  return { payment };
-});
-```
+      const payment = normalizePayment(rawPayment);
+
+      await ctx.step('send-receipt:v2', async () => {
+        if (!payment.receiptEmail) {
+          return { skipped: true };
+        }
+
+        return {
+          skipped: false,
+          sentTo: payment.receiptEmail,
+          chargeId: payment.chargeId,
+        };
+      });
+
+      return { payment };
+    });
+    ```
+
+=== "Python"
+
+    ```python
+    def normalize_payment(value):
+        if isinstance(value, str):
+            return {
+                "charge_id": value,
+                "provider": "stripe",
+                "receipt_email": None,
+            }
+
+        return {
+            "charge_id": value["charge_id"],
+            "provider": value.get("provider", "stripe"),
+            "receipt_email": value.get("receipt_email"),
+        }
+
+
+    @app.register_task(name="charge-order")
+    def charge_order(params, ctx):
+        def process_payment():
+            return {
+                "charge_id": f"charge-{params['amount']}",
+                "provider": "stripe",
+                "receipt_email": params.get("email"),
+            }
+
+        raw_payment = ctx.step("process-payment", process_payment)
+        payment = normalize_payment(raw_payment)
+
+        def send_receipt_v2():
+            if not payment["receipt_email"]:
+                return {"skipped": True}
+
+            return {
+                "skipped": False,
+                "sent_to": payment["receipt_email"],
+                "charge_id": payment["charge_id"],
+            }
+
+        ctx.step("send-receipt:v2", send_receipt_v2)
+
+        return {"payment": payment}
+    ```
 
 This is often the best option when you need to tolerate both old and new shapes
 during a rollout.
@@ -159,15 +250,31 @@ Adding a field is usually easier than changing the meaning of an old one.
 
 Safer:
 
-```typescript
-return { chargeId, provider: 'stripe' };
-```
+=== "TypeScript"
+
+    ```typescript
+    return { chargeId, provider: 'stripe' };
+    ```
+
+=== "Python"
+
+    ```python
+    return {"charge_id": charge_id, "provider": "stripe"}
+    ```
 
 Riskier:
 
-```typescript
-return { id: chargeId };
-```
+=== "TypeScript"
+
+    ```typescript
+    return { id: chargeId };
+    ```
+
+=== "Python"
+
+    ```python
+    return {"id": charge_id}
+    ```
 
 The first lets old readers ignore `provider`.  The second may break every caller.
 

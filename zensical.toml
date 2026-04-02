@@ -24,12 +24,12 @@ copyright = "<a href=\"https://earendil.com/\">Earendil Inc.</a>"
 nav = [
     {"Home" = "index.md"},
 
-    {"Getting Started" = [
+    {"Guide" = [
         {"Quickstart" = "quickstart.md"},
-        {"Working With Agents" = "agents.md"},
-        {"Database Setup and Migrations" = "database.md"},
         {"Concepts" = "concepts.md"},
+        {"Database Setup and Migrations" = "database.md"},
         {"Cleanup and Retention" = "cleanup.md"},
+        {"Working with Agents" = "agents.md"},
         {"Comparison" = "comparison.md"},
     ]},
 
@@ -58,7 +58,12 @@ features = [
     "content.action.edit",
     "content.code.copy",
     "content.code.select",
+    "content.tabs.link",
 ]
+
+[project.markdown_extensions.pymdownx.superfences]
+[project.markdown_extensions.pymdownx.tabbed]
+alternate_style = true
 
 [project.theme.icon]
 logo = "material/cube-outline"
