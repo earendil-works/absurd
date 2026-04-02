@@ -4,10 +4,15 @@ This contains the changes between releases.
 
 # Unreleased
 
+# 0.3.0
+
 * Added task-result inspection and waiting APIs across SQL and SDKs, including `absurd.get_task_result()`, `app.fetchTaskResult()` / `app.awaitTaskResult()` in TypeScript, `fetch_task_result()` / `await_task_result()` in Python, and durable child-task waits from task contexts.
 * Added decomposed step support to the TypeScript and Python SDKs with `beginStep()` / `completeStep()` and `begin_step()` / `complete_step()`.
+* Added `absurdctl install-skill` and bundled the Absurd agent skill into absurdctl releases.
+* Added absurdctl PyPI packaging and publishing, including `uvx`-friendly builds in CI.
 * Added range-based SQL export to `absurdctl migrate --dump-sql`, making it possible to generate a bundled migration script for an explicit `--from` / `--to` version range without connecting to Postgres.
 * Fixed SDK task-result waiting to reject invalid timeout values, prevent infinite polling on `NaN`, and fail fast when a task tries to wait on another task in the same queue.
+* Aligned default database resolution order across `absurdctl`, the TypeScript SDK, and the Python SDK.
 
 # 0.2.0
 
