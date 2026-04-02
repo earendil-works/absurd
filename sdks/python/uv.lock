@@ -9,7 +9,7 @@ resolution-markers = [
 
 [[package]]
 name = "absurd-sdk"
-version = "0.2.0"
+version = "0.3.0"
 source = { editable = "." }
 dependencies = [
     { name = "psycopg", extra = ["binary"] },

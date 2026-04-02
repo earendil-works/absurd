@@ -9,7 +9,7 @@ create or replace function absurd.get_schema_version ()
   returns text
   language sql
 as $$
-  select 'main'::text;
+  select '0.3.0'::text;
 $$;
 
 -- Returns the current state and terminal payload (if any) for a task.
