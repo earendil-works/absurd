@@ -6,6 +6,7 @@
 site_name = "Absurd"
 docs_dir = "docs"
 site_dir = "site"
+site_description = "Absurd is a Postgres-native durable workflow system built around durable execution in PostgreSQL."
 
 extra_css = [
     "stylesheets/commit-mono.css",
@@ -22,7 +23,7 @@ edit_uri = "edit/main/docs"
 copyright = "<a href=\"https://earendil.com/\">Earendil Inc.</a>"
 
 nav = [
-    {"Home" = "index.md"},
+    {"Overview" = "index.md"},
 
     {"Guide" = [
         {"Quickstart" = "quickstart.md"},
@@ -33,16 +34,16 @@ nav = [
         {"Comparison" = "comparison.md"},
     ]},
 
+    {"SDKs" = [
+        {"TypeScript" = "sdk-typescript.md"},
+        {"Python" = "sdk-python.md"},
+    ]},
+
     {"Patterns" = [
         {"Overview" = "patterns/index.md"},
         {"Cron Jobs With Deduplication Keys" = "patterns/cron.md"},
         {"Living with Code Changes" = "patterns/living-with-code-changes.md"},
         {"Pi AI Agent Durable Turns" = "patterns/pi-ai-agent.md"},
-    ]},
-
-    {"SDKs" = [
-        {"TypeScript" = "sdk-typescript.md"},
-        {"Python" = "sdk-python.md"},
     ]},
 
     {"Tools" = [
@@ -53,12 +54,16 @@ nav = [
 
 [project.theme]
 font = false
+custom_dir = "docs/overrides"
+favicon = "assets/favicon-128.png"
+logo = "assets/favicon-128.png"
 features = [
     "content.action.view",
     "content.action.edit",
     "content.code.copy",
     "content.code.select",
     "content.tabs.link",
+    "navigation.sections",
 ]
 
 [project.markdown_extensions.pymdownx.superfences]

@@ -1,0 +1,57 @@
+{#-
+  This file overrides the theme head partial so we can add favicon,
+  Apple touch icon, and social image metadata.
+-#}
+<script>__md_scope=new URL("{{ config.extra.scope | d(base_url, true) }}",location),__md_hash=e=>[...e].reduce(((e,t)=>(e<<5)-e+t.charCodeAt(0)),0),__md_get=(e,t=localStorage,a=__md_scope)=>JSON.parse(t.getItem(a.pathname+"."+e)),__md_set=(e,t,a=localStorage,_=__md_scope)=>{try{a.setItem(_.pathname+"."+e,JSON.stringify(t))}catch(e){}},document.documentElement.setAttribute("data-platform",navigator.platform)</script>
+
+{% if page.meta and page.meta.title %}
+  {% if page.meta.title == config.site_name %}
+    {% set social_title = config.site_name %}
+  {% else %}
+    {% set social_title = page.meta.title ~ ' - ' ~ config.site_name %}
+  {% endif %}
+{% elif page.title %}
+  {% if page.title | striptags == config.site_name %}
+    {% set social_title = config.site_name %}
+  {% else %}
+    {% set social_title = page.title | striptags ~ ' - ' ~ config.site_name %}
+  {% endif %}
+{% else %}
+  {% set social_title = config.site_name %}
+{% endif %}
+
+{% if page.meta and page.meta.description %}
+  {% set social_description = page.meta.description %}
+{% else %}
+  {% set social_description = config.site_description %}
+{% endif %}
+
+{% if config.site_url %}
+  {% set social_image = config.site_url ~ 'assets/favicon-512.png' %}
+{% else %}
+  {% set social_image = 'assets/favicon-512.png' | url %}
+{% endif %}
+
+<link rel="icon" type="image/png" sizes="64x64" href="{{ 'assets/favicon-64.png' | url }}">
+<link rel="icon" type="image/png" sizes="128x128" href="{{ 'assets/favicon-128.png' | url }}">
+<link rel="icon" type="image/png" sizes="512x512" href="{{ 'assets/favicon-512.png' | url }}">
+<link rel="apple-touch-icon" href="{{ 'assets/favicon-512.png' | url }}">
+
+<meta property="og:type" content="website">
+<meta property="og:title" content="{{ social_title }}">
+{% if social_description %}
+  <meta property="og:description" content="{{ social_description }}">
+{% endif %}
+{% if page.canonical_url %}
+  <meta property="og:url" content="{{ page.canonical_url }}">
+{% endif %}
+<meta property="og:image" content="{{ social_image }}">
+<meta property="og:image:alt" content="Absurd logo">
+
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="{{ social_title }}">
+{% if social_description %}
+  <meta name="twitter:description" content="{{ social_description }}">
+{% endif %}
+<meta name="twitter:image" content="{{ social_image }}">
+<meta name="twitter:image:alt" content="Absurd logo">

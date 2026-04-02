@@ -9,6 +9,17 @@
   /* Zensical/Material uses CSS variables for font selection */
   --md-text-font: "Commit Mono";
   --md-code-font: "Commit Mono";
+
+  /* Warm paper tone pulled from the logo background */
+  --absurd-paper-rgb: 237, 219, 179;
+  --absurd-paper: rgb(var(--absurd-paper-rgb));
+  --absurd-paper-soft: rgba(var(--absurd-paper-rgb), 0.42);
+  --absurd-paper-soft-strong: rgba(var(--absurd-paper-rgb), 0.6);
+
+  --absurd-gold: #8a6a1d;
+  --absurd-gold-strong: #6f5311;
+  --absurd-gold-light: #e7d08a;
+  --absurd-gold-light-strong: #f2dfaa;
 }
 
 /* Typography sizing */
@@ -35,23 +46,52 @@
 
   /* Links / interactive elements */
   --md-primary-fg-color: rgba(28, 27, 26, 0.86);
-  --md-accent-fg-color: rgba(28, 27, 26, 0.92);
-  --md-accent-fg-color--transparent: rgba(28, 27, 26, 0.10);
+  --md-accent-fg-color: var(--absurd-gold-strong);
+  --md-accent-fg-color--transparent: var(--absurd-paper-soft);
 
   /* Main link color (body text links) */
-  --md-typeset-a-color: rgba(28, 27, 26, 0.78);
+  --md-typeset-a-color: var(--absurd-gold);
+
+  /* Code theme: warm paper / ledger tones */
+  --md-code-bg-color: #f6f1e4;
+  --md-code-fg-color: #3b352b;
+  --md-code-hl-keyword-color: #8a6a1d;
+  --md-code-hl-string-color: #5f7142;
+  --md-code-hl-number-color: #a0552d;
+  --md-code-hl-function-color: #7a5c9a;
+  --md-code-hl-constant-color: #9a6b2f;
+  --md-code-hl-variable-color: #5b5346;
+  --md-code-hl-operator-color: #7a7366;
+  --md-code-hl-punctuation-color: #7a7366;
+  --md-code-hl-comment-color: #8c826f;
+  --md-code-hl-color: #c6922d;
+  --md-code-hl-color--light: rgba(198, 146, 45, 0.14);
 
   /* Subtle surfaces */
-  --md-code-bg-color: rgb(245, 245, 245);
   --md-typeset-table-color: rgba(28, 27, 26, 0.12);
 }
 
 /* Dark mode */
 [data-md-color-scheme="slate"][data-md-color-primary="grey"][data-md-color-accent="grey"] {
-  --md-typeset-a-color: rgba(230, 230, 230, 0.85);
+  --md-typeset-a-color: var(--absurd-gold-light);
   --md-primary-fg-color: rgba(230, 230, 230, 0.85);
-  --md-accent-fg-color: rgba(255, 255, 255, 0.9);
-  --md-accent-fg-color--transparent: rgba(255, 255, 255, 0.12);
+  --md-accent-fg-color: var(--absurd-gold-light-strong);
+  --md-accent-fg-color--transparent: rgba(var(--absurd-paper-rgb), 0.18);
+
+  /* Code theme: warm dark mode */
+  --md-code-bg-color: #1d1a17;
+  --md-code-fg-color: #e8dcc4;
+  --md-code-hl-keyword-color: #e7d08a;
+  --md-code-hl-string-color: #b7c98a;
+  --md-code-hl-number-color: #d89b6a;
+  --md-code-hl-function-color: #d7b7f0;
+  --md-code-hl-constant-color: #f0c674;
+  --md-code-hl-variable-color: #d2c6b2;
+  --md-code-hl-operator-color: #b7ab97;
+  --md-code-hl-punctuation-color: #b7ab97;
+  --md-code-hl-comment-color: #938773;
+  --md-code-hl-color: #e7d08a;
+  --md-code-hl-color--light: rgba(231, 208, 138, 0.16);
 }
 
 /* Make links feel more "document"-like */
@@ -62,7 +102,8 @@
   text-underline-offset: 0.12em;
 }
 
-.md-typeset a:hover {
+.md-typeset a:hover,
+.md-typeset a:focus-visible {
   color: var(--md-accent-fg-color);
   text-decoration-color: color-mix(in srgb, currentColor 55%, transparent);
 }
@@ -77,6 +118,16 @@
   color: var(--md-default-fg-color);
 }
 
+.md-nav--primary .md-nav__link:hover,
+.md-nav--primary .md-nav__link:focus-visible,
+.md-nav--primary .md-nav__item .md-nav__link--active {
+  background: var(--absurd-paper-soft);
+}
+
+.md-nav--primary .md-nav__link:hover {
+  background: var(--absurd-paper-soft-strong);
+}
+
 /* Make the header site name look like text, but behave like a link */
 header.md-header .md-header__topic > a.md-ellipsis {
   color: inherit;
@@ -88,6 +139,14 @@ header.md-header .md-header__topic > a.md-ellipsis:hover {
   text-decoration: underline;
   text-decoration-color: color-mix(in srgb, currentColor 35%, transparent);
   text-underline-offset: 0.12em;
+}
+
+/* Use the branded favicon image in the header/nav instead of a theme icon */
+.md-header__button.md-logo img,
+.md-nav__button.md-logo img {
+  width: 1.15rem;
+  height: 1.15rem;
+  object-fit: contain;
 }
 
 /* Tables: more compact */
