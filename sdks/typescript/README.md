@@ -24,10 +24,19 @@ native TypeScript type stripping. No transpilation step is required.
 Before using the SDK, you need to initialize Absurd in your PostgreSQL database:
 
 ```bash
-# Install absurdctl from https://github.com/earendil-works/absurd/releases
+# One-off usage
+uvx absurdctl init -d your-database-name
+uvx absurdctl create-queue -d your-database-name default
+
+# Or install it once
+uv tool install absurdctl
 absurdctl init -d your-database-name
 absurdctl create-queue -d your-database-name default
 ```
+
+See the [absurdctl docs](../../docs/absurdctl.md) for installation details and
+the full CLI reference, including
+[`uvx`](https://docs.astral.sh/uv/guides/tools/) usage.
 
 ## Quick Start
 

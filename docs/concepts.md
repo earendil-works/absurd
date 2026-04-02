@@ -202,9 +202,9 @@ Retry strategies can be `fixed`, `exponential`, or `none`:
 
 ## Cancellation
 
-Tasks can be cancelled programmatically or via `absurdctl`.  Running tasks
-detect cancellation at the next checkpoint write or heartbeat call and stop
-gracefully.
+Tasks can be cancelled programmatically or via
+[`absurdctl`](./absurdctl.md).  Running tasks detect cancellation at the next
+checkpoint write or heartbeat call and stop gracefully.
 
 Cancellation policies can also be set at spawn time:
 

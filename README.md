@@ -83,10 +83,10 @@ Additionally, tasks can *sleep* or *suspend for events*.  Events are cached
 ## Components
 
 Absurd comes with two basic tools that help you work with it.  One is
-called [`absurdctl`](absurdctl) which allows you to initialize and migrate the
-schema, inspect schema versions, create/drop/list queues, and spawn or retry
-tasks.  The other is [habitat](habitat) which is a Go application that serves
-up a web UI to show you the current state of running and executed tasks.
+called [`absurdctl`](docs/absurdctl.md) which allows you to initialize and
+migrate the schema, inspect schema versions, create/drop/list queues, and spawn
+or retry tasks.  The other is [habitat](habitat) which is a Go application that
+serves up a web UI to show you the current state of running and executed tasks.
 
 ```bash
 uvx absurdctl init -d database-name
@@ -95,8 +95,18 @@ uvx absurdctl migrate -d database-name
 uvx absurdctl create-queue -d database-name default
 ```
 
+Use [`uvx`](https://docs.astral.sh/uv/guides/tools/) `absurdctl ...` for
+one-off commands, or install it persistently with `uv tool install absurdctl`.
 If you prefer a standalone file, you can also download `absurdctl` from GitHub
-Releases and put it on your `PATH`.
+Releases and put it on your `PATH`:
+
+```bash
+curl -fsSL \
+  https://github.com/earendil-works/absurd/releases/latest/download/absurdctl \
+  -o absurdctl
+chmod +x absurdctl
+install -m 755 absurdctl ~/.local/bin/absurdctl
+```
 
 Install the SDK for your language of choice:
 

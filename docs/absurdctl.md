@@ -6,15 +6,44 @@ and events.  It talks directly to Postgres using `--database`,
 
 ## Installation
 
-The easiest way to run `absurdctl` is with `uvx`:
+For one-off commands, the easiest option is
+[`uvx`](https://docs.astral.sh/uv/guides/tools/):
 
 ```bash
 uvx absurdctl --help
 ```
 
+If you want a persistent install on your `PATH`, install it as a uv tool:
+
+```bash
+uv tool install absurdctl
+absurdctl --help
+```
+
+If you prefer the standalone bundled script from the latest GitHub release,
+download it directly:
+
+```bash
+curl -fsSL \
+  https://github.com/earendil-works/absurd/releases/latest/download/absurdctl \
+  -o absurdctl
+chmod +x absurdctl
+./absurdctl --help
+```
+
+To put that copy on your `PATH`:
+
+```bash
+install -m 755 absurdctl ~/.local/bin/absurdctl
+```
+
+All examples below use `absurdctl` directly.  If you are using
+[`uvx`](https://docs.astral.sh/uv/guides/tools/), just prefix the same
+commands with `uvx` instead.
+
 You can also download the standalone bundled script from
 [GitHub Releases](https://github.com/earendil-works/absurd/releases), place it
-on your `PATH`, and run it directly.  Both forms require Python 3 and `psql`.
+on your `PATH`, and run it directly.  All forms require Python 3 and `psql`.
 
 ```bash
 # Set your database connection

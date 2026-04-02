@@ -6,9 +6,10 @@ That is useful for debugging and inspection, but it also means you need a
 retention plan.  Otherwise old runs, checkpoints, waits, and events will simply
 accumulate forever.
 
-This page explains what cleanup removes, how to do it with `absurdctl`, how to
-call the stored procedures directly, and how to automate retention with real
-cron jobs or with an Absurd task of your own.
+This page explains what cleanup removes, how to do it with
+[`absurdctl`](./absurdctl.md), how to call the stored procedures directly, and
+how to automate retention with real cron jobs or with an Absurd task of your
+own.
 
 ## What Cleanup Removes
 

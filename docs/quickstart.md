@@ -23,14 +23,11 @@ The exact examples in this guide live in the repository:
 - **PostgreSQL** (14 or later)
 - **Node.js** with native TypeScript type stripping for the TypeScript SDK
 - **Python** (3.11+) with **`uv`** for the Python SDK
-- **`absurdctl`** on your `PATH`
+- **`absurdctl`** — see **[absurdctl](./absurdctl.md)** for installation options
 
-If you are working from a checkout of this repository, the easiest way to make
-`absurdctl` available is:
-
-```bash
-export PATH="$PWD:$PATH"
-```
+All examples below use `absurdctl` directly.  If you are using
+[`uvx`](https://docs.astral.sh/uv/guides/tools/), replace `absurdctl ...` with
+`uvx absurdctl ...`.
 
 ## 1. Install the Schema
 
@@ -40,6 +37,9 @@ Absurd ships as a single SQL file.  Apply it to any Postgres database:
 export PGDATABASE="postgresql://user:pass@localhost:5432/mydb"
 absurdctl init
 ```
+
+See **[absurdctl](./absurdctl.md)** for installation details and the full CLI
+reference.
 
 This creates the `absurd` schema with all stored procedures and helper
 functions.  If you prefer, you can also apply `sql/absurd.sql` directly with

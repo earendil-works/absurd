@@ -1,7 +1,7 @@
 # Working With Agents
 
 Absurd works well with coding agents because workflow state lives in Postgres and
-can be inspected with `absurdctl`.
+can be inspected with [`absurdctl`](./absurdctl.md).
 
 The easiest way to make that usable for agents is to install the bundled Absurd
 skill.  The skill gives the agent a compact debugging playbook for common
