@@ -188,10 +188,11 @@ else
     validate_schema_version_function "$MIGRATION_FILE" "$NEW_VERSION" "$(basename "$MIGRATION_FILE")"
 fi
 
-# Update lockfiles to reflect the new version
+# Update lockfiles to reflect the new version.
+# npm version already updates sdks/typescript/package-lock.json alongside
+# package.json, so avoid npm install here. Running install would trigger the
+# package's prepare script and fail from a clean checkout without node_modules.
 info "Updating lockfiles..."
-cd "$SDK_DIR"
-npm install --package-lock-only
 cd "$PYTHON_SDK_DIR"
 uv lock
 cd "$PROJECT_ROOT"
