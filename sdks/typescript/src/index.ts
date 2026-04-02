@@ -620,7 +620,9 @@ export class Absurd {
     let connectionOrUrl = options.db;
     if (!connectionOrUrl) {
       connectionOrUrl =
-        process.env.ABSURD_DATABASE_URL || "postgresql://localhost/absurd";
+        process.env.ABSURD_DATABASE_URL ||
+        process.env.PGDATABASE ||
+        "postgresql://localhost/absurd";
     }
     if (typeof connectionOrUrl === "string") {
       this.con = new pg.Pool({ connectionString: connectionOrUrl });

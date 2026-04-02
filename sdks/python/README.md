@@ -26,6 +26,9 @@ uv add absurd-sdk
 
 ## Synchronous API
 
+If you omit the connection argument, the client uses `ABSURD_DATABASE_URL`,
+then `PGDATABASE`, then `postgresql://localhost/absurd`.
+
 ```python
 from absurd_sdk import Absurd
 

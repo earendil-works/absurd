@@ -259,6 +259,14 @@ def _validate_queue_name(queue_name: str) -> str:
     return queue_name
 
 
+def _default_connection_url() -> str:
+    return (
+        os.environ.get("ABSURD_DATABASE_URL")
+        or os.environ.get("PGDATABASE")
+        or "postgresql://localhost/absurd"
+    )
+
+
 def _serialize_error(err: Any) -> JsonObject:
     """Serialize an exception to JSON"""
     if isinstance(err, Exception):
@@ -1237,9 +1245,7 @@ class Absurd(_AbsurdBase):
         validated_queue_name = _validate_queue_name(queue_name)
 
         if conn_or_url is None:
-            conn_or_url = os.environ.get(
-                "ABSURD_DATABASE_URL", "postgresql://localhost/absurd"
-            )
+            conn_or_url = _default_connection_url()
 
         if isinstance(conn_or_url, str):
             self._conn: Connection[Any] = Connection.connect(conn_or_url, autocommit=True)
@@ -1544,9 +1550,7 @@ class AsyncAbsurd(_AbsurdBase):
         hooks: Optional[AbsurdHooks] = None,
     ) -> None:
         if conn_or_url is None:
-            conn_or_url = os.environ.get(
-                "ABSURD_DATABASE_URL", "postgresql://localhost/absurd"
-            )
+            conn_or_url = _default_connection_url()
 
         if isinstance(conn_or_url, str):
             self._conn_string: Optional[str] = conn_or_url

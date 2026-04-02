@@ -24,7 +24,7 @@ least one queue.  See **[Database Setup and Migrations](./database.md)** and the
 ```typescript
 import { Absurd } from 'absurd-sdk';
 
-// From a connection string (or ABSURD_DATABASE_URL env var)
+// From a connection string
 const app = new Absurd({
   db: 'postgresql://user:pass@localhost:5432/mydb',
   queueName: 'default',
@@ -35,7 +35,8 @@ import * as pg from 'pg';
 const pool = new pg.Pool({ connectionString: '...' });
 const app = new Absurd({ db: pool, queueName: 'default' });
 
-// Minimal — uses ABSURD_DATABASE_URL and queue "default"
+// Minimal — uses ABSURD_DATABASE_URL, then PGDATABASE,
+// then postgresql://localhost/absurd; queue defaults to "default"
 const app = new Absurd();
 ```
 
@@ -43,7 +44,7 @@ const app = new Absurd();
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `db` | `pg.Pool` \| `string` | `ABSURD_DATABASE_URL` or `postgresql://localhost/absurd` | Database connection |
+| `db` | `pg.Pool` \| `string` | `ABSURD_DATABASE_URL`, then `PGDATABASE`, then `postgresql://localhost/absurd` | Database connection |
 | `queueName` | `string` | `"default"` | Default queue for operations |
 | `defaultMaxAttempts` | `number` | `5` | Default retry limit for spawned tasks |
 | `log` | `Log` | `console` | Logger (must have `log`, `info`, `warn`, `error`) |

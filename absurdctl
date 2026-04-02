@@ -123,32 +123,38 @@ class CleanHelpFormatter(IndentedHelpFormatter):
         return "".join(result)
 
 
-def build_database_config(host=None, port=None, user=None, database=None, uri=None):
+def build_database_config(host, port, user, database):
     """Build a dict with database configuration."""
-    if uri:
-        return {"uri": uri}
     return {
-        "host": host or os.getenv("PGHOST", "localhost"),
-        "port": port or os.getenv("PGPORT", "5432"),
-        "user": user or os.getenv("PGUSER", os.getenv("USER", "")),
-        "database": database or os.getenv("PGDATABASE", os.getenv("USER", "")),
+        "host": host,
+        "port": port,
+        "user": user,
+        "database": database,
     }
+
+
+def resolve_database_argument(explicit_database=None):
+    """Resolve database/URI using explicit args first, then env vars, then fallback."""
+    return (
+        explicit_database
+        or os.getenv("ABSURD_DATABASE_URL")
+        or os.getenv("PGDATABASE")
+        or "postgresql://localhost/absurd"
+    )
 
 
 def config_from_options(options):
     """Shortcut to construct a database config from parsed options."""
-    # Does it look like a uri ?
-    database = options.database or os.getenv("PGDATABASE")
-    if database:
-        parsed = urlparse(database)
-        if parsed.scheme and "postgres" in parsed.scheme:
-            return build_database_config(uri=database)
+    database = resolve_database_argument(options.database)
+    parsed = urlparse(database)
+    if parsed.scheme and "postgres" in parsed.scheme:
+        return {"uri": database}
 
     return build_database_config(
-        options.host,
-        options.port,
-        options.user,
-        options.database,
+        options.host or os.getenv("PGHOST", "localhost"),
+        options.port or os.getenv("PGPORT", "5432"),
+        options.user or os.getenv("PGUSER", os.getenv("USER", "")),
+        database,
     )
 
 
@@ -228,20 +234,31 @@ def run_psql(
     Use `variables` dict to pass values safely. In the query, reference them as :'name'
     for string values. Example:
         run_psql(config, "SELECT * FROM t WHERE id = :'id'", variables={"id": user_input})
+
+    Note: psql does not expand :variables for SQL passed via -c, so SQL text is
+    sent through stdin with -f - whenever query/input_data is provided.
     """
     cmd_args = []
+    stdin_data = input_data
 
     if tuples_only:
         cmd_args.append("-t")
     if no_align:
         cmd_args.append("-A")
+    if fail_on_error:
+        cmd_args.extend(["-v", "ON_ERROR_STOP=1"])
     if variables:
         for name, value in variables.items():
             cmd_args.extend(["-v", f"{name}={value}"])
     if extra_args:
         cmd_args.extend(extra_args)
     if query is not None:
-        cmd_args.extend(["-c", query])
+        if input_data is not None:
+            raise ValueError("run_psql received both query and input_data")
+        stdin_data = query
+
+    if stdin_data is not None:
+        cmd_args.extend(["-f", "-"])
 
     message = error_message
     if message is None:
@@ -256,7 +273,7 @@ def run_psql(
     try:
         result = subprocess.run(
             build_psql_command(config, cmd_args),
-            input=input_data,
+            input=stdin_data,
             capture_output=True,
             text=True,
             check=True,
@@ -2228,8 +2245,9 @@ def cmd_agent_help(args):
         This project uses "Absurd", a durable workflow system built on postgres.  It can be
         debugged with the `absurdctl` command-line tool.
 
-        Connection: set PGHOST, PGPORT, PGUSER, PGDATABASE, and PGPASSWORD just like for psql.
-        Alternatively, PGDATABASE (or --database) can be a full PostgreSQL connection URI.
+        Connection precedence: --database, then ABSURD_DATABASE_URL, then PGDATABASE,
+        then postgresql://localhost/absurd. PGHOST, PGPORT, PGUSER, and PGPASSWORD are
+        also honored for non-URI connections just like psql.
 
         Core commands to explore:
         - list-queues: discover available queues (`absurdctl list-queues`)
@@ -2276,6 +2294,7 @@ Commands:
 Run 'absurdctl COMMAND --help' for more information on a command.
 
 Environment Variables:
+  ABSURD_DATABASE_URL  PostgreSQL connection URI (checked before PGDATABASE)
   PGHOST          Database host
   PGPORT          Database port
   PGUSER          Database user

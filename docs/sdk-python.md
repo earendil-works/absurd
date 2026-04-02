@@ -25,7 +25,7 @@ least one queue.  See **[Database Setup and Migrations](./database.md)** and the
 ```python
 from absurd_sdk import Absurd
 
-# From a connection string (or ABSURD_DATABASE_URL env var)
+# From a connection string
 app = Absurd("postgresql://user:pass@localhost:5432/mydb", queue_name="default")
 
 # From an existing psycopg Connection
@@ -33,7 +33,8 @@ from psycopg import Connection
 conn = Connection.connect("postgresql://...", autocommit=True)
 app = Absurd(conn, queue_name="default")
 
-# Minimal — uses ABSURD_DATABASE_URL and queue "default"
+# Minimal — uses ABSURD_DATABASE_URL, then PGDATABASE,
+# then postgresql://localhost/absurd; queue defaults to "default"
 app = Absurd()
 ```
 
@@ -49,7 +50,7 @@ app = AsyncAbsurd("postgresql://user:pass@localhost:5432/mydb", queue_name="defa
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `conn_or_url` | `Connection` \| `str` \| `None` | `ABSURD_DATABASE_URL` or `postgresql://localhost/absurd` | Database connection or URL |
+| `conn_or_url` | `Connection` \| `str` \| `None` | `ABSURD_DATABASE_URL`, then `PGDATABASE`, then `postgresql://localhost/absurd` | Database connection or URL |
 | `queue_name` | `str` | `"default"` | Default queue for operations |
 | `default_max_attempts` | `int` | `5` | Default retry limit |
 | `hooks` | `AbsurdHooks` | `None` | Lifecycle hooks |

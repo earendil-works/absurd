@@ -1,6 +1,9 @@
 from pathlib import Path
+from subprocess import CompletedProcess
+from types import SimpleNamespace
 from urllib.error import URLError
 import runpy
+import subprocess
 
 import pytest
 
@@ -12,6 +15,8 @@ cmd_emit_event = MODULE["cmd_emit_event"]
 cmd_retry_task = MODULE["cmd_retry_task"]
 cmd_migrate = MODULE["cmd_migrate"]
 cmd_schema_version = MODULE["cmd_schema_version"]
+config_from_options = MODULE["config_from_options"]
+run_psql = MODULE["run_psql"]
 parse_migration_filename = MODULE["parse_migration_filename"]
 resolve_migration_path = MODULE["resolve_migration_path"]
 discover_remote_migrations = MODULE["discover_remote_migrations"]
@@ -170,6 +175,112 @@ def test_retry_task_allows_spawn_new_with_max_attempts(monkeypatch):
         captured["variables"]["options_json"]
         == '{"spawn_new": true, "max_attempts": 5}'
     )
+
+
+def test_run_psql_sends_query_via_stdin_for_variable_expansion(monkeypatch):
+    captured = {}
+
+    def fake_subprocess_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["input"] = kwargs.get("input")
+        return CompletedProcess(cmd, 0, stdout="ok\n", stderr="")
+
+    monkeypatch.setitem(
+        run_psql.__globals__,
+        "subprocess",
+        SimpleNamespace(
+            run=fake_subprocess_run,
+            CalledProcessError=subprocess.CalledProcessError,
+        ),
+    )
+
+    result = run_psql(
+        {"uri": "postgresql://localhost/test"},
+        "SELECT absurd.create_queue(:'queue_name');",
+        variables={"queue_name": "default"},
+    )
+
+    assert result == "ok"
+    assert "-c" not in captured["cmd"]
+    assert captured["cmd"][-2:] == ["-f", "-"]
+    assert "ON_ERROR_STOP=1" in captured["cmd"]
+    assert captured["input"] == "SELECT absurd.create_queue(:'queue_name');"
+
+
+def test_run_psql_sets_on_error_stop_for_stdin_scripts(monkeypatch):
+    captured = {}
+
+    def fake_subprocess_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["input"] = kwargs.get("input")
+        return CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setitem(
+        run_psql.__globals__,
+        "subprocess",
+        SimpleNamespace(
+            run=fake_subprocess_run,
+            CalledProcessError=subprocess.CalledProcessError,
+        ),
+    )
+
+    run_psql(
+        {"uri": "postgresql://localhost/test"},
+        input_data="SELECT 1;\nSELECT nope;\n",
+    )
+
+    assert "ON_ERROR_STOP=1" in captured["cmd"]
+    assert captured["cmd"][-2:] == ["-f", "-"]
+    assert captured["input"] == "SELECT 1;\nSELECT nope;\n"
+
+
+def test_config_from_options_prefers_absurd_database_url_over_pgdatabase(monkeypatch):
+    monkeypatch.setenv("ABSURD_DATABASE_URL", "postgresql://localhost/absurd")
+    monkeypatch.setenv("PGDATABASE", "postgresql://localhost/other")
+
+    config = config_from_options(
+        SimpleNamespace(database=None, host=None, port=None, user=None)
+    )
+
+    assert config == {"uri": "postgresql://localhost/absurd"}
+
+
+def test_config_from_options_prefers_explicit_database_over_env(monkeypatch):
+    monkeypatch.setenv("ABSURD_DATABASE_URL", "postgresql://localhost/from-env")
+    monkeypatch.setenv("PGDATABASE", "postgresql://localhost/from-pgdatabase")
+
+    config = config_from_options(
+        SimpleNamespace(
+            database="postgresql://localhost/from-flag",
+            host=None,
+            port=None,
+            user=None,
+        )
+    )
+
+    assert config == {"uri": "postgresql://localhost/from-flag"}
+
+
+def test_config_from_options_falls_back_to_default_absurd_uri(monkeypatch):
+    monkeypatch.delenv("ABSURD_DATABASE_URL", raising=False)
+    monkeypatch.delenv("PGDATABASE", raising=False)
+
+    config = config_from_options(
+        SimpleNamespace(database=None, host=None, port=None, user=None)
+    )
+
+    assert config == {"uri": "postgresql://localhost/absurd"}
+
+
+def test_config_from_options_uses_pgdatabase_plain_name(monkeypatch):
+    monkeypatch.delenv("ABSURD_DATABASE_URL", raising=False)
+    monkeypatch.setenv("PGDATABASE", "plain_db_name")
+
+    config = config_from_options(
+        SimpleNamespace(database=None, host=None, port=None, user=None)
+    )
+
+    assert config["database"] == "plain_db_name"
 
 
 def test_parse_migration_filename_handles_supported_names():

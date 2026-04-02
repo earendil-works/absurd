@@ -28,6 +28,9 @@ absurdctl create-queue -d your-database-name default
 
 ## Quick Start
 
+If you omit `db`, the client uses `ABSURD_DATABASE_URL`, then `PGDATABASE`,
+then `postgresql://localhost/absurd`.
+
 ```typescript
 import { Absurd } from "absurd-sdk";
 

@@ -1,8 +1,8 @@
 # absurdctl
 
 `absurdctl` is a Python CLI tool for managing Absurd schemas, queues, tasks,
-and events.  It talks directly to Postgres using standard `PG*` environment
-variables.
+and events.  It talks directly to Postgres using `--database`,
+`ABSURD_DATABASE_URL`, or standard `PG*` environment variables.
 
 ## Installation
 
@@ -18,13 +18,22 @@ export PGDATABASE="postgresql://user:pass@localhost:5432/mydb"
 You can also pass connection details as flags (`-d`, `-h`, `-p`, `-U`) to each
 command.
 
+Connection precedence is:
+
+1. `--database`
+2. `ABSURD_DATABASE_URL`
+3. `PGDATABASE`
+4. `postgresql://localhost/absurd`
+
 ## Connection Options
 
 All commands accept these flags:
 
 | Flag | Env Var | Description |
 |------|---------|-------------|
-| `-d` | `PGDATABASE` | Database name or full connection URI |
+| `-d` | — | Database name or full connection URI |
+| — | `ABSURD_DATABASE_URL` | PostgreSQL connection URI |
+| — | `PGDATABASE` | Database name or full connection URI |
 | `-h` | `PGHOST` | Database host |
 | `-p` | `PGPORT` | Database port |
 | `-U` | `PGUSER` | Database user |
@@ -33,6 +42,8 @@ All commands accept these flags:
 Using a full URI is the simplest approach:
 
 ```bash
+export ABSURD_DATABASE_URL="postgresql://user:pass@localhost:5432/mydb"
+# or
 export PGDATABASE="postgresql://user:pass@localhost:5432/mydb"
 ```
 
