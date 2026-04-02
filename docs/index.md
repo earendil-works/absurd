@@ -12,6 +12,7 @@ may run for minutes, days, or years without losing state.
 All you need is a Postgres database and the single
 [`absurd.sql`](https://github.com/earendil-works/absurd/blob/main/sql/absurd.sql)
 schema file.  No extra services, no message brokers, no coordination layer.
+SDKs stay [simple too](https://github.com/earendil-works/absurd/blob/main/sdks/typescript/src/index.ts).
 
 *… because it's absurd how much you can over-design such a simple thing.*
 
