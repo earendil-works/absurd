@@ -173,6 +173,8 @@ absurdctl spawn-task --queue default hello-world -P name=World
 
 ## Next Steps
 
+If you plan to use Absurd with an AI coding agent, read **[Working With Agents](./agents.md)** to install the bundled skill into `.agents/skills`, `.pi/skills`, or another skills directory.
+
 - Read the **[Concepts](./concepts.md)** page to understand the full model
 - Read **[Cleanup and Retention](./cleanup.md)** before production so task and event data do not grow forever
 - Read the **[Living with Code Changes](./patterns/living-with-code-changes.md)** pattern if your tasks may survive deploys or long sleeps

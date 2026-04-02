@@ -222,27 +222,32 @@ absurdctl cleanup emails 30     # 30-day retention
 For batching, direct SQL usage, and cron/job examples, see
 **[Cleanup and Retention](./cleanup.md)**.
 
-## Agent Help
+## Agent Skills
 
-### `agent-help`
+### `install-skill`
 
-Print guidance tailored for AI coding agents.  Append it to your `AGENTS.md` or
-`CLAUDE.md`:
+Install the bundled Absurd skill into a skills directory.  By default it
+installs to `.agents/skills`, creating `absurd/SKILL.md` underneath it.
 
 ```bash
-absurdctl agent-help >> AGENTS.md
+absurdctl install-skill
+absurdctl install-skill .pi/skills
+absurdctl install-skill ~/.pi/agent/skills --force
 ```
+
+Use this when you want agents to have a ready-made Absurd workflow debugging
+playbook available via skill discovery.
 
 ## Bundled Builds
 
 For deployment, `scripts/build-absurdctl` creates a self-contained copy with
-the schema SQL and migrations embedded:
+the schema SQL, migrations, and bundled skill files embedded:
 
 ```bash
 make build-absurdctl
 ```
 
-The bundled version works without network access for `init` and `migrate`.
+The bundled version works without network access for `init`, `migrate`, and `install-skill`.
 
 ## Examples
 

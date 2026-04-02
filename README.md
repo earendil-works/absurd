@@ -194,18 +194,16 @@ More detail lives in the docs:
 
 ## Working With Agents
 
-Absurd is built so that agents such as Claude Code can efficiently work with the
-state in the database.  You can either point them straight at Postgres and hope
-that they pry the information out, but the better idea is to make `absurdctl`
-available on `PATH` and give them some ideas of what to do with it.  `absurdctl`
-can output some agent-specific help that you can put into your `AGENTS.md` /
-`CLAUDE.md` files:
+Absurd is built so that agents such as Claude Code or pi can efficiently work
+with the state in the database.  The easiest setup is to install the bundled
+Absurd skill into a project or user skills directory:
 
 ```
-absurdctl agent-help >> AGENTS.md
+absurdctl install-skill              # installs to .agents/skills
+absurdctl install-skill .pi/skills   # if you want a different path
 ```
 
-You might have to tweak the outputs afterwards to work best for your setup.
+See [Working With Agents](docs/agents.md) for the recommended setup.
 
 ## AI Use Disclaimer
 

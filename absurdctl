@@ -30,6 +30,7 @@ GITHUB_API_BASE = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}"
 ABSURD_SCHEMA_TARGET_VERSION = "main"
 BUNDLED_SCHEMA_SQL = None
 BUNDLED_MIGRATIONS = {}
+BUNDLED_SKILLS = {}
 # END BUNDLED DATA
 
 MIGRATION_FILENAME_RE = re.compile(
@@ -449,6 +450,10 @@ def github_migration_sql_url(ref, migration_name):
     return f"{GITHUB_RAW_BASE}/{quote(ref)}/sql/migrations/{quote(migration_name)}"
 
 
+def github_repo_file_url(ref, relative_path):
+    return f"{GITHUB_RAW_BASE}/{quote(ref)}/{quote(relative_path, safe='/')}"
+
+
 def fetch_text(url):
     with urlopen(url) as response:
         return response.read().decode("utf-8")
@@ -685,6 +690,31 @@ def get_migration_sql(migration):
             f"Error downloading migration {migration['name']} from GitHub: {e}",
             file=sys.stderr,
         )
+        sys.exit(1)
+
+
+def load_skill_file(script_dir, relative_path, verbose):
+    local_path = os.path.join(script_dir, *relative_path.split("/"))
+
+    if os.path.exists(local_path):
+        if verbose:
+            print(f"Using local skill file: {local_path}")
+        with open(local_path, "r", encoding="utf-8") as f:
+            return f.read(), f"local:{local_path}"
+
+    bundled_content = BUNDLED_SKILLS.get(relative_path)
+    if bundled_content is not None:
+        if verbose:
+            print(f"Using bundled skill file: {relative_path}")
+        return bundled_content, "bundled"
+
+    url = github_repo_file_url(ABSURD_SCHEMA_TARGET_VERSION, relative_path)
+    if verbose:
+        print(f"Fetching skill file from: {url}")
+    try:
+        return fetch_text(url), f"github:{url}"
+    except URLError as e:
+        print(f"Error downloading skill file from GitHub: {e}", file=sys.stderr)
         sys.exit(1)
 
 
@@ -2234,38 +2264,67 @@ def cmd_emit_event(args):
     print(f"Event '{event_name}' emitted successfully to queue '{queue}'")
 
 
-def cmd_agent_help(args):
-    """Print quick guidance for automated agents."""
-    if args:
-        print("Error: agent-help does not accept arguments", file=sys.stderr)
+def cmd_install_skill(args):
+    """Install the bundled Absurd agent skill into a skills directory."""
+    usage = "usage: %prog install-skill [options] [TARGET_DIR]"
+    parser = OptionParser(
+        usage=usage,
+        add_help_option=False,
+        formatter=CleanHelpFormatter(),
+    )
+    parser.add_option(
+        "--force",
+        dest="force",
+        action="store_true",
+        default=False,
+        help="Overwrite an existing installed skill if it differs",
+    )
+    parser.add_option(
+        "--help",
+        action="store_true",
+        help="Show this help message",
+    )
+
+    examples = [
+        "absurdctl install-skill",
+        "absurdctl install-skill .pi/skills",
+        "absurdctl install-skill ~/.pi/agent/skills --force",
+    ]
+
+    options, args = parse_args_with_help(parser, args, examples)
+
+    if len(args) > 1:
+        print("Error: install-skill accepts at most one positional TARGET_DIR", file=sys.stderr)
+        parser.print_help()
         sys.exit(1)
 
-    message = textwrap.dedent(
-        """
-        This project uses "Absurd", a durable workflow system built on postgres.  It can be
-        debugged with the `absurdctl` command-line tool.
+    target_root = os.path.expanduser(args[0] if args else ".agents/skills")
+    skill_name = "absurd"
+    relative_skill_path = f"skills/{skill_name}/SKILL.md"
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    skill_content, skill_source = load_skill_file(script_dir, relative_skill_path, False)
 
-        Connection precedence: --database, then ABSURD_DATABASE_URL, then PGDATABASE,
-        then postgresql://localhost/absurd. PGHOST, PGPORT, PGUSER, and PGPASSWORD are
-        also honored for non-URI connections just like psql.
+    destination = os.path.join(target_root, skill_name, "SKILL.md")
+    destination_dir = os.path.dirname(destination)
+    os.makedirs(destination_dir, exist_ok=True)
 
-        Core commands to explore:
-        - list-queues: discover available queues (`absurdctl list-queues`)
-        - list-tasks: inspect recent activity in a queue (`absurdctl list-tasks --queue=default`)
-        - dump-task: pull full details for a task or run (`absurdctl dump-task --task-id=<uuid>`)
-        - spawn-task: enqueue new work (`absurdctl spawn-task my-task`)
-        - retry-task: retry failed work (`absurdctl retry-task <task-id> --max-attempts 5`)
-        - migrate: apply schema migrations (`absurdctl migrate`)
-        - schema-version: inspect recorded schema version (`absurdctl schema-version`)
-        - emit-event: emit an event to wake waiting tasks (`absurdctl emit-event order.completed -P orderId=123`)
+    if os.path.exists(destination):
+        with open(destination, "r", encoding="utf-8") as f:
+            existing = f.read()
+        if existing == skill_content:
+            print(f"Skill '{skill_name}' is already installed at {destination}")
+            return
+        if not options.force:
+            print(
+                f"Error: {destination} already exists and differs. Re-run with --force to overwrite.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
 
-        Use `absurdctl <command> --help` to see every option when you need more detail.
+    with open(destination, "w", encoding="utf-8") as f:
+        f.write(skill_content)
 
-        Task state includes all checkpointed step results as JSON.
-        """
-    ).strip()
-
-    print(message)
+    print(f"Installed skill '{skill_name}' to {destination} ({skill_source})")
 
 
 def show_help():
@@ -2288,7 +2347,7 @@ Commands:
   list-tasks      List tasks with optional filtering
   cancel-task     Cancel a running or pending task
   dump-task       Dump task or run details including checkpoints
-  agent-help      Print quick guidance tailored for coding agents
+  install-skill   Install the bundled Absurd agent skill into a skills folder
   help            Show this help message
 
 Run 'absurdctl COMMAND --help' for more information on a command.
@@ -2316,7 +2375,7 @@ Examples:
   absurdctl list-tasks --queue=default --status=failed
   absurdctl cancel-task 019a32d3-8425-7ae2-a5af-2f17a6707666
   absurdctl dump-task --task-id=019a32d3-8425-7ae2-a5af-2f17a6707666
-  absurdctl agent-help >> AGENTS.md
+  absurdctl install-skill .pi/skills
 """
     )
 
@@ -2355,8 +2414,8 @@ def main():
         cmd_cancel_task(args)
     elif command == "dump-task":
         cmd_dump_task(args)
-    elif command == "agent-help":
-        cmd_agent_help(args)
+    elif command == "install-skill":
+        cmd_install_skill(args)
     else:
         print(f"Unknown command: {command}", file=sys.stderr)
         print("")

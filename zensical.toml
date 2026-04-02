@@ -26,6 +26,7 @@ nav = [
 
     {"Getting Started" = [
         {"Quickstart" = "quickstart.md"},
+        {"Working With Agents" = "agents.md"},
         {"Database Setup and Migrations" = "database.md"},
         {"Concepts" = "concepts.md"},
         {"Cleanup and Retention" = "cleanup.md"},
