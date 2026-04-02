@@ -84,6 +84,12 @@ export interface SpawnResult {
   created: boolean;
 }
 
+export interface AwaitAnyResult {
+  event_name: string;
+  payload: JsonValue;
+  remaining: string[];
+}
+
 export type TaskResultState =
   | "pending"
   | "running"
@@ -516,6 +522,88 @@ export class TaskContext {
       this.checkpointCache.set(checkpointName, payload);
       this.task.event_payload = null;
       return payload;
+    }
+
+    throw new SuspendTask();
+  }
+
+  /**
+   * Waits for any event by name and returns its payload; optionally sets a custom step name and timeout (seconds).
+   * @param eventNames Event identifiers to wait for.
+   * @param options.stepName Optional checkpoint name (defaults to $awaitEvent:<eventName>).
+   * @param options.timeout Optional timeout in seconds.
+   * @throws TimeoutError If the event is not received before the timeout.
+   */
+  async awaitAnyEvent(
+    eventNames: string[],
+    options?: { stepName?: string; timeout?: number },
+  ): Promise<AwaitAnyResult> {
+    if (eventNames.length < 2) {
+      const payload = await this.awaitEvent(eventNames[0] ?? "", options);
+      return { event_name: eventNames[0] ?? "", payload, remaining: [] };
+    }
+
+    // the default step name is derived from the event name.
+    const stepName =
+      options?.stepName || `awaitAnyEvent:${eventNames.join(":")}`;
+    let timeout: number | null = null;
+    if (
+      options?.timeout !== undefined &&
+      Number.isFinite(options?.timeout) &&
+      options?.timeout >= 0
+    ) {
+      timeout = Math.floor(options?.timeout);
+    }
+    const checkpointName = this.getCheckpointName(stepName);
+    const cached = (await this.lookupCheckpoint(checkpointName)) as
+      | { event_name: string; payload: JsonValue }
+      | undefined;
+    if (cached !== undefined) {
+      return {
+        ...cached,
+        remaining: eventNames.filter((e) => e !== cached.event_name),
+      } as AwaitAnyResult;
+    }
+    if (
+      this.task.wake_event &&
+      eventNames.includes(this.task.wake_event) &&
+      (this.task.event_payload === null ||
+        this.task.event_payload === undefined)
+    ) {
+      this.task.wake_event = null;
+      this.task.event_payload = null;
+      throw new TimeoutError(
+        `Timed out waiting for any of these events: "${eventNames.join(", ")}"`,
+      );
+    }
+
+    const result = await this.queryWithTaskStateCheck(
+      `SELECT should_suspend, payload, event_name
+         FROM absurd.await_any_event($1, $2, $3, $4, $5::text[], $6)`,
+      [
+        this.queueName,
+        this.task.task_id,
+        this.task.run_id,
+        checkpointName,
+        eventNames,
+        timeout,
+      ],
+    );
+
+    if (result.rows.length === 0) {
+      throw new Error("Failed to await event");
+    }
+
+    const { should_suspend, payload, event_name } = result.rows[0];
+
+    if (!should_suspend) {
+      const awaitResult = { event_name, payload };
+      this.checkpointCache.set(checkpointName, awaitResult);
+      this.task.event_payload = null;
+      return {
+        ...awaitResult,
+        remaining: eventNames.filter((e) => e !== awaitResult.event_name),
+      } as AwaitAnyResult;
     }
 
     throw new SuspendTask();
@@ -1274,9 +1362,7 @@ function isTerminalTaskState(state: TaskResultState): boolean {
   return state === "completed" || state === "failed" || state === "cancelled";
 }
 
-function normalizeTimeoutSecondsToMs(
-  timeoutSeconds?: number,
-): number | null {
+function normalizeTimeoutSecondsToMs(timeoutSeconds?: number): number | null {
   if (timeoutSeconds === undefined || timeoutSeconds === Infinity) {
     return null;
   }
