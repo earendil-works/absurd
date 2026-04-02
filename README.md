@@ -129,11 +129,14 @@ app.registerTask({ name: 'order-fulfillment' }, async (params, ctx) => {
   // from the last completed step
   const payment = await ctx.step('process-payment', async () => {
     // If you need an idempotency key, you can derive one from ctx.taskID.
-    return await stripe.charges.create({ amount: params.amount, ... });
+    return {
+      paymentId: `pay-${params.orderId}`,
+      amount: params.amount,
+    };
   });
 
   const inventory = await ctx.step('reserve-inventory', async () => {
-    return await db.reserveItems(params.items);
+    return { reservedItems: params.items };
   });
 
   // Wait indefinitely for a warehouse event - the task suspends
@@ -143,34 +146,40 @@ app.registerTask({ name: 'order-fulfillment' }, async (params, ctx) => {
 
   // Ready to send a notification!
   await ctx.step('send-notification', async () => {
-    return await sendEmail(params.email, shipment);
+    return {
+      sentTo: params.email,
+      trackingNumber: shipment.trackingNumber,
+    };
   });
 
-  return { orderId: payment.id, trackingNumber: shipment.trackingNumber };
-});
-
-myWebApp.post("/api/shipment/pack/{orderId}", async (req) => {
-  const trackingNumber = ...;
-  await app.emitEvent(`shipment.packed:${req.params.orderId}`, {
-    trackingNumber,
-  });
+  return {
+    orderId: params.orderId,
+    payment,
+    inventory,
+    trackingNumber: shipment.trackingNumber,
+  };
 });
 
 // Start a worker that pulls tasks from Postgres
-await app.startWorker();
-```
+const worker = await app.startWorker();
 
-Spawn a task:
-
-```typescript
 // Spawn a task - it will be executed durably with automatic retries.  If
 // triggered from within a task, you can also await it.
-app.spawn('order-fulfillment', {
+const { taskID } = await app.spawn('order-fulfillment', {
   orderId: '42',
   amount: 9999,
   items: ['widget-1', 'gadget-2'],
   email: 'customer@example.com'
 });
+
+await app.emitEvent('shipment.packed:42', {
+  trackingNumber: 'TRACK123',
+});
+
+console.log(await app.awaitTaskResult(taskID, { timeout: 10 }));
+
+await worker.close();
+await app.close();
 ```
 
 ## Documentation

@@ -13,8 +13,11 @@ Durable execution (or durable workflows) is a way to run long-lived, reliable fu
 ## Installation
 
 ```bash
-npm install absurd-sdk pg
+npm install absurd-sdk
 ```
+
+Examples in this README are intended to run directly on modern Node.js with
+native TypeScript type stripping. No transpilation step is required.
 
 ## Prerequisites
 
@@ -41,21 +44,21 @@ app.registerTask({ name: "order-fulfillment" }, async (params, ctx) => {
   // Each step is checkpointed, so if the process crashes, we resume
   // from the last completed step
   const payment = await ctx.step("process-payment", async () => {
-    return await processPayment(params.amount);
+    return { paymentId: `pay-${params.orderId}`, amount: params.amount };
   });
 
   const inventory = await ctx.step("reserve-inventory", async () => {
-    return await reserveItems(params.items);
+    return { reservedItems: params.items };
   });
 
   // Wait for an event - the task suspends until the event arrives
   const shipment = await ctx.awaitEvent(`shipment.packed:${params.orderId}`);
 
   await ctx.step("send-notification", async () => {
-    return await sendEmail(params.email, shipment);
+    return { sentTo: params.email, trackingNumber: shipment.trackingNumber };
   });
 
-  return { orderId: payment.id, trackingNumber: shipment.trackingNumber };
+  return { orderId: params.orderId, payment, inventory, trackingNumber: shipment.trackingNumber };
 });
 
 // Start a worker that pulls tasks from Postgres
@@ -114,10 +117,7 @@ Use the task ID to derive idempotency keys for external APIs:
 ```typescript
 const payment = await ctx.step("process-payment", async () => {
   const idempotencyKey = `${ctx.taskID}:payment`;
-  return await stripe.charges.create({
-    amount: params.amount,
-    idempotencyKey,
-  });
+  return { idempotencyKey, amount: params.amount };
 });
 ```
 
@@ -133,7 +133,7 @@ if (handle.done) {
   // `handle.state` is fully typed when done=true.
   messages = handle.state.messages;
 } else {
-  messages = await runTurn();
+  messages = [{ role: "assistant", content: "hello" }];
   await ctx.completeStep(handle, { messages });
 }
 ```

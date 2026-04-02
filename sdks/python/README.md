@@ -19,8 +19,6 @@ and records every step and decision.
 ## Installation
 
 ```bash
-pip install absurd-sdk
-# or with uv
 uv add absurd-sdk
 ```
 
@@ -36,11 +34,35 @@ app = Absurd("postgresql://localhost/absurd")
 
 @app.register_task(name="order-fulfillment")
 def process_order(params, ctx):
-    payment = ctx.step("process-payment", lambda: stripe_charge(params["amount"]))
-    inventory = ctx.step("reserve-inventory", lambda: reserve_items(params["items"]))
+    step = ctx.run_step
+
+    @step("process-payment")
+    def payment():
+        return {
+            "payment_id": f"pay-{params['order_id']}",
+            "amount": params["amount"],
+        }
+
+    @step("reserve-inventory")
+    def inventory():
+        return {"reserved_items": params["items"]}
+
     shipment = ctx.await_event(f"shipment.packed:{params['order_id']}")
-    ctx.step("send-notification", lambda: send_email(params["email"], shipment))
-    return {"order_id": payment["id"], "tracking_number": shipment["tracking_number"]}
+
+    @step("send-notification")
+    def notification():
+        return {
+            "sent_to": params["email"],
+            "tracking_number": shipment["tracking_number"],
+        }
+
+    return {
+        "order_id": params["order_id"],
+        "payment": payment,
+        "inventory": inventory,
+        "tracking_number": shipment["tracking_number"],
+        "notification": notification,
+    }
 
 app.start_worker()
 ```
@@ -54,34 +76,71 @@ app = AsyncAbsurd("postgresql://localhost/absurd")
 
 @app.register_task(name="order-fulfillment")
 async def process_order(params, ctx):
-    payment = await ctx.step("process-payment", lambda: stripe_charge_async(params["amount"]))
-    inventory = await ctx.step("reserve-inventory", lambda: reserve_items_async(params["items"]))
+    async def process_payment():
+        return {
+            "payment_id": f"pay-{params['order_id']}",
+            "amount": params["amount"],
+        }
+
+    payment = await ctx.step("process-payment", process_payment)
+
+    async def reserve_inventory():
+        return {"reserved_items": params["items"]}
+
+    inventory = await ctx.step("reserve-inventory", reserve_inventory)
+
     shipment = await ctx.await_event(f"shipment.packed:{params['order_id']}")
-    await ctx.step("send-notification", lambda: send_email_async(params["email"], shipment))
-    return {"order_id": payment["id"], "tracking_number": shipment["tracking_number"]}
+
+    async def send_notification():
+        return {
+            "sent_to": params["email"],
+            "tracking_number": shipment["tracking_number"],
+        }
+
+    notification = await ctx.step("send-notification", send_notification)
+
+    return {
+        "order_id": params["order_id"],
+        "payment": payment,
+        "inventory": inventory,
+        "tracking_number": shipment["tracking_number"],
+        "notification": notification,
+    }
 
 await app.start_worker()
 ```
 
-## Using the run_step decorator
+For async tasks there is no decorator shortcut yet, but the pattern is the
+same: define a zero-argument `async def` helper and pass it to
+`await ctx.step("step-name", helper)`.
 
-Because of limitations with `lambda` to be a single expression, for sync code
-you can use the `run_step` decorator:
+## Using `@step` in synchronous tasks
+
+Because Python `lambda` is limited to a single expression, a nice pattern for
+sync code is to alias `ctx.run_step` as `step` and then use `@step(...)`:
 
 ```python
 @app.register_task(name="my-task")
 def my_task(params, ctx):
+    step = ctx.run_step
+
     # Define and run a step in one go
-    @ctx.run_step()
+    @step()
     def fetch_data():
         return {"result": 42}
 
     # fetch_data is now the return value ({"result": 42}), not a function
     print(fetch_data)  # {"result": 42}
+
+    @step("transform-data")
+    def transformed():
+        return {"value": fetch_data["result"] * 2}
+
+    return transformed
 ```
 
 The decorator is only implemented for synchronous tasks. In asynchronous tasks
-use `await ctx.step("step-name", lambda: ...)` directly.
+use `async def` helpers with `await ctx.step(...)`.
 
 ## Decomposed Steps
 

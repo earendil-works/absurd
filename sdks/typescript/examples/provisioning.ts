@@ -1,7 +1,7 @@
 /**
  * Example workflow that provisions a customer account using the Absurd TypeScript SDK.
  *
- * node --experimental-transform-types examples/provisioning.ts
+ * node examples/provisioning.ts
  *
  * Environment:
  *   ABSURD_WORKERS    - Number of worker loops to start (default: 3)

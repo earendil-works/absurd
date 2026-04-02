@@ -9,6 +9,9 @@ with Absurd.  It uses the `pg` (node-postgres) library for database access.
 npm install absurd-sdk
 ```
 
+With modern Node.js you can run `.mts` / `.ts` files directly with native type
+stripping — no transpilation step is required for examples in these docs.
+
 Then import it:
 
 ```typescript
@@ -55,11 +58,11 @@ const app = new Absurd();
 ```typescript
 app.registerTask({ name: 'send-email' }, async (params, ctx) => {
   const rendered = await ctx.step('render', async () => {
-    return renderTemplate(params.template, params.data);
+    return `<h1>${params.template}</h1>`;
   });
 
   await ctx.step('send', async () => {
-    return await mailer.send({ to: params.to, html: rendered });
+    return { accepted: [params.to], html: rendered };
   });
 });
 ```
@@ -146,7 +149,7 @@ the cached value is returned without calling `fn` again.
 
 ```typescript
 const result = await ctx.step('fetch-data', async () => {
-  return await fetchFromAPI();
+  return { ok: true, source: 'demo' };
 });
 ```
 
@@ -159,13 +162,15 @@ calls (for example integrating with agent/event loops that expose separate
 "before" and "after" hooks).
 
 ```typescript
+type MyState = { messages: string[] };
+
 const handle = await ctx.beginStep<MyState>('agent-turn');
 
 if (handle.done) {
   return handle.state; // cached checkpoint value
 }
 
-const state = await runTurn();
+const state = { messages: ['hello'] };
 await ctx.completeStep(handle, state);
 ```
 
@@ -323,6 +328,8 @@ Hooks let you integrate with tracing, logging, and context propagation systems.
 Called before every `spawn()`.  Modify options to inject headers:
 
 ```typescript
+const getCurrentTraceId = () => 'trace-123';
+
 const app = new Absurd({
   hooks: {
     beforeSpawn: (taskName, params, options) => {
@@ -341,6 +348,10 @@ const app = new Absurd({
 Wraps task handler execution.  Must call `execute()`:
 
 ```typescript
+const runWithTraceContext = async <T>(traceId: unknown, execute: () => Promise<T>) => {
+  return await execute();
+};
+
 const app = new Absurd({
   hooks: {
     wrapTaskExecution: async (ctx, execute) => {

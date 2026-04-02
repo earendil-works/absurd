@@ -51,7 +51,7 @@ cleanest move is to version the step name.
 ```typescript
 const payment = await ctx.step('process-payment:v2', async () => {
   return {
-    chargeId: (await stripe.charges.create({ amount: params.amount })).id,
+    chargeId: `charge-${params.amount}`,
     provider: 'stripe',
     receiptEmail: params.email ?? null,
   };
@@ -100,9 +100,8 @@ function normalizePayment(value: LegacyPayment | PaymentV2): PaymentV2 {
 
 app.registerTask({ name: 'charge-order' }, async (params, ctx) => {
   const rawPayment = await ctx.step('process-payment', async () => {
-    const charge = await stripe.charges.create({ amount: params.amount });
     return {
-      chargeId: charge.id,
+      chargeId: `charge-${params.amount}`,
       provider: 'stripe' as const,
       receiptEmail: params.email ?? null,
     };
@@ -115,8 +114,11 @@ app.registerTask({ name: 'charge-order' }, async (params, ctx) => {
       return { skipped: true };
     }
 
-    await sendReceipt(payment.receiptEmail, payment.chargeId);
-    return { skipped: false };
+    return {
+      skipped: false,
+      sentTo: payment.receiptEmail,
+      chargeId: payment.chargeId,
+    };
   });
 
   return { payment };

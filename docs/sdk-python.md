@@ -9,9 +9,9 @@ The Python SDK provides both **synchronous** (`Absurd`) and **asynchronous**
 Install the SDK from [PyPI](https://pypi.org/project/absurd-sdk/):
 
 ```bash
-pip install absurd-sdk
-# or with uv
 uv add absurd-sdk
+# or with pip (not recommended)
+pip install absurd-sdk
 ```
 
 Before using the SDK, initialize the Absurd schema in Postgres and create at
@@ -62,9 +62,9 @@ Use the `@register_task` decorator:
 ```python
 @app.register_task("send-email")
 def send_email(params, ctx):
-    rendered = ctx.step("render", lambda: render_template(params["template"]))
+    rendered = ctx.step("render", lambda: f"<h1>{params['template']}</h1>")
 
-    ctx.step("send", lambda: mailer.send(to=params["to"], html=rendered))
+    ctx.step("send", lambda: {"accepted": [params["to"]], "html": rendered})
 ```
 
 ### Decorator Parameters
@@ -83,8 +83,15 @@ app = AsyncAbsurd("postgresql://...")
 
 @app.register_task("send-email")
 async def send_email(params, ctx):
-    rendered = await ctx.step("render", render_template_async)
-    await ctx.step("send", lambda: mailer.send(to=params["to"], html=rendered))
+    async def render_email():
+        return f"<h1>{params['template']}</h1>"
+
+    rendered = await ctx.step("render", render_email)
+
+    async def send_email_payload():
+        return {"accepted": [params["to"]], "html": rendered}
+
+    await ctx.step("send", send_email_payload)
 ```
 
 ## Spawning Tasks
@@ -163,7 +170,7 @@ Run an idempotent step.  `fn` is a zero-argument callable whose return value
 is cached.
 
 ```python
-result = ctx.step("fetch-data", lambda: fetch_from_api())
+result = ctx.step("fetch-data", lambda: {"ok": True, "source": "demo"})
 ```
 
 #### `ctx.begin_step(name)` + `ctx.complete_step(handle, value)`
@@ -187,7 +194,7 @@ replaced with its return value:
 ```python
 @ctx.run_step
 def payment():
-    return stripe.charges.create(amount=params["amount"])
+    return {"charge_id": f"charge-{params['amount']}"}
 
 # `payment` is now the return value, not the function
 print(payment)
@@ -198,7 +205,7 @@ With a custom name:
 ```python
 @ctx.run_step("process-payment")
 def payment():
-    return stripe.charges.create(amount=params["amount"])
+    return {"charge_id": f"charge-{params['amount']}"}
 ```
 
 #### `ctx.sleep_for(step_name, seconds)`
@@ -270,7 +277,10 @@ ctx.emit_event("order.completed", {"order_id": "42"})
 The async context has the same methods, all `async`:
 
 ```python
-result = await ctx.step("fetch-data", fetch_from_api_async)
+async def fetch_data():
+    return {"ok": True, "source": "demo"}
+
+result = await ctx.step("fetch-data", fetch_data)
 handle = await ctx.begin_step("agent-turn")
 result = handle.state if handle.done else await ctx.complete_step(handle, {"ok": True})
 await ctx.sleep_for("cooldown", 3600)
@@ -378,6 +388,10 @@ Both share the same connection string but create independent connections.
 ### `before_spawn`
 
 ```python
+def get_trace_id():
+    return "trace-123"
+
+
 def inject_trace(task_name, params, options):
     options["headers"] = {**(options.get("headers") or {}), "trace_id": get_trace_id()}
     return options
@@ -388,6 +402,14 @@ app = Absurd(hooks={"before_spawn": inject_trace})
 ### `wrap_task_execution`
 
 ```python
+from contextlib import contextmanager
+
+
+@contextmanager
+def start_trace(trace_id):
+    yield
+
+
 def with_tracing(ctx, execute):
     trace_id = ctx.headers.get("trace_id")
     with start_trace(trace_id):

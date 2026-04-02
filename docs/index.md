@@ -34,16 +34,16 @@ const app = new Absurd();
 
 app.registerTask({ name: 'order-fulfillment' }, async (params, ctx) => {
   const payment = await ctx.step('process-payment', async () => {
-    return await stripe.charges.create({ amount: params.amount });
+    return { paymentId: `pay-${params.orderId}`, amount: params.amount };
   });
 
   const shipment = await ctx.awaitEvent(`shipment.packed:${params.orderId}`);
 
   await ctx.step('send-notification', async () => {
-    return await sendEmail(params.email, shipment);
+    return { sentTo: params.email, trackingNumber: shipment.trackingNumber };
   });
 
-  return { orderId: payment.id, trackingNumber: shipment.trackingNumber };
+  return { orderId: params.orderId, payment, trackingNumber: shipment.trackingNumber };
 });
 
 await app.startWorker();

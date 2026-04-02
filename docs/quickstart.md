@@ -6,8 +6,16 @@ schema, creating a queue, spawning a task, and running a worker.
 ## Prerequisites
 
 - **PostgreSQL** (14 or later)
-- **Node.js** (20+) for the TypeScript SDK, or **Python** (3.11+) for the Python SDK
-- **Python 3** for `absurdctl`
+- **Node.js** with native TypeScript type stripping for the TypeScript SDK
+- **Python** (3.11+) with **`uv`** for the Python SDK
+- **`absurdctl`** on your `PATH`
+
+If you are working from a checkout of this repository, the easiest way to make
+`absurdctl` available is:
+
+```bash
+export PATH="$PWD:$PATH"
+```
 
 ## 1. Install the Schema
 
@@ -41,7 +49,16 @@ absurdctl create-queue default
 
 ## 3. Write a Task (TypeScript)
 
-Create a file `hello.ts`:
+Create a small Node project and install the SDK plus `pg`:
+
+```bash
+mkdir absurd-ts-quickstart
+cd absurd-ts-quickstart
+npm init -y
+npm install absurd-sdk
+```
+
+Then create a file `hello.mts`:
 
 ```typescript
 import { Absurd } from 'absurd-sdk';
@@ -56,10 +73,11 @@ app.registerTask({ name: 'hello-world' }, async (params, ctx) => {
 
   const result = await ctx.step('greet', async () => {
     console.log(`World, ${params.name}!`);
-    return 'done';
+    return { greeting: `World, ${params.name}!` };
   });
 
   console.log('greet result:', result);
+  return result;
 });
 
 await app.startWorker();
@@ -91,9 +109,10 @@ await app.close();
 
 ## 5. Run the Worker
 
+Start the worker in one terminal:
+
 ```bash
-npm install absurd-sdk
-node --experimental-strip-types hello.ts
+node hello.mts
 ```
 
 The worker picks up the task, runs it through the steps, and prints:
@@ -101,7 +120,7 @@ The worker picks up the task, runs it through the steps, and prints:
 ```
 Hello
 World, World!
-greet result: done
+greet result: { greeting: 'World, World!' }
 ```
 
 If the process crashes between steps, restart it — the completed step is
@@ -109,17 +128,13 @@ replayed from the checkpoint and only the remaining work executes.
 
 ## Write a Task (Python)
 
-Install the SDK:
-
-```bash
-pip install absurd-sdk
-# or with uv
-uv add absurd-sdk
-```
-
 You can do the same thing with the Python SDK:
 
 ```python
+# /// script
+# dependencies = ["absurd-sdk"]
+# ///
+
 from absurd_sdk import Absurd
 import os
 
@@ -132,10 +147,28 @@ app = Absurd(
 def hello_world(params, ctx):
     print("Hello")
 
-    result = ctx.step("greet", lambda: f"World, {params['name']}!")
+    def greet():
+        message = f"World, {params['name']}!"
+        print(message)
+        return {"greeting": message}
+
+    result = ctx.step("greet", greet)
     print("greet result:", result)
+    return result
 
 app.start_worker()
+```
+
+Save that as `hello.py` and run it with:
+
+```bash
+uv run hello.py
+```
+
+Then, from another terminal, enqueue the task:
+
+```bash
+absurdctl spawn-task --queue default hello-world -P name=World
 ```
 
 ## Next Steps
