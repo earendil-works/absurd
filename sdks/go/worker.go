@@ -192,7 +192,15 @@ func (c *Client) executeTask(ctx context.Context, task claimedTask, claimTimeout
 	if err != nil {
 		return err
 	}
-	result, err := registration.handler(taskCtx, task.ParamsRaw)
+	execute := func() (any, error) {
+		return registration.handler(taskCtx, task.ParamsRaw)
+	}
+	var result any
+	if c.hooks.WrapTaskExecution != nil {
+		result, err = c.hooks.WrapTaskExecution(taskCtx, execute)
+	} else {
+		result, err = execute()
+	}
 	if err != nil {
 		switch err {
 		case errSuspend, errCancelled, errFailedRun:

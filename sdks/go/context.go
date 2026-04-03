@@ -194,6 +194,39 @@ func (t *TaskContext) scheduleRun(ctx context.Context, wakeAt time.Time) error {
 	return err
 }
 
+// AwaitTaskResult waits for another task to reach a terminal state.
+func (t *TaskContext) AwaitTaskResult(ctx context.Context, taskID string, options ...AwaitTaskResultOptions) (TaskResultSnapshot, error) {
+	var opts AwaitTaskResultOptions
+	if len(options) > 0 {
+		opts = options[0]
+	}
+	queue := t.queueName
+	if opts.QueueName != "" {
+		queue = opts.QueueName
+	}
+	validatedQueue, err := validateQueueName(queue)
+	if err != nil {
+		return TaskResultSnapshot{}, err
+	}
+	if validatedQueue == t.queueName {
+		return TaskResultSnapshot{}, fmt.Errorf("TaskContext.AwaitTaskResult cannot wait on tasks in the same queue because this can deadlock workers. Spawn the child in a different queue and pass QueueName")
+	}
+	heartbeatInterval := t.claimTimeout / 2
+	if heartbeatInterval < 500*time.Millisecond {
+		heartbeatInterval = 500 * time.Millisecond
+	}
+	nextHeartbeatAt := time.Now().Add(heartbeatInterval)
+	return awaitTaskResultWithBackoff(ctx, func(ctx context.Context) (*TaskResultSnapshot, error) {
+		return fetchTaskResultSnapshot(ctx, t.client.db, validatedQueue, taskID)
+	}, taskID, opts.Timeout, func() error {
+		if time.Now().Before(nextHeartbeatAt) {
+			return nil
+		}
+		nextHeartbeatAt = time.Now().Add(heartbeatInterval)
+		return Heartbeat(ctx, 0)
+	})
+}
+
 // Step runs an idempotent step whose result is checkpointed in Postgres.
 func Step[T any](ctx context.Context, name string, fn func(context.Context) (T, error)) (T, error) {
 	handle, err := BeginStep[T](ctx, name)

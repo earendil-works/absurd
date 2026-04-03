@@ -9,6 +9,7 @@ import (
 	"log"
 	"math"
 	"os"
+	"runtime/debug"
 	"time"
 
 	"github.com/lib/pq"
@@ -52,6 +53,7 @@ type Options struct {
 	QueueName          string
 	DefaultMaxAttempts int
 	Logger             Logger
+	Hooks              Hooks
 }
 
 // TaskHandler is a typed task handler.
@@ -59,14 +61,52 @@ type TaskHandler[P, R any] func(ctx context.Context, params P) (R, error)
 
 // TaskOptions configure a registered task.
 type TaskOptions struct {
-	QueueName          string
-	DefaultMaxAttempts int
+	QueueName           string
+	DefaultMaxAttempts  int
+	DefaultCancellation *CancellationPolicy
+}
+
+// RetryStrategy configures task retries.
+type RetryStrategy struct {
+	Kind        string
+	BaseSeconds float64
+	Factor      float64
+	MaxSeconds  float64
+}
+
+// CancellationPolicy configures task cancellation rules.
+type CancellationPolicy struct {
+	MaxDuration int64
+	MaxDelay    int64
 }
 
 // SpawnOptions configure spawning.
 type SpawnOptions struct {
+	QueueName      string
+	MaxAttempts    int
+	RetryStrategy  *RetryStrategy
+	Headers        map[string]any
+	Cancellation   *CancellationPolicy
+	IdempotencyKey string
+}
+
+// RetryTaskOptions configure retrying a failed task.
+type RetryTaskOptions struct {
 	QueueName   string
 	MaxAttempts int
+	SpawnNew    bool
+}
+
+// BeforeSpawnHook can mutate spawn options before enqueueing a task.
+type BeforeSpawnHook func(taskName string, params any, options SpawnOptions) (SpawnOptions, error)
+
+// WrapTaskExecutionHook wraps task execution.
+type WrapTaskExecutionHook func(ctx *TaskContext, execute func() (any, error)) (any, error)
+
+// Hooks customize client behavior.
+type Hooks struct {
+	BeforeSpawn       BeforeSpawnHook
+	WrapTaskExecution WrapTaskExecutionHook
 }
 
 // AwaitEventOptions configure AwaitEvent.
@@ -219,6 +259,7 @@ func (t TaskDefinition[P, R]) buildRegistered(defaultQueue string) (registeredTa
 		queueName:             queue,
 		hasDefaultMaxAttempts: t.options.DefaultMaxAttempts > 0,
 		defaultMaxAttempts:    t.options.DefaultMaxAttempts,
+		defaultCancellation:   cloneCancellationPolicy(t.options.DefaultCancellation),
 		handler: func(ctx context.Context, paramsRaw json.RawMessage) (any, error) {
 			var params P
 			if err := unmarshalJSON(paramsRaw, &params); err != nil {
@@ -234,7 +275,71 @@ type registeredTask struct {
 	queueName             string
 	hasDefaultMaxAttempts bool
 	defaultMaxAttempts    int
+	defaultCancellation   *CancellationPolicy
 	handler               func(ctx context.Context, paramsRaw json.RawMessage) (any, error)
+}
+
+func cloneCancellationPolicy(policy *CancellationPolicy) *CancellationPolicy {
+	if policy == nil {
+		return nil
+	}
+	cloned := *policy
+	return &cloned
+}
+
+func cloneRetryStrategy(strategy *RetryStrategy) *RetryStrategy {
+	if strategy == nil {
+		return nil
+	}
+	cloned := *strategy
+	return &cloned
+}
+
+func cloneSpawnOptions(opts SpawnOptions) SpawnOptions {
+	cloned := opts
+	cloned.Headers = cloneMap(opts.Headers)
+	cloned.RetryStrategy = cloneRetryStrategy(opts.RetryStrategy)
+	cloned.Cancellation = cloneCancellationPolicy(opts.Cancellation)
+	return cloned
+}
+
+func normalizeSpawnOptions(opts SpawnOptions) map[string]any {
+	normalized := make(map[string]any)
+	if opts.MaxAttempts > 0 {
+		normalized["max_attempts"] = opts.MaxAttempts
+	}
+	if len(opts.Headers) > 0 {
+		normalized["headers"] = opts.Headers
+	}
+	if opts.RetryStrategy != nil {
+		retry := map[string]any{"kind": opts.RetryStrategy.Kind}
+		if opts.RetryStrategy.BaseSeconds != 0 {
+			retry["base_seconds"] = opts.RetryStrategy.BaseSeconds
+		}
+		if opts.RetryStrategy.Factor != 0 {
+			retry["factor"] = opts.RetryStrategy.Factor
+		}
+		if opts.RetryStrategy.MaxSeconds != 0 {
+			retry["max_seconds"] = opts.RetryStrategy.MaxSeconds
+		}
+		normalized["retry_strategy"] = retry
+	}
+	if opts.Cancellation != nil {
+		cancellation := map[string]any{}
+		if opts.Cancellation.MaxDuration != 0 {
+			cancellation["max_duration"] = opts.Cancellation.MaxDuration
+		}
+		if opts.Cancellation.MaxDelay != 0 {
+			cancellation["max_delay"] = opts.Cancellation.MaxDelay
+		}
+		if len(cancellation) > 0 {
+			normalized["cancellation"] = cancellation
+		}
+	}
+	if opts.IdempotencyKey != "" {
+		normalized["idempotency_key"] = opts.IdempotencyKey
+	}
+	return normalized
 }
 
 // Client is the Go Absurd SDK client.
@@ -244,6 +349,7 @@ type Client struct {
 	queueName          string
 	defaultMaxAttempts int
 	logger             Logger
+	hooks              Hooks
 	registry           map[string]registeredTask
 }
 
@@ -295,6 +401,7 @@ func New(options Options) (*Client, error) {
 		queueName:          validatedQueue,
 		defaultMaxAttempts: defaultMaxAttempts,
 		logger:             logger,
+		hooks:              options.Hooks,
 		registry:           make(map[string]registeredTask),
 	}, nil
 }
@@ -349,6 +456,23 @@ func (c *Client) DropQueue(ctx context.Context, queueName ...string) error {
 	return err
 }
 
+func (c *Client) ListQueues(ctx context.Context) ([]string, error) {
+	rows, err := c.db.QueryContext(ctx, `SELECT queue_name FROM absurd.list_queues()`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var queues []string
+	for rows.Next() {
+		var queue string
+		if err := rows.Scan(&queue); err != nil {
+			return nil, err
+		}
+		queues = append(queues, queue)
+	}
+	return queues, rows.Err()
+}
+
 func (c *Client) EmitEvent(ctx context.Context, eventName string, payload any, queueName ...string) error {
 	if eventName == "" {
 		return fmt.Errorf("event name must be a non-empty string")
@@ -372,10 +496,18 @@ func (c *Client) EmitEvent(ctx context.Context, eventName string, payload any, q
 func (c *Client) Spawn(ctx context.Context, taskName string, params any, options ...SpawnOptions) (SpawnResult, error) {
 	var opts SpawnOptions
 	if len(options) > 0 {
-		opts = options[0]
+		opts = cloneSpawnOptions(options[0])
+	}
+	if c.hooks.BeforeSpawn != nil {
+		var err error
+		opts, err = c.hooks.BeforeSpawn(taskName, params, cloneSpawnOptions(opts))
+		if err != nil {
+			return SpawnResult{}, err
+		}
 	}
 	queue := c.queueName
 	maxAttempts := c.defaultMaxAttempts
+	var cancellation *CancellationPolicy
 
 	if registration, ok := c.registry[taskName]; ok {
 		queue = registration.queueName
@@ -385,12 +517,16 @@ func (c *Client) Spawn(ctx context.Context, taskName string, params any, options
 		if registration.hasDefaultMaxAttempts {
 			maxAttempts = registration.defaultMaxAttempts
 		}
+		cancellation = cloneCancellationPolicy(registration.defaultCancellation)
 	} else if opts.QueueName != "" {
 		queue = opts.QueueName
 	}
 
 	if opts.MaxAttempts > 0 {
 		maxAttempts = opts.MaxAttempts
+	}
+	if opts.Cancellation != nil {
+		cancellation = cloneCancellationPolicy(opts.Cancellation)
 	}
 	validatedQueue, err := validateQueueName(queue)
 	if err != nil {
@@ -404,9 +540,13 @@ func (c *Client) Spawn(ctx context.Context, taskName string, params any, options
 	if err != nil {
 		return SpawnResult{}, err
 	}
-	spawnOptsRaw, err := marshalJSON(map[string]any{
-		"max_attempts": maxAttempts,
-	})
+	spawnOptsRaw, err := marshalJSON(normalizeSpawnOptions(SpawnOptions{
+		MaxAttempts:    maxAttempts,
+		RetryStrategy:  cloneRetryStrategy(opts.RetryStrategy),
+		Headers:        cloneMap(opts.Headers),
+		Cancellation:   cancellation,
+		IdempotencyKey: opts.IdempotencyKey,
+	}))
 	if err != nil {
 		return SpawnResult{}, err
 	}
@@ -447,7 +587,53 @@ func (c *Client) AwaitTaskResult(ctx context.Context, taskID string, options ...
 	}
 	return awaitTaskResultWithBackoff(ctx, func(ctx context.Context) (*TaskResultSnapshot, error) {
 		return fetchTaskResultSnapshot(ctx, c.db, validatedQueue, taskID)
-	}, taskID, opts.Timeout)
+	}, taskID, opts.Timeout, nil)
+}
+
+func (c *Client) RetryTask(ctx context.Context, taskID string, options ...RetryTaskOptions) (SpawnResult, error) {
+	var opts RetryTaskOptions
+	if len(options) > 0 {
+		opts = options[0]
+	}
+	queue := c.queueName
+	if opts.QueueName != "" {
+		queue = opts.QueueName
+	}
+	validatedQueue, err := validateQueueName(queue)
+	if err != nil {
+		return SpawnResult{}, err
+	}
+	payload := map[string]any{}
+	if opts.MaxAttempts > 0 {
+		payload["max_attempts"] = opts.MaxAttempts
+	}
+	if opts.SpawnNew {
+		payload["spawn_new"] = true
+	}
+	raw, err := marshalJSON(payload)
+	if err != nil {
+		return SpawnResult{}, err
+	}
+	row := c.db.QueryRowContext(ctx, `SELECT task_id, run_id, attempt, created
+       FROM absurd.retry_task($1, $2, $3)`, validatedQueue, taskID, string(raw))
+	var result SpawnResult
+	if err := row.Scan(&result.TaskID, &result.RunID, &result.Attempt, &result.Created); err != nil {
+		return SpawnResult{}, err
+	}
+	return result, nil
+}
+
+func (c *Client) CancelTask(ctx context.Context, taskID string, queueName ...string) error {
+	queue := c.queueName
+	if len(queueName) > 0 && queueName[0] != "" {
+		queue = queueName[0]
+	}
+	validatedQueue, err := validateQueueName(queue)
+	if err != nil {
+		return err
+	}
+	_, err = c.db.ExecContext(ctx, `SELECT absurd.cancel_task($1, $2)`, validatedQueue, taskID)
+	return err
 }
 
 // Internal helpers
@@ -482,7 +668,7 @@ func fetchTaskResultSnapshot(ctx context.Context, db *sql.DB, queueName string, 
 	}, nil
 }
 
-func awaitTaskResultWithBackoff(ctx context.Context, fetch func(context.Context) (*TaskResultSnapshot, error), taskID string, timeout time.Duration) (TaskResultSnapshot, error) {
+func awaitTaskResultWithBackoff(ctx context.Context, fetch func(context.Context) (*TaskResultSnapshot, error), taskID string, timeout time.Duration, beforeSleep func() error) (TaskResultSnapshot, error) {
 	startedAt := time.Now()
 	delay := 50 * time.Millisecond
 	for {
@@ -498,6 +684,11 @@ func awaitTaskResultWithBackoff(ctx context.Context, fetch func(context.Context)
 		}
 		if timeout > 0 && time.Since(startedAt) >= timeout {
 			return TaskResultSnapshot{}, newTimeoutError(`timed out waiting for task %q`, taskID)
+		}
+		if beforeSleep != nil {
+			if err := beforeSleep(); err != nil {
+				return TaskResultSnapshot{}, err
+			}
 		}
 		waitFor := delay
 		if timeout > 0 {
@@ -534,8 +725,9 @@ func completeTaskRun(ctx context.Context, db *sql.DB, queueName string, runID st
 
 func failTaskRun(ctx context.Context, db *sql.DB, queueName string, runID string, err error) error {
 	serialized, marshalErr := marshalJSON(map[string]any{
-		"name":    fmt.Sprintf("%T", err),
-		"message": err.Error(),
+		"name":      fmt.Sprintf("%T", err),
+		"message":   err.Error(),
+		"traceback": string(debug.Stack()),
 	})
 	if marshalErr != nil {
 		return marshalErr
