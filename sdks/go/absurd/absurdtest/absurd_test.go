@@ -14,13 +14,18 @@ import (
 	"time"
 
 	"github.com/earendil-works/absurd/sdks/go/absurd"
+	_ "github.com/jackc/pgx/v5/stdlib"
 	_ "github.com/lib/pq"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
 )
 
+var popularPostgresDrivers = []string{"postgres", "pgx"}
+
 var (
-	testDB        *sql.DB
+	testDBs       map[string]*sql.DB
+	testDBsMu     sync.Mutex
+	testDSN       string
 	testContainer testcontainers.Container
 	testSetupOnce sync.Once
 	testSetupErr  error
@@ -30,9 +35,11 @@ func TestMain(m *testing.M) {
 	code := m.Run()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	if testDB != nil {
-		_ = testDB.Close()
+	testDBsMu.Lock()
+	for _, db := range testDBs {
+		_ = db.Close()
 	}
+	testDBsMu.Unlock()
 	if testContainer != nil {
 		_ = testContainer.Terminate(ctx)
 	}
@@ -40,6 +47,11 @@ func TestMain(m *testing.M) {
 }
 
 func setupTestDatabase(t *testing.T) *sql.DB {
+	t.Helper()
+	return setupTestDatabaseWithDriver(t, "postgres")
+}
+
+func setupTestDatabaseWithDriver(t *testing.T, driverName string) *sql.DB {
 	t.Helper()
 	testSetupOnce.Do(func() {
 		if os.Getenv("DOCKER_HOST") == "" {
@@ -80,37 +92,80 @@ func setupTestDatabase(t *testing.T) *sql.DB {
 			return
 		}
 		host = strings.ReplaceAll(host, "localhost", "127.0.0.1")
-		dsn := fmt.Sprintf("postgres://postgres:postgres@%s:%s/absurd_test?sslmode=disable", host, port.Port())
+		testDSN = fmt.Sprintf("postgres://postgres:postgres@%s:%s/absurd_test?sslmode=disable", host, port.Port())
 
-		testDB, testSetupErr = sql.Open("postgres", dsn)
-		if testSetupErr != nil {
+		bootstrapDB, err := sql.Open("postgres", testDSN)
+		if err != nil {
+			testSetupErr = err
 			return
 		}
-		testDB.SetMaxOpenConns(4)
-		testDB.SetMaxIdleConns(4)
+		bootstrapDB.SetMaxOpenConns(4)
+		bootstrapDB.SetMaxIdleConns(4)
 
-		if testSetupErr = testDB.PingContext(ctx); testSetupErr != nil {
+		if err := bootstrapDB.PingContext(ctx); err != nil {
+			testSetupErr = err
+			_ = bootstrapDB.Close()
 			return
 		}
+
+		testDBsMu.Lock()
+		testDBs = map[string]*sql.DB{"postgres": bootstrapDB}
+		testDBsMu.Unlock()
 
 		_, filename, _, _ := runtime.Caller(0)
 		schemaPath := filepath.Join(filepath.Dir(filename), "..", "..", "..", "..", "sql", "absurd.sql")
-		var schema []byte
-		schema, testSetupErr = os.ReadFile(schemaPath)
-		if testSetupErr != nil {
+		schema, err := os.ReadFile(schemaPath)
+		if err != nil {
+			testSetupErr = err
 			return
 		}
-		_, testSetupErr = testDB.ExecContext(ctx, string(schema))
+		_, testSetupErr = bootstrapDB.ExecContext(ctx, string(schema))
 	})
 	if testSetupErr != nil {
 		t.Fatalf("failed to set up test database: %v", testSetupErr)
 	}
-	return testDB
+
+	testDBsMu.Lock()
+	db := testDBs[driverName]
+	testDBsMu.Unlock()
+	if db != nil {
+		return db
+	}
+
+	testDBsMu.Lock()
+	defer testDBsMu.Unlock()
+	if db = testDBs[driverName]; db != nil {
+		return db
+	}
+
+	db, err := sql.Open(driverName, testDSN)
+	if err != nil {
+		t.Fatalf("failed to open test database with driver %q: %v", driverName, err)
+	}
+	db.SetMaxOpenConns(4)
+	db.SetMaxIdleConns(4)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := db.PingContext(ctx); err != nil {
+		_ = db.Close()
+		t.Fatalf("failed to ping test database with driver %q: %v", driverName, err)
+	}
+	testDBs[driverName] = db
+	return db
 }
 
-func newTestClient(t *testing.T, queue string) *absurd.Client {
+func testDatabaseDSN(t *testing.T) string {
 	t.Helper()
-	db := setupTestDatabase(t)
+	_ = setupTestDatabase(t)
+	if testDSN == "" {
+		t.Fatal("test database DSN not initialized")
+	}
+	return testDSN
+}
+
+func newTestClientWithDriver(t *testing.T, queue string, driverName string) *absurd.Client {
+	t.Helper()
+	db := setupTestDatabaseWithDriver(t, driverName)
 	client, err := absurd.New(absurd.Options{
 		DB:        db,
 		QueueName: queue,
@@ -122,6 +177,10 @@ func newTestClient(t *testing.T, queue string) *absurd.Client {
 		t.Fatalf("CreateQueue failed: %v", err)
 	}
 	return client
+}
+
+func newTestClient(t *testing.T, queue string) *absurd.Client {
+	return newTestClientWithDriver(t, queue, "postgres")
 }
 
 func randomQueueName(prefix string) string {

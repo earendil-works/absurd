@@ -17,7 +17,7 @@ The exact examples in this guide live in the repository:
 
 - [TypeScript quickstart examples](https://github.com/earendil-works/absurd/tree/main/sdks/typescript/examples/quickstart)
 - [Python quickstart examples](https://github.com/earendil-works/absurd/tree/main/sdks/python/examples/quickstart)
-- [Go quickstart examples](https://github.com/earendil-works/absurd/tree/main/absurd/examples/quickstart)
+- [Go quickstart examples](https://github.com/earendil-works/absurd/tree/main/sdks/go/absurd/examples/quickstart)
 
 ## Prerequisites
 
@@ -215,6 +215,7 @@ The important part is the failure story:
         "time"
 
         "github.com/earendil-works/absurd/sdks/go/absurd"
+        _ "github.com/jackc/pgx/v5/stdlib"
     )
 
     type ProvisionUserParams struct {
@@ -314,7 +315,7 @@ The important part is the failure story:
     )
 
     func main() {
-        app, err := absurd.New(absurd.Options{QueueName: "default"})
+        app, err := absurd.New(absurd.Options{QueueName: "default", DriverName: "pgx"})
         if err != nil {
             log.Fatal(err)
         }
@@ -349,7 +350,8 @@ Run one of the repository examples in a terminal:
 === "Go"
 
     ```bash
-    ABSURD_DATABASE_URL="$PGDATABASE" go run ./sdks/go/absurd/examples/quickstart/worker
+    cd sdks/go/absurd
+    ABSURD_DATABASE_URL="$PGDATABASE" go run ./examples/quickstart/worker
     ```
 
 ## 4. Spawn a Task
@@ -435,6 +437,7 @@ store, inspect later, or await.
         "time"
 
         "github.com/earendil-works/absurd/sdks/go/absurd"
+        _ "github.com/jackc/pgx/v5/stdlib"
     )
 
     type ProvisionUserParams struct {
@@ -459,7 +462,7 @@ store, inspect later, or await.
 
         ctx := context.Background()
 
-        app, err := absurd.New(absurd.Options{QueueName: "default"})
+        app, err := absurd.New(absurd.Options{QueueName: "default", DriverName: "pgx"})
         if err != nil {
             log.Fatal(err)
         }
@@ -521,7 +524,8 @@ Run one of the repository clients:
 === "Go"
 
     ```bash
-    ABSURD_DATABASE_URL="$PGDATABASE" go run ./sdks/go/absurd/examples/quickstart/client alice alice@example.com
+    cd sdks/go/absurd
+    ABSURD_DATABASE_URL="$PGDATABASE" go run ./examples/quickstart/client alice alice@example.com
     ```
 
 If you want to block until the task finishes, pass `--await` and then emit the
@@ -562,6 +566,7 @@ activation event from another terminal.
         "time"
 
         "github.com/earendil-works/absurd/sdks/go/absurd"
+        _ "github.com/jackc/pgx/v5/stdlib"
     )
 
     type ProvisionUserParams struct {
@@ -572,7 +577,7 @@ activation event from another terminal.
     func main() {
         ctx := context.Background()
 
-        app, err := absurd.New(absurd.Options{QueueName: "default"})
+        app, err := absurd.New(absurd.Options{QueueName: "default", DriverName: "pgx"})
         if err != nil {
             log.Fatal(err)
         }

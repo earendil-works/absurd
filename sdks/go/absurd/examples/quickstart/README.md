@@ -10,7 +10,10 @@ Files:
 
 ## Run
 
+These examples use the pgx `database/sql` driver (`DriverName: "pgx"`).
+
 ```bash
-go run ./sdks/go/absurd/examples/quickstart/worker
-go run ./sdks/go/absurd/examples/quickstart/client --await alice alice@example.com
+cd sdks/go/absurd
+go run ./examples/quickstart/worker
+go run ./examples/quickstart/client --await alice alice@example.com
 ```

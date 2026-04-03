@@ -1,8 +1,8 @@
 # Go SDK
 
 The Go SDK provides an idiomatic, typed client for building durable workflows
-with Absurd.  It uses the standard library's `database/sql` package together
-with the Postgres driver from [`github.com/lib/pq`](https://github.com/lib/pq).
+with Absurd.  It uses the standard library's `database/sql` package and is
+driver-agnostic: use any Postgres `database/sql` driver (`pgx`, `pq`, etc.).
 
 The API is intentionally Go-shaped:
 
@@ -41,10 +41,12 @@ import (
     "os"
 
     "github.com/earendil-works/absurd/sdks/go/absurd"
+    _ "github.com/jackc/pgx/v5/stdlib"
 )
 
 func main() {
     app, err := absurd.New(absurd.Options{
+        DriverName:  "pgx",
         DatabaseURL: os.Getenv("ABSURD_DATABASE_URL"),
         QueueName:   "default",
     })
@@ -66,10 +68,11 @@ import (
     "os"
 
     "github.com/earendil-works/absurd/sdks/go/absurd"
+    _ "github.com/jackc/pgx/v5/stdlib"
 )
 
 func main() {
-    db, err := sql.Open("postgres", os.Getenv("PGDATABASE"))
+    db, err := sql.Open("pgx", os.Getenv("PGDATABASE"))
     if err != nil {
         log.Fatal(err)
     }
@@ -98,6 +101,7 @@ defer app.Close()
 
 This uses:
 
+- `Options.DriverName` (default: `"postgres"`)
 - `Options.DatabaseURL`, if provided
 - otherwise `ABSURD_DATABASE_URL`
 - otherwise `postgresql://localhost/absurd`
@@ -107,16 +111,66 @@ The default queue is `"default"`.
 If you normally rely on `PGDATABASE`, pass it explicitly via
 `Options.DatabaseURL` or by opening your own `*sql.DB`.
 
+If you do not pass `Options.DB`, ensure the corresponding
+`database/sql` Postgres driver is imported in your program.
+
 ### `Options`
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `DB` | `*sql.DB` | `nil` | Existing database handle. If set, it wins over `DatabaseURL`. |
+| `DriverName` | `string` | `"postgres"` | `database/sql` driver name used with `sql.Open` when `DB` is not provided |
 | `DatabaseURL` | `string` | `ABSURD_DATABASE_URL`, then `postgresql://localhost/absurd` | Connection string used when `DB` is not provided |
 | `QueueName` | `string` | `"default"` | Default queue for spawning and workers |
 | `DefaultMaxAttempts` | `int` | `5` | Default retry limit |
 | `Logger` | `Logger` | stdlib logger | Logger with a `Printf` method |
 | `Hooks` | `Hooks` | zero value | Lifecycle hooks |
+
+### Swapping PostgreSQL drivers (`pgx`, `pq`, others)
+
+The SDK works with any Postgres driver that integrates with `database/sql`.
+
+#### Option A: provide your own `*sql.DB` (recommended for apps with existing DB wiring)
+
+```go
+import (
+    "database/sql"
+
+    _ "github.com/jackc/pgx/v5/stdlib"
+)
+
+db, err := sql.Open("pgx", dsn)
+if err != nil {
+    return err
+}
+
+app, err := absurd.New(absurd.Options{
+    DB:        db,
+    QueueName: "default",
+})
+```
+
+Swap to `lib/pq` by changing only driver import + name:
+
+```go
+import _ "github.com/lib/pq"
+
+db, err := sql.Open("postgres", dsn)
+```
+
+#### Option B: let Absurd open the connection
+
+```go
+import _ "github.com/jackc/pgx/v5/stdlib"
+
+app, err := absurd.New(absurd.Options{
+    DriverName:  "pgx",
+    DatabaseURL: dsn,
+    QueueName:   "default",
+})
+```
+
+For `lib/pq`, set `DriverName: "postgres"` and import `_ "github.com/lib/pq"`.
 
 ## Registering Tasks
 
@@ -131,6 +185,7 @@ import (
     "log"
 
     "github.com/earendil-works/absurd/sdks/go/absurd"
+    _ "github.com/jackc/pgx/v5/stdlib"
 )
 
 type SendEmailParams struct {
@@ -163,7 +218,7 @@ var sendEmailTask = absurd.Task(
 )
 
 func main() {
-    app, err := absurd.New(absurd.Options{QueueName: "default"})
+    app, err := absurd.New(absurd.Options{QueueName: "default", DriverName: "pgx"})
     if err != nil {
         log.Fatal(err)
     }

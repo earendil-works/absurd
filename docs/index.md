@@ -99,6 +99,7 @@ them race-free.
         "log"
 
         "github.com/earendil-works/absurd/sdks/go/absurd"
+        _ "github.com/jackc/pgx/v5/stdlib"
     )
 
     type OrderFulfillmentParams struct {
@@ -147,7 +148,7 @@ them race-free.
     )
 
     func main() {
-        app, err := absurd.New(absurd.Options{QueueName: "default"})
+        app, err := absurd.New(absurd.Options{QueueName: "default", DriverName: "pgx"})
         if err != nil {
             log.Fatal(err)
         }

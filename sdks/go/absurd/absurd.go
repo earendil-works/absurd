@@ -13,13 +13,12 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/lib/pq"
 )
 
 const (
 	maxQueueNameLength        = 57
 	defaultQueueName          = "default"
+	defaultDriverName         = "postgres"
 	defaultClientMaxAttempts  = 5
 	defaultClaimTimeout       = 120 * time.Second
 	defaultBatchWorkerID      = "worker"
@@ -61,6 +60,7 @@ type Logger interface {
 // Options configure a client.
 type Options struct {
 	DB                 *sql.DB
+	DriverName         string
 	DatabaseURL        string
 	QueueName          string
 	DefaultMaxAttempts int
@@ -381,6 +381,10 @@ func New(options Options) (*Client, error) {
 	if options.DB != nil {
 		db = options.DB
 	} else {
+		driverName := strings.TrimSpace(options.DriverName)
+		if driverName == "" {
+			driverName = defaultDriverName
+		}
 		dsn := options.DatabaseURL
 		if dsn == "" {
 			dsn = os.Getenv("ABSURD_DATABASE_URL")
@@ -391,8 +395,11 @@ func New(options Options) (*Client, error) {
 		if dsn == "" {
 			dsn = "postgresql://localhost/absurd"
 		}
-		sqlDB, err := sql.Open("postgres", dsn)
+		sqlDB, err := sql.Open(driverName, dsn)
 		if err != nil {
+			if strings.Contains(err.Error(), "sql: unknown driver") {
+				return nil, fmt.Errorf("%w (set Options.DriverName and import a database/sql PostgreSQL driver, e.g. github.com/jackc/pgx/v5/stdlib)", err)
+			}
 			return nil, err
 		}
 		db = sqlDB
@@ -846,9 +853,9 @@ func durationSecondsOrDefault(d time.Duration, fallback time.Duration) int {
 }
 
 func mapTaskStateError(err error) error {
-	var pqErr *pq.Error
-	if errors.As(err, &pqErr) {
-		switch string(pqErr.Code) {
+	var stateErr interface{ SQLState() string }
+	if errors.As(err, &stateErr) {
+		switch stateErr.SQLState() {
 		case "AB001":
 			return errCancelled
 		case "AB002":

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/earendil-works/absurd/sdks/go/absurd"
+	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
 type ProvisionUserParams struct {
@@ -32,7 +33,7 @@ func main() {
 
 	ctx := context.Background()
 
-	app, err := absurd.New(absurd.Options{QueueName: "default"})
+	app, err := absurd.New(absurd.Options{QueueName: "default", DriverName: "pgx"})
 	if err != nil {
 		log.Fatal(err)
 	}
