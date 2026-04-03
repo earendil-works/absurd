@@ -385,16 +385,7 @@ func New(options Options) (*Client, error) {
 		if driverName == "" {
 			driverName = defaultDriverName
 		}
-		dsn := options.DatabaseURL
-		if dsn == "" {
-			dsn = os.Getenv("ABSURD_DATABASE_URL")
-		}
-		if dsn == "" {
-			dsn = dsnFromPGDatabase(os.Getenv("PGDATABASE"))
-		}
-		if dsn == "" {
-			dsn = "postgresql://localhost/absurd"
-		}
+		dsn := resolveDatabaseURL(options.DatabaseURL)
 		sqlDB, err := sql.Open(driverName, dsn)
 		if err != nil {
 			if strings.Contains(err.Error(), "sql: unknown driver") {
@@ -828,6 +819,20 @@ func dsnFromPGDatabase(value string) string {
 		return value
 	}
 	return "dbname=" + value
+}
+
+func resolveDatabaseURL(explicit string) string {
+	dsn := explicit
+	if dsn == "" {
+		dsn = os.Getenv("ABSURD_DATABASE_URL")
+	}
+	if dsn == "" {
+		dsn = dsnFromPGDatabase(os.Getenv("PGDATABASE"))
+	}
+	if dsn == "" {
+		dsn = "postgresql://localhost/absurd"
+	}
+	return dsn
 }
 
 func normalizeLeaseDuration(d time.Duration, fallback time.Duration) time.Duration {

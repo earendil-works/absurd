@@ -133,5 +133,6 @@ Like Absurd, DBOS is trying to keep durability close to the application and the
 database rather than building a giant external workflow brain.
 
 In particular, Absurd pushes more of the durable behavior into stored procedures
-and keeps the SDKs relatively light.  DBOS, by contrast, is more obviously a
-library/platform that you adopt inside your application.
+and keeps the SDKs relatively light.  DBOS, by contrast, has rather beefy SDKs
+in comparison that try to do more.  For instance the Python SDK clocks in at
+40.000 lines of code.

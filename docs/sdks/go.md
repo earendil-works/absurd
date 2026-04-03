@@ -104,12 +104,10 @@ This uses:
 - `Options.DriverName` (default: `"postgres"`)
 - `Options.DatabaseURL`, if provided
 - otherwise `ABSURD_DATABASE_URL`
+- otherwise `PGDATABASE`
 - otherwise `postgresql://localhost/absurd`
 
 The default queue is `"default"`.
-
-If you normally rely on `PGDATABASE`, pass it explicitly via
-`Options.DatabaseURL` or by opening your own `*sql.DB`.
 
 If you do not pass `Options.DB`, ensure the corresponding
 `database/sql` Postgres driver is imported in your program.
@@ -120,7 +118,7 @@ If you do not pass `Options.DB`, ensure the corresponding
 |--------|------|---------|-------------|
 | `DB` | `*sql.DB` | `nil` | Existing database handle. If set, it wins over `DatabaseURL`. |
 | `DriverName` | `string` | `"postgres"` | `database/sql` driver name used with `sql.Open` when `DB` is not provided |
-| `DatabaseURL` | `string` | `ABSURD_DATABASE_URL`, then `postgresql://localhost/absurd` | Connection string used when `DB` is not provided |
+| `DatabaseURL` | `string` | `ABSURD_DATABASE_URL`, then `PGDATABASE`, then `postgresql://localhost/absurd` | Connection string used when `DB` is not provided |
 | `QueueName` | `string` | `"default"` | Default queue for spawning and workers |
 | `DefaultMaxAttempts` | `int` | `5` | Default retry limit |
 | `Logger` | `Logger` | stdlib logger | Logger with a `Printf` method |

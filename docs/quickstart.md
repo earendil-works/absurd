@@ -31,9 +31,6 @@ All examples below use `absurdctl` directly.  If you are using
 [`uvx`](https://docs.astral.sh/uv/guides/tools/), replace `absurdctl ...` with
 `uvx absurdctl ...`.
 
-If you want to run the Go examples exactly as shown below and you already use
-`PGDATABASE`, also export `ABSURD_DATABASE_URL="$PGDATABASE"` first.
-
 ## 1. Install the Schema
 
 Absurd ships as a single SQL file.  Apply it to any Postgres database:
@@ -351,7 +348,7 @@ Run one of the repository examples in a terminal:
 
     ```bash
     cd sdks/go/absurd
-    ABSURD_DATABASE_URL="$PGDATABASE" go run ./examples/quickstart/worker
+    go run ./examples/quickstart/worker
     ```
 
 ## 4. Spawn a Task
@@ -525,7 +522,7 @@ Run one of the repository clients:
 
     ```bash
     cd sdks/go/absurd
-    ABSURD_DATABASE_URL="$PGDATABASE" go run ./examples/quickstart/client alice alice@example.com
+    go run ./examples/quickstart/client alice alice@example.com
     ```
 
 If you want to block until the task finishes, pass `--await` and then emit the
