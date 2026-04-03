@@ -164,20 +164,9 @@ them race-free.
 ## Quick Links
 
 - **[Quickstart](./quickstart.md)** — install the schema, create a queue, run your first task
-- **[Working With Agents](./agents.md)** — install the bundled Absurd skill for pi or other coding agents
-- **[Database Setup and Migrations](./database.md)** — initialize the schema, upgrade releases, and generate SQL for your own migration system
 - **[Concepts](./concepts.md)** — what durable execution is, plus tasks, steps, runs, events, and retry semantics
 - **[Cleanup and Retention](./cleanup.md)** — set retention policies and automate cleanup with SQL, `absurdctl`, or cron
 - **[Comparison](./comparison.md)** — where Absurd fits relative to PGMQ, Cadence, Temporal, Inngest, and DBOS
 - **[Patterns](./patterns/)** — practical recipes for common workflow and scheduling setups
-
-## SDKs
-
-- **[TypeScript SDK](./sdks/typescript.md)** — full API reference for Node.js / TypeScript
-- **[Python SDK](./sdks/python.md)** — sync and async clients using psycopg
-- **[Go SDK](./sdks/go.md)** — typed `context.Context`-based API *(experimental)*
-
-## Tools
-
-- **[absurdctl](./absurdctl.md)** — CLI for schema management, queue operations, and task inspection
-- **[Habitat](./habitat.md)** — web dashboard for monitoring tasks, runs, and events
+- **[SDKs](./sdks/)** — available language SDKs
+- **[Tools Overview](./tools/)** — utility tools

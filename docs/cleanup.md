@@ -7,7 +7,7 @@ retention plan.  Otherwise old runs, checkpoints, waits, and events will simply
 accumulate forever.
 
 This page explains what cleanup removes, how to do it with
-[`absurdctl`](./absurdctl.md), how to call the stored procedures directly, and
+[`absurdctl`](./tools/absurdctl.md), how to call the stored procedures directly, and
 how to automate retention with real cron jobs or with an Absurd task of your
 own.
 

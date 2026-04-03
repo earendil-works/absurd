@@ -20,7 +20,7 @@ import { Absurd } from 'absurd-sdk';
 
 Before using the SDK, initialize the Absurd schema in Postgres and create at
 least one queue.  See **[Database Setup and Migrations](../database.md)**, the
-**[Quickstart](../quickstart.md)**, and **[absurdctl](../absurdctl.md)** for CLI
+**[Quickstart](../quickstart.md)**, and **[absurdctl](../tools/absurdctl.md)** for CLI
 installation and usage.
 
 ## Creating a Client

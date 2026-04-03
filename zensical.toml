@@ -24,7 +24,7 @@ edit_uri = "edit/main/docs"
 copyright = "<a href=\"https://earendil.com/\">Earendil Inc.</a>"
 
 nav = [
-    {"Overview" = "index.md"},
+    {"Home" = "index.md"},
 
     {"Guide" = [
         {"Quickstart" = "quickstart.md"},
@@ -36,6 +36,7 @@ nav = [
     ]},
 
     {"SDKs" = [
+        {"Overview" = "sdks/index.md"},
         {"TypeScript" = "sdks/typescript.md"},
         {"Python" = "sdks/python.md"},
         {"Go" = "sdks/go.md"},
@@ -49,8 +50,9 @@ nav = [
     ]},
 
     {"Tools" = [
-        {"absurdctl" = "absurdctl.md"},
-        {"Habitat" = "habitat.md"},
+        {"Overview" = "tools/index.md"},
+        {"absurdctl" = "tools/absurdctl.md"},
+        {"Habitat" = "tools/habitat.md"},
     ]},
 ]
 
@@ -65,7 +67,6 @@ features = [
     "content.code.copy",
     "content.code.select",
     "content.tabs.link",
-    "navigation.sections",
     "navigation.instant",
     "navigation.instant.prefetch",
     "navigation.instant.progress",

@@ -12,7 +12,7 @@ There are two supported ways to do this:
    **strongly recommended** for production so schema changes stay in the same
    deployment flow as the rest of your database changes.
 
-If you need to install `absurdctl` first, see **[absurdctl](./absurdctl.md)**.
+If you need to install `absurdctl` first, see **[absurdctl](./tools/absurdctl.md)**.
 You can either run it with
 [`uvx`](https://docs.astral.sh/uv/guides/tools/) `absurdctl ...` or install it
 with `uv tool install absurdctl`.

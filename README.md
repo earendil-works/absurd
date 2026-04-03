@@ -84,7 +84,7 @@ Additionally, tasks can *sleep* or *suspend for events*.  Events are cached
 ## Components
 
 Absurd comes with two basic tools that help you work with it.  One is
-called [`absurdctl`](docs/absurdctl.md) which allows you to initialize and
+called [`absurdctl`](docs/tools/absurdctl.md) which allows you to initialize and
 migrate the schema, inspect schema versions, create/drop/list queues, and spawn
 or retry tasks.  The other is [habitat](habitat) which is a Go application that
 serves up a web UI to show you the current state of running and executed tasks.

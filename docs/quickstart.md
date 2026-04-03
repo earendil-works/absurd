@@ -25,7 +25,7 @@ The exact examples in this guide live in the repository:
 - **Node.js** with native TypeScript type stripping for the TypeScript SDK
 - **Python** (3.11+) with **`uv`** for the Python SDK
 - **Go** (1.25+) for the Go SDK
-- **`absurdctl`** — see **[absurdctl](./absurdctl.md)** for installation options
+- **`absurdctl`** — see **[absurdctl](./tools/absurdctl.md)** for installation options
 
 All examples below use `absurdctl` directly.  If you are using
 [`uvx`](https://docs.astral.sh/uv/guides/tools/), replace `absurdctl ...` with
@@ -40,7 +40,7 @@ export PGDATABASE="postgresql://user:pass@localhost:5432/mydb"
 absurdctl init
 ```
 
-See **[absurdctl](./absurdctl.md)** for installation details and the full CLI
+See **[absurdctl](./tools/absurdctl.md)** for installation details and the full CLI
 reference.
 
 This creates the `absurd` schema with all stored procedures and helper
@@ -664,5 +664,5 @@ while Postgres keeps the checkpoints, retries, and wake-up state.
 - Read **[Cleanup and Retention](./cleanup.md)** before production so task and event data do not grow forever
 - Read the **[Living with Code Changes](./patterns/living-with-code-changes.md)** pattern if your tasks may survive deploys or long sleeps
 - Explore the **[TypeScript SDK](./sdks/typescript.md)**, **[Python SDK](./sdks/python.md)**, or **[Go SDK](./sdks/go.md)** API reference
-- Use **[Habitat](./habitat.md)** to monitor tasks in a web dashboard
-- Use **[absurdctl](./absurdctl.md)** for advanced queue and task management
+- Use **[Habitat](./tools/habitat.md)** to monitor tasks in a web dashboard
+- Use **[absurdctl](./tools/absurdctl.md)** for advanced queue and task management

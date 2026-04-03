@@ -27,7 +27,7 @@ import "github.com/earendil-works/absurd/sdks/go/absurd"
 
 Before using the SDK, initialize the Absurd schema in Postgres and create at
 least one queue.  See **[Database Setup and Migrations](../database.md)**, the
-**[Quickstart](../quickstart.md)**, and **[absurdctl](../absurdctl.md)**.
+**[Quickstart](../quickstart.md)**, and **[absurdctl](../tools/absurdctl.md)**.
 
 ## Creating a Client
 
