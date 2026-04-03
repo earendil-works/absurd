@@ -11,6 +11,7 @@ import (
 	"os"
 	"runtime/debug"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/lib/pq"
@@ -355,6 +356,7 @@ type Client struct {
 	defaultMaxAttempts int
 	logger             Logger
 	hooks              Hooks
+	registryMu         sync.RWMutex
 	registry           map[string]registeredTask
 }
 
@@ -422,8 +424,17 @@ func (c *Client) Register(task taskRegistration) error {
 	if err != nil {
 		return err
 	}
+	c.registryMu.Lock()
 	c.registry[registered.name] = registered
+	c.registryMu.Unlock()
 	return nil
+}
+
+func (c *Client) getRegistration(taskName string) (registeredTask, bool) {
+	c.registryMu.RLock()
+	registration, ok := c.registry[taskName]
+	c.registryMu.RUnlock()
+	return registration, ok
 }
 
 func (c *Client) MustRegister(task taskRegistration) {
@@ -658,7 +669,7 @@ func (c *Client) resolveSpawn(taskName string, opts SpawnOptions) (string, int, 
 	maxAttempts := c.defaultMaxAttempts
 	var cancellation *CancellationPolicy
 
-	if registration, ok := c.registry[taskName]; ok {
+	if registration, ok := c.getRegistration(taskName); ok {
 		queue = registration.queueName
 		if opts.QueueName != "" && opts.QueueName != queue {
 			return "", 0, nil, fmt.Errorf("task %q is registered for queue %q but spawn requested queue %q", taskName, queue, opts.QueueName)

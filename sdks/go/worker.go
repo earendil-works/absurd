@@ -292,7 +292,7 @@ func (c *Client) executeTask(ctx context.Context, task claimedTask, claimTimeout
 		}
 	}()
 
-	registration, ok := c.registry[task.TaskName]
+	registration, ok := c.getRegistration(task.TaskName)
 	if !ok {
 		err := fmt.Errorf("unknown task %q", task.TaskName)
 		c.logger.Printf("[absurd] %v", err)
@@ -323,13 +323,11 @@ func (c *Client) executeTask(ctx context.Context, task claimedTask, claimTimeout
 		result, err = execute()
 	}
 	if err != nil {
-		switch err {
-		case errSuspend, errCancelled, errFailedRun:
+		if errors.Is(err, errSuspend) || errors.Is(err, errCancelled) || errors.Is(err, errFailedRun) {
 			return nil
-		default:
-			c.logger.Printf("[absurd] task execution failed: %v", err)
-			return failTaskRun(completionCtx, c.db, c.queueName, task.RunID, err)
 		}
+		c.logger.Printf("[absurd] task execution failed: %v", err)
+		return failTaskRun(completionCtx, c.db, c.queueName, task.RunID, err)
 	}
 	return completeTaskRun(completionCtx, c.db, c.queueName, task.RunID, result)
 }
