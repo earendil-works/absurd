@@ -8,7 +8,7 @@ The only tricky is to ensure that each cron only runs once.  If your scheduler
 runs twice (deploy overlap, crash restart, two replicas), you can still
 guarantee each cron slot is enqueued only once.
 
-The trick: derive `idempotency_key` / `idempotencyKey` from:
+The trick: derive an idempotency key from:
 
 1. task name
 2. cron expression
@@ -93,4 +93,66 @@ Absurd returns the already-existing task instead of creating a duplicate.
             {"scheduled_for": next_at.isoformat()},
             idempotency_key=dedup_key(task_name, expr, next_at),
         )
+    ```
+
+=== "Go"
+
+    ```go
+    package main
+
+    import (
+        "context"
+        "crypto/sha256"
+        "encoding/hex"
+        "log"
+        "time"
+
+        "github.com/earendil-works/absurd/sdks/go/absurd"
+        "github.com/robfig/cron/v3"
+    )
+
+    var crontab = [][2]string{
+        {"*/5 * * * *", "send-report"},
+        {"0 2 * * *", "rebuild-search-index"},
+    }
+
+    func dedupKey(taskName, expr string, nextAt time.Time) string {
+        slot := nextAt.UTC().Format("2006-01-02T15:04")
+        raw := taskName + "|" + expr + "|" + slot
+        sum := sha256.Sum256([]byte(raw))
+        return "cron:" + hex.EncodeToString(sum[:])[:24]
+    }
+
+    func main() {
+        app, err := absurd.New(absurd.Options{QueueName: "default"})
+        if err != nil {
+            log.Fatal(err)
+        }
+        defer app.Close()
+
+        parser := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
+        now := time.Now().UTC().Truncate(time.Minute)
+        ctx := context.Background()
+
+        for _, entry := range crontab {
+            expr := entry[0]
+            taskName := entry[1]
+
+            schedule, err := parser.Parse(expr)
+            if err != nil {
+                log.Fatal(err)
+            }
+
+            nextAt := schedule.Next(now)
+            _, err = app.Spawn(
+                ctx,
+                taskName,
+                map[string]string{"scheduled_for": nextAt.Format(time.RFC3339)},
+                absurd.SpawnOptions{IdempotencyKey: dedupKey(taskName, expr, nextAt)},
+            )
+            if err != nil {
+                log.Fatal(err)
+            }
+        }
+    }
     ```

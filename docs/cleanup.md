@@ -257,6 +257,100 @@ A practical way to do that is:
     app.start_worker()
     ```
 
+=== "Go"
+
+    ```go
+    package main
+
+    import (
+        "context"
+        "database/sql"
+        "log"
+        "os"
+
+        "github.com/earendil-works/absurd/sdks/go/absurd"
+    )
+
+    type CleanupParams struct {
+        TargetQueue string `json:"target_queue"`
+        TTLDays     int    `json:"ttl_days"`
+        Limit       int    `json:"limit"`
+    }
+
+    type CleanupResult struct {
+        TargetQueue   string `json:"target_queue"`
+        TTLDays       int    `json:"ttl_days"`
+        DeletedTasks  int    `json:"deleted_tasks"`
+        DeletedEvents int    `json:"deleted_events"`
+    }
+
+    func main() {
+        db, err := sql.Open("postgres", os.Getenv("PGDATABASE"))
+        if err != nil {
+            log.Fatal(err)
+        }
+        defer db.Close()
+
+        app, err := absurd.New(absurd.Options{DB: db, QueueName: "ops"})
+        if err != nil {
+            log.Fatal(err)
+        }
+        defer app.Close()
+
+        app.MustRegister(absurd.Task(
+            "cleanup-retention",
+            func(ctx context.Context, params CleanupParams) (CleanupResult, error) {
+                ttlSeconds := params.TTLDays * 86400
+                limit := params.Limit
+                if limit == 0 {
+                    limit = 1000
+                }
+
+                deletedTasks, err := absurd.Step(ctx, "cleanup-tasks", func(ctx context.Context) (int, error) {
+                    var deleted int
+                    err := db.QueryRowContext(
+                        ctx,
+                        "select absurd.cleanup_tasks($1, $2, $3)",
+                        params.TargetQueue,
+                        ttlSeconds,
+                        limit,
+                    ).Scan(&deleted)
+                    return deleted, err
+                })
+                if err != nil {
+                    return CleanupResult{}, err
+                }
+
+                deletedEvents, err := absurd.Step(ctx, "cleanup-events", func(ctx context.Context) (int, error) {
+                    var deleted int
+                    err := db.QueryRowContext(
+                        ctx,
+                        "select absurd.cleanup_events($1, $2, $3)",
+                        params.TargetQueue,
+                        ttlSeconds,
+                        limit,
+                    ).Scan(&deleted)
+                    return deleted, err
+                })
+                if err != nil {
+                    return CleanupResult{}, err
+                }
+
+                return CleanupResult{
+                    TargetQueue:   params.TargetQueue,
+                    TTLDays:       params.TTLDays,
+                    DeletedTasks:  deletedTasks,
+                    DeletedEvents: deletedEvents,
+                }, nil
+            },
+        ))
+
+        if err := app.RunWorker(context.Background()); err != nil {
+            log.Fatal(err)
+        }
+    }
+    ```
+
 And a small script that enqueues it once per day:
 
 === "TypeScript"
@@ -314,6 +408,61 @@ And a small script that enqueues it once per day:
     conn.close()
     ```
 
+=== "Go"
+
+    ```go
+    package main
+
+    import (
+        "context"
+        "database/sql"
+        "fmt"
+        "log"
+        "os"
+        "time"
+
+        "github.com/earendil-works/absurd/sdks/go/absurd"
+    )
+
+    type CleanupParams struct {
+        TargetQueue string `json:"target_queue"`
+        TTLDays     int    `json:"ttl_days"`
+        Limit       int    `json:"limit"`
+    }
+
+    func main() {
+        db, err := sql.Open("postgres", os.Getenv("PGDATABASE"))
+        if err != nil {
+            log.Fatal(err)
+        }
+        defer db.Close()
+
+        app, err := absurd.New(absurd.Options{DB: db, QueueName: "ops"})
+        if err != nil {
+            log.Fatal(err)
+        }
+        defer app.Close()
+
+        day := time.Now().UTC().Format("2006-01-02")
+
+        _, err = app.Spawn(
+            context.Background(),
+            "cleanup-retention",
+            CleanupParams{
+                TargetQueue: "default",
+                TTLDays:     30,
+                Limit:       1000,
+            },
+            absurd.SpawnOptions{
+                IdempotencyKey: fmt.Sprintf("cleanup:default:%s", day),
+            },
+        )
+        if err != nil {
+            log.Fatal(err)
+        }
+    }
+    ```
+
 Then run that enqueue script from cron:
 
 === "TypeScript"
@@ -326,6 +475,12 @@ Then run that enqueue script from cron:
 
     ```cron
     17 3 * * * PGDATABASE=postgresql://user:pass@db/app uv run /srv/app/bin/spawn-cleanup.py
+    ```
+
+=== "Go"
+
+    ```cron
+    17 3 * * * PGDATABASE=postgresql://user:pass@db/app /srv/app/bin/spawn-cleanup
     ```
 
 This example handles one cleanup batch per task run.  For steady-state daily

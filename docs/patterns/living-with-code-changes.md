@@ -39,6 +39,22 @@ That means if you change what this step returns:
     payment = ctx.step("process-payment", process_payment)
     ```
 
+=== "Go"
+
+    ```go
+    type PaymentV1 struct {
+        ChargeID string `json:"charge_id"`
+    }
+
+    payment, err := absurd.Step(ctx, "process-payment", func(ctx context.Context) (PaymentV1, error) {
+        return PaymentV1{ChargeID: "ch_123"}, nil
+    })
+    if err != nil {
+        return err
+    }
+    _ = payment
+    ```
+
 into this:
 
 === "TypeScript"
@@ -65,6 +81,28 @@ into this:
 
 
     payment = ctx.step("process-payment", process_payment)
+    ```
+
+=== "Go"
+
+    ```go
+    type PaymentV2 struct {
+        ChargeID     string `json:"charge_id"`
+        Provider     string `json:"provider"`
+        ReceiptEmail string `json:"receipt_email"`
+    }
+
+    payment, err := absurd.Step(ctx, "process-payment", func(ctx context.Context) (PaymentV2, error) {
+        return PaymentV2{
+            ChargeID:     "ch_123",
+            Provider:     "stripe",
+            ReceiptEmail: "jane@example.com",
+        }, nil
+    })
+    if err != nil {
+        return err
+    }
+    _ = payment
     ```
 
 then old tasks may still resume with the **old** value shape.
@@ -100,6 +138,28 @@ cleanest move is to version the step name.
 
 
     payment = ctx.step("process-payment:v2", process_payment_v2)
+    ```
+
+=== "Go"
+
+    ```go
+    type PaymentV2 struct {
+        ChargeID     string `json:"charge_id"`
+        Provider     string `json:"provider"`
+        ReceiptEmail string `json:"receipt_email"`
+    }
+
+    payment, err := absurd.Step(ctx, "process-payment:v2", func(ctx context.Context) (PaymentV2, error) {
+        return PaymentV2{
+            ChargeID:     fmt.Sprintf("charge-%d", params.Amount),
+            Provider:     "stripe",
+            ReceiptEmail: params.Email,
+        }, nil
+    })
+    if err != nil {
+        return err
+    }
+    _ = payment
     ```
 
 This makes old tasks keep using `process-payment`, while new tasks use
@@ -216,6 +276,69 @@ result before using it.
         return {"payment": payment}
     ```
 
+=== "Go"
+
+    ```go
+    type PaymentV2 struct {
+        ChargeID     string `json:"charge_id"`
+        Provider     string `json:"provider"`
+        ReceiptEmail string `json:"receipt_email"`
+    }
+
+    func normalizePayment(value any) PaymentV2 {
+        switch value := value.(type) {
+        case string:
+            return PaymentV2{
+                ChargeID:     value,
+                Provider:     "stripe",
+                ReceiptEmail: "",
+            }
+        case map[string]any:
+            chargeID, _ := value["charge_id"].(string)
+            provider, _ := value["provider"].(string)
+            if provider == "" {
+                provider = "stripe"
+            }
+            receiptEmail, _ := value["receipt_email"].(string)
+            return PaymentV2{
+                ChargeID:     chargeID,
+                Provider:     provider,
+                ReceiptEmail: receiptEmail,
+            }
+        default:
+            panic("unexpected payment shape")
+        }
+    }
+
+    rawPayment, err := absurd.Step[any](ctx, "process-payment", func(ctx context.Context) (any, error) {
+        return map[string]any{
+            "charge_id":     fmt.Sprintf("charge-%d", params.Amount),
+            "provider":      "stripe",
+            "receipt_email": params.Email,
+        }, nil
+    })
+    if err != nil {
+        return err
+    }
+
+    payment := normalizePayment(rawPayment)
+
+    _, err = absurd.Step(ctx, "send-receipt:v2", func(ctx context.Context) (map[string]any, error) {
+        if payment.ReceiptEmail == "" {
+            return map[string]any{"skipped": true}, nil
+        }
+
+        return map[string]any{
+            "skipped":   false,
+            "sent_to":   payment.ReceiptEmail,
+            "charge_id": payment.ChargeID,
+        }, nil
+    })
+    if err != nil {
+        return err
+    }
+    ```
+
 This is often the best option when you need to tolerate both old and new shapes
 during a rollout.
 
@@ -262,6 +385,12 @@ Safer:
     return {"charge_id": charge_id, "provider": "stripe"}
     ```
 
+=== "Go"
+
+    ```go
+    return map[string]any{"charge_id": chargeID, "provider": "stripe"}, nil
+    ```
+
 Riskier:
 
 === "TypeScript"
@@ -274,6 +403,12 @@ Riskier:
 
     ```python
     return {"id": charge_id}
+    ```
+
+=== "Go"
+
+    ```go
+    return map[string]any{"id": chargeID}, nil
     ```
 
 The first lets old readers ignore `provider`.  The second may break every caller.

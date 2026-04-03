@@ -17,17 +17,22 @@ The exact examples in this guide live in the repository:
 
 - [TypeScript quickstart examples](https://github.com/earendil-works/absurd/tree/main/sdks/typescript/examples/quickstart)
 - [Python quickstart examples](https://github.com/earendil-works/absurd/tree/main/sdks/python/examples/quickstart)
+- [Go quickstart examples](https://github.com/earendil-works/absurd/tree/main/sdks/go/absurd/examples/quickstart)
 
 ## Prerequisites
 
 - **PostgreSQL** (14 or later)
 - **Node.js** with native TypeScript type stripping for the TypeScript SDK
 - **Python** (3.11+) with **`uv`** for the Python SDK
+- **Go** (1.25+) for the Go SDK
 - **`absurdctl`** — see **[absurdctl](./absurdctl.md)** for installation options
 
 All examples below use `absurdctl` directly.  If you are using
 [`uvx`](https://docs.astral.sh/uv/guides/tools/), replace `absurdctl ...` with
 `uvx absurdctl ...`.
+
+If you want to run the Go examples exactly as shown below and you already use
+`PGDATABASE`, also export `ABSURD_DATABASE_URL="$PGDATABASE"` first.
 
 ## 1. Install the Schema
 
@@ -197,6 +202,134 @@ The important part is the failure story:
     app.start_worker()
     ```
 
+=== "Go"
+
+    ```go
+    package main
+
+    import (
+        "context"
+        "errors"
+        "fmt"
+        "log"
+        "time"
+
+        "github.com/earendil-works/absurd/sdks/go/absurd"
+        _ "github.com/jackc/pgx/v5/stdlib"
+    )
+
+    type ProvisionUserParams struct {
+        UserID string `json:"user_id"`
+        Email  string `json:"email"`
+    }
+
+    type UserRecord struct {
+        UserID    string    `json:"user_id"`
+        Email     string    `json:"email"`
+        CreatedAt time.Time `json:"created_at"`
+    }
+
+    type OutageState struct {
+        Simulated bool `json:"simulated"`
+    }
+
+    type DeliveryResult struct {
+        Sent     bool   `json:"sent"`
+        Provider string `json:"provider"`
+        To       string `json:"to"`
+    }
+
+    type ActivationEvent struct {
+        ActivatedAt time.Time `json:"activated_at"`
+    }
+
+    type ProvisionUserResult struct {
+        UserID      string         `json:"user_id"`
+        Email       string         `json:"email"`
+        Delivery    DeliveryResult `json:"delivery"`
+        Status      string         `json:"status"`
+        ActivatedAt time.Time      `json:"activated_at"`
+    }
+
+    var provisionUserTask = absurd.Task(
+        "provision-user",
+        func(ctx context.Context, params ProvisionUserParams) (ProvisionUserResult, error) {
+            task := absurd.MustTaskContext(ctx)
+
+            user, err := absurd.Step(ctx, "create-user-record", func(ctx context.Context) (UserRecord, error) {
+                log.Printf("[%s] creating user record for %s", task.TaskID(), params.UserID)
+                return UserRecord{
+                    UserID:    params.UserID,
+                    Email:     params.Email,
+                    CreatedAt: time.Now().UTC(),
+                }, nil
+            })
+            if err != nil {
+                return ProvisionUserResult{}, err
+            }
+
+            // Demo only: fail once after the first checkpoint so the retry behavior is visible.
+            outage, err := absurd.BeginStep[OutageState](ctx, "demo-transient-outage")
+            if err != nil {
+                return ProvisionUserResult{}, err
+            }
+            if !outage.Done {
+                log.Printf("[%s] simulating a temporary email provider outage", task.TaskID())
+                if _, err := outage.CompleteStep(ctx, OutageState{Simulated: true}); err != nil {
+                    return ProvisionUserResult{}, err
+                }
+                return ProvisionUserResult{}, errors.New("temporary email provider outage")
+            }
+
+            delivery, err := absurd.Step(ctx, "send-activation-email", func(ctx context.Context) (DeliveryResult, error) {
+                log.Printf("[%s] sending activation email to %s", task.TaskID(), user.Email)
+                return DeliveryResult{
+                    Sent:     true,
+                    Provider: "demo-mail",
+                    To:       user.Email,
+                }, nil
+            })
+            if err != nil {
+                return ProvisionUserResult{}, err
+            }
+
+            eventName := fmt.Sprintf("user-activated:%s", user.UserID)
+            log.Printf("[%s] waiting for %s", task.TaskID(), eventName)
+
+            activation, err := absurd.AwaitEvent[ActivationEvent](ctx, eventName, absurd.AwaitEventOptions{
+                Timeout: time.Hour,
+            })
+            if err != nil {
+                return ProvisionUserResult{}, err
+            }
+
+            return ProvisionUserResult{
+                UserID:      user.UserID,
+                Email:       user.Email,
+                Delivery:    delivery,
+                Status:      "active",
+                ActivatedAt: activation.ActivatedAt,
+            }, nil
+        },
+        absurd.TaskOptions{DefaultMaxAttempts: 5},
+    )
+
+    func main() {
+        app, err := absurd.New(absurd.Options{QueueName: "default", DriverName: "pgx"})
+        if err != nil {
+            log.Fatal(err)
+        }
+        defer app.Close()
+
+        app.MustRegister(provisionUserTask)
+
+        log.Println("worker listening on queue default")
+        if err := app.RunWorker(context.Background(), absurd.WorkerOptions{Concurrency: 4}); err != nil {
+            log.Fatal(err)
+        }
+    }
+    ```
+
 Run one of the repository examples in a terminal:
 
 === "TypeScript"
@@ -212,6 +345,13 @@ Run one of the repository examples in a terminal:
     ```bash
     cd sdks/python
     uv run examples/quickstart/worker.py
+    ```
+
+=== "Go"
+
+    ```bash
+    cd sdks/go/absurd
+    ABSURD_DATABASE_URL="$PGDATABASE" go run ./examples/quickstart/worker
     ```
 
 ## 4. Spawn a Task
@@ -284,6 +424,79 @@ store, inspect later, or await.
     app.close()
     ```
 
+=== "Go"
+
+    ```go
+    package main
+
+    import (
+        "context"
+        "flag"
+        "fmt"
+        "log"
+        "time"
+
+        "github.com/earendil-works/absurd/sdks/go/absurd"
+        _ "github.com/jackc/pgx/v5/stdlib"
+    )
+
+    type ProvisionUserParams struct {
+        UserID string `json:"user_id"`
+        Email  string `json:"email"`
+    }
+
+    func main() {
+        var shouldAwait bool
+        flag.BoolVar(&shouldAwait, "await", false, "wait for task completion")
+        flag.Parse()
+
+        userID := "alice"
+        if flag.NArg() > 0 {
+            userID = flag.Arg(0)
+        }
+
+        email := fmt.Sprintf("%s@example.com", userID)
+        if flag.NArg() > 1 {
+            email = flag.Arg(1)
+        }
+
+        ctx := context.Background()
+
+        app, err := absurd.New(absurd.Options{QueueName: "default", DriverName: "pgx"})
+        if err != nil {
+            log.Fatal(err)
+        }
+        defer app.Close()
+
+        spawned, err := app.Spawn(ctx, "provision-user", ProvisionUserParams{
+            UserID: userID,
+            Email:  email,
+        })
+        if err != nil {
+            log.Fatal(err)
+        }
+
+        fmt.Printf("spawned: %+v\n", spawned)
+
+        snapshot, err := app.FetchTaskResult(ctx, app.QueueName(), spawned.TaskID)
+        if err != nil {
+            log.Fatal(err)
+        }
+        fmt.Printf("current snapshot: %+v\n", snapshot)
+
+        if shouldAwait {
+            fmt.Printf("waiting for completion; emit user-activated:%s on queue default\n", userID)
+            final, err := app.AwaitTaskResult(ctx, app.QueueName(), spawned.TaskID, absurd.AwaitTaskResultOptions{
+                Timeout: 5 * time.Minute,
+            })
+            if err != nil {
+                log.Fatal(err)
+            }
+            fmt.Printf("final snapshot: %+v\n", final)
+        }
+    }
+    ```
+
 === "CLI"
 
     ```bash
@@ -308,6 +521,13 @@ Run one of the repository clients:
     uv run examples/quickstart/client.py alice alice@example.com
     ```
 
+=== "Go"
+
+    ```bash
+    cd sdks/go/absurd
+    ABSURD_DATABASE_URL="$PGDATABASE" go run ./examples/quickstart/client alice alice@example.com
+    ```
+
 If you want to block until the task finishes, pass `--await` and then emit the
 activation event from another terminal.
 
@@ -330,9 +550,64 @@ Most applications will just keep the returned task ID and continue.  But when
 you want synchronous behavior in a script, test, or shell, you can also inspect
 or await the task result.
 
-The Python and TypeScript clients use the same basic flow: spawn the task,
+The Go, Python, and TypeScript clients use the same basic flow: spawn the task,
 fetch the current snapshot, then await the terminal result after you emit the
 activation event from another terminal.
+
+=== "Go"
+
+    ```go
+    package main
+
+    import (
+        "context"
+        "fmt"
+        "log"
+        "time"
+
+        "github.com/earendil-works/absurd/sdks/go/absurd"
+        _ "github.com/jackc/pgx/v5/stdlib"
+    )
+
+    type ProvisionUserParams struct {
+        UserID string `json:"user_id"`
+        Email  string `json:"email"`
+    }
+
+    func main() {
+        ctx := context.Background()
+
+        app, err := absurd.New(absurd.Options{QueueName: "default", DriverName: "pgx"})
+        if err != nil {
+            log.Fatal(err)
+        }
+        defer app.Close()
+
+        spawned, err := app.Spawn(ctx, "provision-user", ProvisionUserParams{
+            UserID: "bob",
+            Email:  "bob@example.com",
+        })
+        if err != nil {
+            log.Fatal(err)
+        }
+
+        fmt.Printf("%+v\n", spawned)
+
+        snapshot, err := app.FetchTaskResult(ctx, app.QueueName(), spawned.TaskID)
+        if err != nil {
+            log.Fatal(err)
+        }
+        fmt.Printf("%+v\n", snapshot)
+
+        final, err := app.AwaitTaskResult(ctx, app.QueueName(), spawned.TaskID, absurd.AwaitTaskResultOptions{
+            Timeout: 5 * time.Minute,
+        })
+        if err != nil {
+            log.Fatal(err)
+        }
+        fmt.Printf("%+v\n", final)
+    }
+    ```
 
 === "Python"
 
@@ -391,6 +666,6 @@ while Postgres keeps the checkpoints, retries, and wake-up state.
 - Read the **[Concepts](./concepts.md)** page to understand the full model
 - Read **[Cleanup and Retention](./cleanup.md)** before production so task and event data do not grow forever
 - Read the **[Living with Code Changes](./patterns/living-with-code-changes.md)** pattern if your tasks may survive deploys or long sleeps
-- Explore the **[TypeScript SDK](./sdk-typescript.md)** or **[Python SDK](./sdk-python.md)** API reference
+- Explore the **[TypeScript SDK](./sdk-typescript.md)**, **[Python SDK](./sdk-python.md)**, or **[Go SDK](./sdk-go.md)** API reference
 - Use **[Habitat](./habitat.md)** to monitor tasks in a web dashboard
 - Use **[absurdctl](./absurdctl.md)** for advanced queue and task management

@@ -68,6 +68,18 @@ retries.
     result = ctx.step("process-payment", process_payment)
     ```
 
+=== "Go"
+
+    ```go
+    result, err := absurd.Step(ctx, "process-payment", func(ctx context.Context) (any, error) {
+        return stripe.Charges.Create(ctx, params.Amount)
+    })
+    if err != nil {
+        return err
+    }
+    _ = result
+    ```
+
 Code **outside** steps may execute multiple times across retries.  Keep
 side-effects inside steps.
 
@@ -104,9 +116,9 @@ execution is possible — design your steps to tolerate it.
 
 ## Events
 
-Tasks can **await events** by name.  Events are emitted with `emitEvent()` and
-carry an optional JSON payload.  Event payloads are immutable: the first emit
-for a given name wins, subsequent emits are ignored.
+Tasks can **await events** by name.  Events are emitted through the SDK event
+APIs and carry an optional JSON payload.  Event payloads are immutable: the
+first emit for a given name wins, subsequent emits are ignored.
 
 === "TypeScript"
 
@@ -126,6 +138,30 @@ for a given name wins, subsequent emits are ignored.
 
     # From anywhere (another task, an API handler, etc.)
     app.emit_event("shipment.packed:order-42", {"tracking_number": "XYZ"})
+    ```
+
+=== "Go"
+
+    ```go
+    type ShipmentEvent struct {
+        TrackingNumber string `json:"tracking_number"`
+    }
+
+    // In a task handler — suspend until the event arrives
+    shipment, err := absurd.AwaitEvent[ShipmentEvent](ctx, "shipment.packed:order-42")
+    if err != nil {
+        return err
+    }
+
+    // From anywhere (another task, an API handler, etc.)
+    err = app.EmitEvent(ctx, app.QueueName(), "shipment.packed:order-42", map[string]any{
+        "tracking_number": "XYZ",
+    })
+    if err != nil {
+        return err
+    }
+
+    _ = shipment
     ```
 
 Events can also have **timeouts**.  If the event doesn't arrive before the
@@ -150,6 +186,22 @@ the task and schedules a future run.
 
     ctx.sleep_for("wait-for-cooldown", 3600)  # 1 hour
     ctx.sleep_until("wait-for-deadline", datetime(2025, 12, 31, tzinfo=timezone.utc))
+    ```
+
+=== "Go"
+
+    ```go
+    if err := absurd.SleepFor(ctx, "wait-for-cooldown", time.Hour); err != nil {
+        return err
+    }
+
+    if err := absurd.SleepUntil(
+        ctx,
+        "wait-for-deadline",
+        time.Date(2025, 12, 31, 0, 0, 0, 0, time.UTC),
+    ); err != nil {
+        return err
+    }
     ```
 
 ## Retries
@@ -200,6 +252,23 @@ Retry strategies can be `fixed`, `exponential`, or `none`:
     )
     ```
 
+=== "Go"
+
+    ```go
+    _, err := app.Spawn(ctx, "my-task", params, absurd.SpawnOptions{
+        MaxAttempts: 10,
+        RetryStrategy: &absurd.RetryStrategy{
+            Kind:        "exponential",
+            BaseSeconds: 2,
+            Factor:      2,
+            MaxSeconds:  300,
+        },
+    })
+    if err != nil {
+        return err
+    }
+    ```
+
 ## Cancellation
 
 Tasks can be cancelled programmatically or via
@@ -208,8 +277,8 @@ checkpoint write or heartbeat call and stop gracefully.
 
 Cancellation policies can also be set at spawn time:
 
-- **`maxDuration`** — cancel the task if it has been alive longer than N seconds
-- **`maxDelay`** — cancel the task if no checkpoint has been written for N seconds
+- **`maxDuration` / `MaxDuration`** — cancel the task if it has been alive longer than N seconds
+- **`maxDelay` / `MaxDelay`** — cancel the task if no checkpoint has been written for N seconds
 
 ## Idempotency Keys
 
@@ -240,6 +309,20 @@ creating a new one.
         {"to": "user@example.com"},
         idempotency_key="welcome-email:user-42",
     )
+    ```
+
+=== "Go"
+
+    ```go
+    _, err := app.Spawn(
+        ctx,
+        "send-email",
+        map[string]any{"to": "user@example.com"},
+        absurd.SpawnOptions{IdempotencyKey: "welcome-email:user-42"},
+    )
+    if err != nil {
+        return err
+    }
     ```
 
 This is useful whenever your scheduler or API endpoint might try to enqueue the
@@ -277,6 +360,21 @@ idempotency keys, derive one from the task identity.
     payment = ctx.step("process-payment", process_payment)
     ```
 
+=== "Go"
+
+    ```go
+    task := absurd.MustTaskContext(ctx)
+
+    payment, err := absurd.Step(ctx, "process-payment", func(ctx context.Context) (any, error) {
+        idempotencyKey := fmt.Sprintf("%s:payment", task.TaskID())
+        return stripe.Charges.Create(ctx, params.Amount, idempotencyKey)
+    })
+    if err != nil {
+        return err
+    }
+    _ = payment
+    ```
+
 The important thing is that the key should come from something stable, such as
 the task ID or a business identifier, not from the current time.
 
@@ -287,7 +385,8 @@ For a concrete cron scheduler recipe built on this, see
 
 Tasks can carry **headers** — a JSON object of metadata that travels with the
 task.  Headers are useful for propagating context like trace IDs or correlation
-IDs.  They are accessible in the task handler via `ctx.headers`.
+IDs.  They are accessible in the task handler through the SDK task context
+(`ctx.headers` in TypeScript, `ctx.headers` in Python, `task.Headers()` in Go).
 
 ## Pull-Based Architecture
 

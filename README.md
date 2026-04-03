@@ -53,6 +53,7 @@ Currently SDKs exist for the following languages:
 
 * [TypeScript](sdks/typescript) (and JavaScript)
 * [Python](sdks/python)
+* [Go](sdks/go/absurd) *(experimental bootstrap)*
 
 ## Push vs Pull
 
@@ -116,6 +117,9 @@ npm install absurd-sdk
 
 # Python
 uv add absurd-sdk
+
+# Go
+go get github.com/earendil-works/absurd/sdks/go/absurd@latest
 ```
 
 <div style="text-align: center" align="center">
@@ -200,6 +204,9 @@ await app.close();
 More detail lives in the docs:
 
 - [Quickstart](docs/quickstart.md)
+- [TypeScript SDK](docs/sdk-typescript.md)
+- [Python SDK](docs/sdk-python.md)
+- [Go SDK](docs/sdk-go.md) *(experimental)*
 - [Database Setup and Migrations](docs/database.md)
 - [Concepts](docs/concepts.md) — includes retry semantics, worker claims, and idempotency keys
 - [Living with Code Changes](docs/patterns/living-with-code-changes.md)

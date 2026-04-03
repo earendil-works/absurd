@@ -13,6 +13,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 SDK_DIR="$PROJECT_ROOT/sdks/typescript"
 PYTHON_SDK_DIR="$PROJECT_ROOT/sdks/python"
+GO_SDK_MODULE_TAG_PREFIX="sdks/go/absurd/v"
 
 # Function to print colored messages
 error() {
@@ -60,7 +61,7 @@ usage() {
     cat << EOF
 Usage: $0 [VERSION_TYPE|VERSION]
 
-Bump the SDK package versions and create a git tag for release.
+Bump the SDK package versions and create release tags.
 
 Arguments:
     VERSION_TYPE    One of: major, minor, patch (uses npm version)
@@ -77,7 +78,8 @@ The script will:
 2. Update the version in sdks/python/pyproject.toml
 3. Create a git commit with the version change
 4. Create a git tag (without 'v' prefix, e.g., '1.0.0')
-5. Ask if you want to push the changes and tag
+5. Create a Go SDK module tag (e.g., 'sdks/go/absurd/v1.0.0')
+6. Ask if you want to push the changes and tags
 EOF
 }
 
@@ -206,6 +208,11 @@ git commit -m "Release $NEW_VERSION"
 info "Creating git tag: $NEW_VERSION"
 git tag "$NEW_VERSION"
 
+# Create Go module tag for the submodule in sdks/go/absurd.
+GO_SDK_TAG="${GO_SDK_MODULE_TAG_PREFIX}${NEW_VERSION}"
+info "Creating Go SDK module tag: $GO_SDK_TAG"
+git tag "$GO_SDK_TAG"
+
 # Reset schema version back to "main" for ongoing development.
 # This prevents the test_schema_version_defaults_to_main test from failing
 # on the main branch after a release.
@@ -217,11 +224,12 @@ git commit -m "meta: reset schema version to main after $NEW_VERSION release"
 success "Successfully created release $NEW_VERSION"
 echo ""
 info "Next steps:"
-echo "  Review the commits and tag, then push with:"
-echo "    git push origin main && git push origin $NEW_VERSION"
+echo "  Review the commits and tags, then push with:"
+echo "    git push origin main && git push origin $NEW_VERSION && git push origin $GO_SDK_TAG"
 echo ""
 info "After pushing, the CI will:"
 echo "  - Build habitat binaries for multiple platforms"
 echo "  - Create a GitHub release with the binaries"
 echo "  - Publish the npm package to the registry"
 echo "  - Publish the Python SDK to PyPI"
+echo "  - Make the Go SDK available as $GO_SDK_TAG"

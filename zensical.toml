@@ -38,6 +38,7 @@ nav = [
     {"SDKs" = [
         {"TypeScript" = "sdk-typescript.md"},
         {"Python" = "sdk-python.md"},
+        {"Go" = "sdk-go.md"},
     ]},
 
     {"Patterns" = [
@@ -65,6 +66,9 @@ features = [
     "content.code.select",
     "content.tabs.link",
     "navigation.sections",
+    "navigation.instant",
+    "navigation.instant.prefetch",
+    "navigation.instant.progress",
 ]
 
 [project.markdown_extensions.pymdownx.superfences]
@@ -73,6 +77,7 @@ alternate_style = true
 
 [project.theme.icon]
 logo = "material/cube-outline"
+repo = "fontawesome/brands/github"
 
 [[project.theme.palette]]
 scheme = "default"

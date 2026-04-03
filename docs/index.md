@@ -89,6 +89,78 @@ them race-free.
     app.start_worker()
     ```
 
+=== "Go"
+
+    ```go
+    package main
+
+    import (
+        "context"
+        "log"
+
+        "github.com/earendil-works/absurd/sdks/go/absurd"
+        _ "github.com/jackc/pgx/v5/stdlib"
+    )
+
+    type OrderFulfillmentParams struct {
+        OrderID string `json:"order_id"`
+        Amount  int    `json:"amount"`
+        Email   string `json:"email"`
+    }
+
+    type ShipmentEvent struct {
+        TrackingNumber string `json:"tracking_number"`
+    }
+
+    var orderFulfillmentTask = absurd.Task(
+        "order-fulfillment",
+        func(ctx context.Context, params OrderFulfillmentParams) (map[string]any, error) {
+            payment, err := absurd.Step(ctx, "process-payment", func(ctx context.Context) (map[string]any, error) {
+                return map[string]any{
+                    "payment_id": "pay-" + params.OrderID,
+                    "amount":     params.Amount,
+                }, nil
+            })
+            if err != nil {
+                return nil, err
+            }
+
+            shipment, err := absurd.AwaitEvent[ShipmentEvent](ctx, "shipment.packed:"+params.OrderID)
+            if err != nil {
+                return nil, err
+            }
+
+            if _, err := absurd.Step(ctx, "send-notification", func(ctx context.Context) (map[string]any, error) {
+                return map[string]any{
+                    "sent_to":         params.Email,
+                    "tracking_number": shipment.TrackingNumber,
+                }, nil
+            }); err != nil {
+                return nil, err
+            }
+
+            return map[string]any{
+                "order_id":        params.OrderID,
+                "payment":         payment,
+                "tracking_number": shipment.TrackingNumber,
+            }, nil
+        },
+    )
+
+    func main() {
+        app, err := absurd.New(absurd.Options{QueueName: "default", DriverName: "pgx"})
+        if err != nil {
+            log.Fatal(err)
+        }
+        defer app.Close()
+
+        app.MustRegister(orderFulfillmentTask)
+        if err := app.RunWorker(context.Background()); err != nil {
+            log.Fatal(err)
+        }
+    }
+    ```
+
 ## Quick Links
 
 - **[Quickstart](./quickstart.md)** — install the schema, create a queue, run your first task
@@ -103,6 +175,7 @@ them race-free.
 
 - **[TypeScript SDK](./sdk-typescript.md)** — full API reference for Node.js / TypeScript
 - **[Python SDK](./sdk-python.md)** — sync and async clients using psycopg
+- **[Go SDK](./sdk-go.md)** — typed `context.Context`-based API *(experimental)*
 
 ## Tools
 
