@@ -6,6 +6,7 @@
 site_name = "Absurd"
 docs_dir = "docs"
 site_dir = "site"
+site_url = "https://earendil-works.github.io/absurd/"
 site_description = "Absurd is a Postgres-native durable workflow system built around durable execution in PostgreSQL."
 
 extra_css = [

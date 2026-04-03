@@ -27,9 +27,9 @@
 {% endif %}
 
 {% if config.site_url %}
-  {% set social_image = config.site_url ~ 'assets/favicon-512.png' %}
+  {% set social_image = config.site_url ~ 'assets/social-preview-1200x630.jpg' %}
 {% else %}
-  {% set social_image = 'assets/favicon-512.png' | url %}
+  {% set social_image = 'assets/social-preview-1200x630.jpg' | url %}
 {% endif %}
 
 <link rel="icon" type="image/png" sizes="64x64" href="{{ 'assets/favicon-64.png' | url }}">
@@ -46,12 +46,15 @@
   <meta property="og:url" content="{{ page.canonical_url }}">
 {% endif %}
 <meta property="og:image" content="{{ social_image }}">
-<meta property="og:image:alt" content="Absurd logo">
+<meta property="og:image:type" content="image/jpeg">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Absurd elephant logo artwork">
 
-<meta name="twitter:card" content="summary">
+<meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="{{ social_title }}">
 {% if social_description %}
   <meta name="twitter:description" content="{{ social_description }}">
 {% endif %}
 <meta name="twitter:image" content="{{ social_image }}">
-<meta name="twitter:image:alt" content="Absurd logo">
+<meta name="twitter:image:alt" content="Absurd elephant logo artwork">
