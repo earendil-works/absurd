@@ -7,15 +7,15 @@ import (
 	"os"
 	"runtime/debug"
 	"sync"
-	"sync/atomic"
 	"time"
 )
 
 type workerConfig struct {
-	batch        WorkBatchOptions
-	concurrency  int
-	pollInterval time.Duration
-	onError      func(error)
+	batch               WorkBatchOptions
+	concurrency         int
+	pollInterval        time.Duration
+	fatalOnLeaseTimeout bool
+	onError             func(error)
 }
 
 func normalizeWorkBatchOptions(options WorkBatchOptions) WorkBatchOptions {
@@ -38,15 +38,20 @@ func (c *Client) normalizeWorkerOptions(options WorkerOptions) workerConfig {
 			c.logger.Printf("worker error: %v", err)
 		}
 	}
+	fatalOnLeaseTimeout := true
+	if options.FatalOnLeaseTimeout != nil {
+		fatalOnLeaseTimeout = *options.FatalOnLeaseTimeout
+	}
 	return workerConfig{
 		batch: normalizeWorkBatchOptions(WorkBatchOptions{
 			WorkerID:     workerID,
 			ClaimTimeout: options.ClaimTimeout,
 			BatchSize:    positiveOr(options.BatchSize, concurrency),
 		}),
-		concurrency:  concurrency,
-		pollInterval: durationOr(options.PollInterval, defaultWorkerPollInterval),
-		onError:      onError,
+		concurrency:         concurrency,
+		pollInterval:        durationOr(options.PollInterval, defaultWorkerPollInterval),
+		fatalOnLeaseTimeout: fatalOnLeaseTimeout,
+		onError:             onError,
 	}
 }
 
@@ -122,7 +127,7 @@ func (c *Client) WorkBatch(ctx context.Context, options ...WorkBatchOptions) err
 		return err
 	}
 	for _, task := range tasks {
-		if err := c.executeTask(context.WithoutCancel(ctx), task, opts.ClaimTimeout); err != nil {
+		if err := c.executeTask(context.WithoutCancel(ctx), task, opts.ClaimTimeout, false); err != nil {
 			return err
 		}
 	}
@@ -183,7 +188,7 @@ func (c *Client) RunWorker(ctx context.Context, options ...WorkerOptions) error 
 					default:
 					}
 				}()
-				if err := c.executeTask(context.WithoutCancel(ctx), task, claimTimeout); err != nil {
+				if err := c.executeTask(context.WithoutCancel(ctx), task, claimTimeout, cfg.fatalOnLeaseTimeout); err != nil {
 					cfg.onError(err)
 				}
 			}(task, batch.ClaimTimeout)
@@ -199,18 +204,22 @@ func panicDetails(v any) (string, string) {
 }
 
 type leaseWatchdog struct {
-	mu      sync.Mutex
-	warn    *time.Timer
-	fatal   *time.Timer
-	stopped bool
-	epoch   uint64
-	logger  Logger
-	taskID  string
-	onFatal func()
+	mu                  sync.Mutex
+	warn                *time.Timer
+	fatal               *time.Timer
+	stopped             bool
+	epoch               uint64
+	logger              Logger
+	taskLabel           string
+	fatalOnLeaseTimeout bool
 }
 
-func newLeaseWatchdog(logger Logger, taskID string, onFatal func()) *leaseWatchdog {
-	return &leaseWatchdog{logger: logger, taskID: taskID, onFatal: onFatal}
+func newLeaseWatchdog(logger Logger, taskName string, taskID string, fatalOnLeaseTimeout bool) *leaseWatchdog {
+	return &leaseWatchdog{
+		logger:              logger,
+		taskLabel:           fmt.Sprintf("%s (%s)", taskName, taskID),
+		fatalOnLeaseTimeout: fatalOnLeaseTimeout,
+	}
 }
 
 func (w *leaseWatchdog) schedule(lease time.Duration) {
@@ -237,8 +246,11 @@ func (w *leaseWatchdog) schedule(lease time.Duration) {
 			return
 		}
 		w.mu.Unlock()
-		w.logger.Printf("[absurd] task %s exceeded claim timeout of %s", w.taskID, lease)
+		w.logger.Printf("[absurd] task %s exceeded claim timeout of %s", w.taskLabel, lease)
 	})
+	if !w.fatalOnLeaseTimeout {
+		return
+	}
 	w.fatal = time.AfterFunc(2*lease, func() {
 		w.mu.Lock()
 		if w.stopped || w.epoch != epoch {
@@ -246,8 +258,8 @@ func (w *leaseWatchdog) schedule(lease time.Duration) {
 			return
 		}
 		w.mu.Unlock()
-		w.logger.Printf("[absurd] task %s exceeded claim timeout of %s by more than 100%%", w.taskID, lease)
-		w.onFatal()
+		w.logger.Printf("[absurd] task %s exceeded claim timeout of %s by more than 100%%; terminating process", w.taskLabel, lease)
+		os.Exit(1)
 	})
 }
 
@@ -266,27 +278,9 @@ func (w *leaseWatchdog) stop() {
 	}
 }
 
-func (c *Client) executeTask(ctx context.Context, task claimedTask, claimTimeout time.Duration) (err error) {
+func (c *Client) executeTask(ctx context.Context, task claimedTask, claimTimeout time.Duration, fatalOnLeaseTimeout bool) (err error) {
 	completionCtx := context.WithoutCancel(ctx)
-	executionCtx, cancelExecution := context.WithCancel(ctx)
-	defer cancelExecution()
-
-	var leaseTimedOut atomic.Bool
-	var watchdogFailErr error
-	var watchdogFailErrMu sync.Mutex
-	watchdog := newLeaseWatchdog(c.logger, task.TaskID, func() {
-		if !leaseTimedOut.CompareAndSwap(false, true) {
-			return
-		}
-		watchdogErr := fmt.Errorf("task exceeded claim timeout and may have lost lease")
-		if err := failTaskRunWithTraceback(completionCtx, c.db, c.queueName, task.RunID, "LeaseTimeout", watchdogErr.Error(), debug.Stack()); err != nil {
-			c.logger.Printf("[absurd] failed to persist lease-timeout failure for task %s run %s: %v", task.TaskID, task.RunID, err)
-			watchdogFailErrMu.Lock()
-			watchdogFailErr = err
-			watchdogFailErrMu.Unlock()
-		}
-		cancelExecution()
-	})
+	watchdog := newLeaseWatchdog(c.logger, task.TaskName, task.TaskID, fatalOnLeaseTimeout)
 	defer watchdog.stop()
 	watchdog.schedule(claimTimeout)
 
@@ -309,7 +303,7 @@ func (c *Client) executeTask(ctx context.Context, task claimedTask, claimTimeout
 		c.logger.Printf("[absurd] %v", err)
 		return failTaskRun(completionCtx, c.db, c.queueName, task.RunID, err)
 	}
-	taskCtx, err := newTaskContext(executionCtx, c, registration.queueName, task, claimTimeout, func(d time.Duration) {
+	taskCtx, err := newTaskContext(ctx, c, registration.queueName, task, claimTimeout, func(d time.Duration) {
 		watchdog.schedule(d)
 	})
 	if err != nil {
@@ -333,25 +327,9 @@ func (c *Client) executeTask(ctx context.Context, task claimedTask, claimTimeout
 		case errSuspend, errCancelled, errFailedRun:
 			return nil
 		default:
-			if leaseTimedOut.Load() {
-				watchdogFailErrMu.Lock()
-				defer watchdogFailErrMu.Unlock()
-				if watchdogFailErr != nil {
-					return fmt.Errorf("failed to persist lease-timeout failure: %w", watchdogFailErr)
-				}
-				return nil
-			}
 			c.logger.Printf("[absurd] task execution failed: %v", err)
 			return failTaskRun(completionCtx, c.db, c.queueName, task.RunID, err)
 		}
-	}
-	if leaseTimedOut.Load() {
-		watchdogFailErrMu.Lock()
-		defer watchdogFailErrMu.Unlock()
-		if watchdogFailErr != nil {
-			return fmt.Errorf("failed to persist lease-timeout failure: %w", watchdogFailErr)
-		}
-		return nil
 	}
 	return completeTaskRun(completionCtx, c.db, c.queueName, task.RunID, result)
 }

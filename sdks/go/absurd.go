@@ -140,12 +140,13 @@ type WorkBatchOptions struct {
 
 // WorkerOptions configure a continuous worker.
 type WorkerOptions struct {
-	WorkerID     string
-	ClaimTimeout time.Duration
-	BatchSize    int
-	Concurrency  int
-	PollInterval time.Duration
-	OnError      func(error)
+	WorkerID            string
+	ClaimTimeout        time.Duration
+	BatchSize           int
+	Concurrency         int
+	PollInterval        time.Duration
+	OnError             func(error)
+	FatalOnLeaseTimeout *bool
 }
 
 // SpawnResult identifies a spawned task and its current run.
