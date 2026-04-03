@@ -244,6 +244,73 @@ func TestRetryTaskParity(t *testing.T) {
 	}
 }
 
+func TestUnknownTaskFailsClaimedRunImmediately(t *testing.T) {
+	queue := randomQueueName("go_unknown")
+	db := setupTestDatabase(t)
+	client := newTestClient(t, queue)
+
+	spawned, err := client.Spawn(context.Background(), "ghost-task", map[string]any{"value": 1}, absurd.SpawnOptions{MaxAttempts: 1})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	if err := client.WorkBatch(context.Background(), absurd.WorkBatchOptions{WorkerID: "worker"}); err != nil {
+		t.Fatalf("WorkBatch: %v", err)
+	}
+
+	state, attempts, _, _, _, _ := fetchTaskRow(t, db, queue, spawned.TaskID)
+	if state != string(absurd.TaskFailed) || attempts != 1 {
+		t.Fatalf("unexpected task state=%s attempts=%d", state, attempts)
+	}
+	failure := fetchFailure(t, db, queue, spawned.RunID)
+	message, _ := failure["message"].(string)
+	if !strings.Contains(message, `unknown task "ghost-task"`) {
+		t.Fatalf("unexpected failure payload: %#v", failure)
+	}
+}
+
+func TestQueueMismatchFailsClaimedRunImmediately(t *testing.T) {
+	queue := randomQueueName("go_queue_mismatch")
+	otherQueue := randomQueueName("go_queue_mismatch_other")
+	db := setupTestDatabase(t)
+
+	workerClient, err := absurd.New(absurd.Options{DB: db, QueueName: queue})
+	if err != nil {
+		t.Fatalf("New worker client: %v", err)
+	}
+	if err := workerClient.CreateQueue(context.Background(), queue); err != nil {
+		t.Fatalf("CreateQueue queue: %v", err)
+	}
+	if err := workerClient.CreateQueue(context.Background(), otherQueue); err != nil {
+		t.Fatalf("CreateQueue otherQueue: %v", err)
+	}
+	workerClient.MustRegister(absurd.Task("misqueued-task", func(ctx context.Context, params map[string]any) (map[string]any, error) {
+		return map[string]any{"ok": true}, nil
+	}, absurd.TaskOptions{QueueName: otherQueue, DefaultMaxAttempts: 1}))
+
+	producer, err := absurd.New(absurd.Options{DB: db, QueueName: queue})
+	if err != nil {
+		t.Fatalf("New producer client: %v", err)
+	}
+
+	spawned, err := producer.Spawn(context.Background(), "misqueued-task", nil, absurd.SpawnOptions{MaxAttempts: 1})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	if err := workerClient.WorkBatch(context.Background(), absurd.WorkBatchOptions{WorkerID: "worker"}); err != nil {
+		t.Fatalf("WorkBatch: %v", err)
+	}
+
+	state, attempts, _, _, _, _ := fetchTaskRow(t, db, queue, spawned.TaskID)
+	if state != string(absurd.TaskFailed) || attempts != 1 {
+		t.Fatalf("unexpected task state=%s attempts=%d", state, attempts)
+	}
+	failure := fetchFailure(t, db, queue, spawned.RunID)
+	message, _ := failure["message"].(string)
+	if !strings.Contains(message, `queue mismatch`) {
+		t.Fatalf("unexpected failure payload: %#v", failure)
+	}
+}
+
 func TestCancelTaskParity(t *testing.T) {
 	queue := randomQueueName("go_cancel")
 	db := setupTestDatabase(t)
@@ -375,6 +442,162 @@ func TestTaskContextAwaitTaskResultParity(t *testing.T) {
 	}
 }
 
+func TestTaskContextAwaitTaskResultCheckpointSurvivesChildCleanupOnRetry(t *testing.T) {
+	parentQueue := randomQueueName("go_parent_cleanup")
+	childQueue := randomQueueName("go_child_cleanup")
+	db := setupTestDatabase(t)
+	parentClient := newTestClient(t, parentQueue)
+	childClient, err := absurd.New(absurd.Options{DB: db, QueueName: childQueue})
+	if err != nil {
+		t.Fatalf("New child client: %v", err)
+	}
+	if err := childClient.CreateQueue(context.Background(), childQueue); err != nil {
+		t.Fatalf("CreateQueue child: %v", err)
+	}
+
+	childClient.MustRegister(absurd.Task("child", func(ctx context.Context, params map[string]any) (map[string]any, error) {
+		return map[string]any{"child": "ok"}, nil
+	}))
+	parentClient.MustRegister(absurd.Task(
+		"parent",
+		func(ctx context.Context, params map[string]any) (map[string]any, error) {
+			taskCtx := absurd.MustTaskContext(ctx)
+			snapshot, err := taskCtx.AwaitTaskResult(ctx, childQueue, params["child_id"].(string), absurd.AwaitTaskResultOptions{
+				Timeout: 5 * time.Second,
+			})
+			if err != nil {
+				return nil, err
+			}
+			var result map[string]any
+			if err := snapshot.DecodeResult(&result); err != nil {
+				return nil, err
+			}
+			if taskCtx.Attempt() == 1 {
+				return nil, errors.New("retry after child result observed")
+			}
+			return result, nil
+		},
+		absurd.TaskOptions{DefaultMaxAttempts: 2},
+	))
+
+	childSpawned, err := childClient.Spawn(context.Background(), "child", nil)
+	if err != nil {
+		t.Fatalf("spawn child: %v", err)
+	}
+	if err := childClient.WorkBatch(context.Background(), absurd.WorkBatchOptions{WorkerID: "child-worker"}); err != nil {
+		t.Fatalf("child WorkBatch: %v", err)
+	}
+
+	parentSpawned, err := parentClient.Spawn(context.Background(), "parent", map[string]any{"child_id": childSpawned.TaskID})
+	if err != nil {
+		t.Fatalf("spawn parent: %v", err)
+	}
+	if err := parentClient.WorkBatch(context.Background(), absurd.WorkBatchOptions{WorkerID: "parent-worker"}); err != nil {
+		t.Fatalf("parent first WorkBatch: %v", err)
+	}
+	if got := countCheckpoints(t, db, parentQueue, parentSpawned.TaskID); got != 1 {
+		t.Fatalf("expected durable child-result checkpoint, got %d", got)
+	}
+
+	var deleted int
+	if err := db.QueryRowContext(context.Background(), `SELECT absurd.cleanup_tasks($1, $2, $3)`, childQueue, 0, 10).Scan(&deleted); err != nil {
+		t.Fatalf("cleanup child tasks: %v", err)
+	}
+	if deleted != 1 {
+		t.Fatalf("expected 1 deleted child task, got %d", deleted)
+	}
+	childSnapshot, err := childClient.FetchTaskResult(context.Background(), childQueue, childSpawned.TaskID)
+	if err != nil {
+		t.Fatalf("FetchTaskResult child: %v", err)
+	}
+	if childSnapshot != nil {
+		t.Fatalf("expected cleaned up child snapshot to be gone, got %#v", childSnapshot)
+	}
+
+	if err := parentClient.WorkBatch(context.Background(), absurd.WorkBatchOptions{WorkerID: "parent-worker"}); err != nil {
+		t.Fatalf("parent retry WorkBatch: %v", err)
+	}
+	snapshot, err := parentClient.AwaitTaskResult(context.Background(), parentQueue, parentSpawned.TaskID, absurd.AwaitTaskResultOptions{Timeout: 5 * time.Second})
+	if err != nil {
+		t.Fatalf("AwaitTaskResult parent: %v", err)
+	}
+	var result map[string]any
+	if err := snapshot.DecodeResult(&result); err != nil {
+		t.Fatalf("DecodeResult parent: %v", err)
+	}
+	if result["child"] != "ok" {
+		t.Fatalf("unexpected result after retry: %#v", result)
+	}
+}
+
+func TestTaskContextAwaitTaskResultHeartbeatUsesReceiverState(t *testing.T) {
+	parentQueue := randomQueueName("go_parent_heartbeat")
+	childQueue := randomQueueName("go_child_heartbeat")
+	db := setupTestDatabase(t)
+	parentClient := newTestClient(t, parentQueue)
+	childClient, err := absurd.New(absurd.Options{DB: db, QueueName: childQueue})
+	if err != nil {
+		t.Fatalf("New child client: %v", err)
+	}
+	if err := childClient.CreateQueue(context.Background(), childQueue); err != nil {
+		t.Fatalf("CreateQueue child: %v", err)
+	}
+
+	childClient.MustRegister(absurd.Task("slow-child", func(ctx context.Context, params map[string]any) (map[string]any, error) {
+		time.Sleep(900 * time.Millisecond)
+		return map[string]any{"child": "ok"}, nil
+	}))
+	parentClient.MustRegister(absurd.Task("parent", func(ctx context.Context, params map[string]any) (map[string]any, error) {
+		waitCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		taskCtx := absurd.MustTaskContext(ctx)
+		snapshot, err := taskCtx.AwaitTaskResult(waitCtx, childQueue, params["child_id"].(string), absurd.AwaitTaskResultOptions{
+			Timeout: 3 * time.Second,
+		})
+		if err != nil {
+			return nil, err
+		}
+		var result map[string]any
+		if err := snapshot.DecodeResult(&result); err != nil {
+			return nil, err
+		}
+		return result, nil
+	}))
+
+	childSpawned, err := childClient.Spawn(context.Background(), "slow-child", nil)
+	if err != nil {
+		t.Fatalf("spawn child: %v", err)
+	}
+	parentSpawned, err := parentClient.Spawn(context.Background(), "parent", map[string]any{"child_id": childSpawned.TaskID})
+	if err != nil {
+		t.Fatalf("spawn parent: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		_ = childClient.WorkBatch(context.Background(), absurd.WorkBatchOptions{WorkerID: "child-worker"})
+	}()
+	defer wg.Wait()
+
+	if err := parentClient.WorkBatch(context.Background(), absurd.WorkBatchOptions{WorkerID: "parent-worker", ClaimTimeout: time.Second}); err != nil {
+		t.Fatalf("parent WorkBatch: %v", err)
+	}
+	snapshot, err := parentClient.AwaitTaskResult(context.Background(), parentQueue, parentSpawned.TaskID, absurd.AwaitTaskResultOptions{Timeout: 5 * time.Second})
+	if err != nil {
+		t.Fatalf("AwaitTaskResult parent: %v", err)
+	}
+	var result map[string]any
+	if err := snapshot.DecodeResult(&result); err != nil {
+		t.Fatalf("DecodeResult parent: %v", err)
+	}
+	if result["child"] != "ok" {
+		t.Fatalf("unexpected result: %#v", result)
+	}
+}
+
 func TestFailureIncludesTraceback(t *testing.T) {
 	queue := randomQueueName("go_traceback")
 	db := setupTestDatabase(t)
@@ -397,5 +620,71 @@ func TestFailureIncludesTraceback(t *testing.T) {
 	traceback, _ := failure["traceback"].(string)
 	if traceback == "" || !strings.Contains(traceback, "failTaskRun") {
 		t.Fatalf("expected traceback in failure payload, got %#v", failure)
+	}
+}
+
+func TestQueueNameRejectsWhitespaceOnly(t *testing.T) {
+	_, err := absurd.New(absurd.Options{DB: setupTestDatabase(t), QueueName: "   "})
+	if err == nil || !strings.Contains(err.Error(), "queue name must be provided") {
+		t.Fatalf("expected queue validation error, got %v", err)
+	}
+}
+
+func TestInvalidHeadersFailRun(t *testing.T) {
+	queue := randomQueueName("go_invalid_headers")
+	db := setupTestDatabase(t)
+	client := newTestClient(t, queue)
+	client.MustRegister(absurd.Task("headered", func(ctx context.Context, params map[string]any) (map[string]any, error) {
+		_ = absurd.MustTaskContext(ctx).Headers()
+		return map[string]any{"ok": true}, nil
+	}))
+
+	spawned, err := client.Spawn(context.Background(), "headered", nil)
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+
+	query := fmt.Sprintf(`update absurd.t_%s set headers = '"not-an-object"'::jsonb where task_id = $1`, queue)
+	if _, err := db.ExecContext(context.Background(), query, spawned.TaskID); err != nil {
+		t.Fatalf("inject invalid headers: %v", err)
+	}
+
+	if err := client.WorkBatch(context.Background(), absurd.WorkBatchOptions{WorkerID: "worker"}); err != nil {
+		t.Fatalf("WorkBatch: %v", err)
+	}
+
+	failure := fetchFailure(t, db, queue, spawned.RunID)
+	message, _ := failure["message"].(string)
+	if !strings.Contains(message, "invalid task headers") {
+		t.Fatalf("unexpected failure payload: %#v", failure)
+	}
+}
+
+func TestLeaseTimeoutWatchdogFailsRun(t *testing.T) {
+	queue := randomQueueName("go_lease_watchdog")
+	db := setupTestDatabase(t)
+	client := newTestClient(t, queue)
+	client.MustRegister(absurd.Task("slow", func(ctx context.Context, params map[string]any) (map[string]any, error) {
+		time.Sleep(2500 * time.Millisecond)
+		return map[string]any{"ok": true}, nil
+	}, absurd.TaskOptions{DefaultMaxAttempts: 1}))
+
+	spawned, err := client.Spawn(context.Background(), "slow", nil)
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+
+	if err := client.WorkBatch(context.Background(), absurd.WorkBatchOptions{WorkerID: "worker", ClaimTimeout: time.Second}); err != nil {
+		t.Fatalf("WorkBatch: %v", err)
+	}
+
+	state, _, _, _, _, _ := fetchTaskRow(t, db, queue, spawned.TaskID)
+	if state != string(absurd.TaskFailed) {
+		t.Fatalf("expected task to fail after lease timeout, got %s", state)
+	}
+	failure := fetchFailure(t, db, queue, spawned.RunID)
+	name, _ := failure["name"].(string)
+	if name != "LeaseTimeout" {
+		t.Fatalf("unexpected failure payload: %#v", failure)
 	}
 }

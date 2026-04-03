@@ -69,7 +69,7 @@ var provisionUserTask = absurd.Task(
 		}
 		if !outage.Done {
 			log.Printf("[%s] simulating a temporary email provider outage", task.TaskID())
-			if _, err := outage.Complete(ctx, OutageState{Simulated: true}); err != nil {
+			if _, err := outage.CompleteStep(ctx, OutageState{Simulated: true}); err != nil {
 				return ProvisionUserResult{}, err
 			}
 			return ProvisionUserResult{}, errors.New("temporary email provider outage")

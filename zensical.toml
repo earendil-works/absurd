@@ -38,6 +38,7 @@ nav = [
     {"SDKs" = [
         {"TypeScript" = "sdk-typescript.md"},
         {"Python" = "sdk-python.md"},
+        {"Go" = "sdk-go.md"},
     ]},
 
     {"Patterns" = [

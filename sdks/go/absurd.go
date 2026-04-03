@@ -10,6 +10,7 @@ import (
 	"math"
 	"os"
 	"runtime/debug"
+	"strings"
 	"time"
 
 	"github.com/lib/pq"
@@ -126,7 +127,8 @@ type AwaitEventOptions struct {
 
 // AwaitTaskResultOptions configure AwaitTaskResult.
 type AwaitTaskResultOptions struct {
-	Timeout time.Duration
+	StepName string
+	Timeout  time.Duration
 }
 
 // WorkBatchOptions configure a single worker batch.
@@ -168,9 +170,9 @@ const (
 
 // TaskResultSnapshot is the raw task result view.
 type TaskResultSnapshot struct {
-	State   TaskResultState
-	Result  json.RawMessage
-	Failure json.RawMessage
+	State   TaskResultState `json:"state"`
+	Result  json.RawMessage `json:"result,omitempty"`
+	Failure json.RawMessage `json:"failure,omitempty"`
 }
 
 func (s TaskResultSnapshot) DecodeResult(dst any) error {
@@ -204,7 +206,8 @@ type StepHandle[T any] struct {
 	State          T
 }
 
-func (h StepHandle[T]) Complete(ctx context.Context, value T) (T, error) {
+// CompleteStep persists the step result checkpoint and returns the value.
+func (h StepHandle[T]) CompleteStep(ctx context.Context, value T) (T, error) {
 	if h.Done {
 		return h.State, nil
 	}
@@ -247,9 +250,6 @@ func (t TaskDefinition[P, R]) buildRegistered(defaultQueue string) (registeredTa
 	if t.name == "" {
 		return registeredTask{}, fmt.Errorf("task registration requires a name")
 	}
-	if t.options.DefaultMaxAttempts < 0 {
-		return registeredTask{}, fmt.Errorf("default max attempts must be at least 1")
-	}
 	queue := defaultQueue
 	if t.options.QueueName != "" {
 		queue = t.options.QueueName
@@ -261,7 +261,7 @@ func (t TaskDefinition[P, R]) buildRegistered(defaultQueue string) (registeredTa
 	return registeredTask{
 		name:                  t.name,
 		queueName:             queue,
-		hasDefaultMaxAttempts: t.options.DefaultMaxAttempts > 0,
+		hasDefaultMaxAttempts: t.options.DefaultMaxAttempts != 0,
 		defaultMaxAttempts:    t.options.DefaultMaxAttempts,
 		defaultCancellation:   cloneCancellationPolicy(t.options.DefaultCancellation),
 		handler: func(ctx context.Context, paramsRaw json.RawMessage) (any, error) {
@@ -309,7 +309,7 @@ func cloneSpawnOptions(opts SpawnOptions) SpawnOptions {
 
 func normalizeSpawnOptions(opts SpawnOptions) map[string]any {
 	normalized := make(map[string]any)
-	if opts.MaxAttempts > 0 {
+	if opts.MaxAttempts != 0 {
 		normalized["max_attempts"] = opts.MaxAttempts
 	}
 	if len(opts.Headers) > 0 {
@@ -367,9 +367,6 @@ func New(options Options) (*Client, error) {
 	defaultMaxAttempts := options.DefaultMaxAttempts
 	if defaultMaxAttempts == 0 {
 		defaultMaxAttempts = defaultClientMaxAttempts
-	}
-	if defaultMaxAttempts < 1 {
-		return nil, fmt.Errorf("default max attempts must be at least 1")
 	}
 	logger := options.Logger
 	if logger == nil {
@@ -546,7 +543,7 @@ func (c *Client) RetryTask(ctx context.Context, queueName, taskID string, option
 		return SpawnResult{}, err
 	}
 	payload := map[string]any{}
-	if opts.MaxAttempts > 0 {
+	if opts.MaxAttempts != 0 {
 		payload["max_attempts"] = opts.MaxAttempts
 	}
 	if opts.SpawnNew {
@@ -620,7 +617,7 @@ func awaitTaskResultWithBackoff(ctx context.Context, fetch func(context.Context)
 		if snapshot.IsTerminal() {
 			return *snapshot, nil
 		}
-		if timeout > 0 && time.Since(startedAt) >= timeout {
+		if timeout < 0 || (timeout > 0 && time.Since(startedAt) >= timeout) {
 			return TaskResultSnapshot{}, newTimeoutError(`timed out waiting for task %q`, taskID)
 		}
 		if beforeSleep != nil {
@@ -670,11 +667,8 @@ func (c *Client) resolveSpawn(taskName string, opts SpawnOptions) (string, int, 
 		queue = orString(opts.QueueName, queue)
 	}
 
-	if opts.MaxAttempts > 0 {
+	if opts.MaxAttempts != 0 {
 		maxAttempts = opts.MaxAttempts
-	}
-	if maxAttempts < 1 {
-		return "", 0, nil, fmt.Errorf("max attempts must be at least 1")
 	}
 	if opts.Cancellation != nil {
 		cancellation = cloneCancellationPolicy(opts.Cancellation)
@@ -696,10 +690,14 @@ func completeTaskRun(ctx context.Context, db *sql.DB, queueName string, runID st
 }
 
 func failTaskRun(ctx context.Context, db *sql.DB, queueName string, runID string, err error) error {
+	return failTaskRunWithTraceback(ctx, db, queueName, runID, fmt.Sprintf("%T", err), err.Error(), debug.Stack())
+}
+
+func failTaskRunWithTraceback(ctx context.Context, db *sql.DB, queueName string, runID string, name string, message string, traceback []byte) error {
 	serialized, marshalErr := marshalJSON(map[string]any{
-		"name":      fmt.Sprintf("%T", err),
-		"message":   err.Error(),
-		"traceback": string(debug.Stack()),
+		"name":      name,
+		"message":   message,
+		"traceback": string(traceback),
 	})
 	if marshalErr != nil {
 		return marshalErr
@@ -711,7 +709,7 @@ func failTaskRun(ctx context.Context, db *sql.DB, queueName string, runID string
 // Utility functions
 
 func validateQueueName(queueName string) (string, error) {
-	if queueName == "" {
+	if strings.TrimSpace(queueName) == "" {
 		return "", fmt.Errorf("queue name must be provided")
 	}
 	if len([]byte(queueName)) > maxQueueNameLength {

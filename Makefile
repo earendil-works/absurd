@@ -47,5 +47,7 @@ test-python:
 
 # Run Go SDK tests
 test-go:
-	@echo "Running Go SDK tests"
+	@echo "Running Go SDK tests (root module)"
 	@cd sdks/go && go test ./...
+	@echo "Running Go SDK tests (integration module)"
+	@cd sdks/go/absurdtest && go test ./...

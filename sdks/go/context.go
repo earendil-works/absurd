@@ -25,9 +25,10 @@ type TaskContext struct {
 	attempt      int
 	claimTimeout time.Duration
 
-	headersRaw json.RawMessage
-	wakeEvent  string
-	eventRaw   json.RawMessage
+	headersRaw       json.RawMessage
+	wakeEvent        string
+	eventRaw         json.RawMessage
+	onLeaseExtended  func(time.Duration)
 
 	mu              sync.Mutex
 	headersCache    map[string]any
@@ -35,7 +36,14 @@ type TaskContext struct {
 	stepNameCounter map[string]int
 }
 
-func newTaskContext(parent context.Context, client *Client, queueName string, task claimedTask, claimTimeout time.Duration) (*TaskContext, error) {
+var errInvalidTaskHeaders = errors.New("absurd: invalid task headers")
+
+func newTaskContext(parent context.Context, client *Client, queueName string, task claimedTask, claimTimeout time.Duration, onLeaseExtended func(time.Duration)) (*TaskContext, error) {
+	headersCache, err := decodeTaskHeaders(task.HeadersRaw)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", errInvalidTaskHeaders, err)
+	}
+
 	taskCtx := &TaskContext{
 		client:          client,
 		queueName:       queueName,
@@ -47,6 +55,8 @@ func newTaskContext(parent context.Context, client *Client, queueName string, ta
 		headersRaw:      cloneRawJSON(task.HeadersRaw),
 		wakeEvent:       task.WakeEvent,
 		eventRaw:        cloneRawJSON(task.EventRaw),
+		onLeaseExtended: onLeaseExtended,
+		headersCache:    headersCache,
 		checkpointCache: make(map[string]json.RawMessage),
 		stepNameCounter: make(map[string]int),
 	}
@@ -74,6 +84,24 @@ func newTaskContext(parent context.Context, client *Client, queueName string, ta
 	return taskCtx, nil
 }
 
+func decodeTaskHeaders(raw json.RawMessage) (map[string]any, error) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return map[string]any{}, nil
+	}
+	var decoded any
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		return nil, err
+	}
+	if decoded == nil {
+		return map[string]any{}, nil
+	}
+	headers, ok := decoded.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("headers payload must be a JSON object")
+	}
+	return headers, nil
+}
+
 func (t *TaskContext) TaskID() string    { return t.taskID }
 func (t *TaskContext) RunID() string     { return t.runID }
 func (t *TaskContext) TaskName() string  { return t.taskName }
@@ -83,20 +111,13 @@ func (t *TaskContext) Attempt() int      { return t.attempt }
 func (t *TaskContext) Headers() map[string]any {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if t.headersCache != nil {
-		return cloneMap(t.headersCache)
+	return cloneMap(t.headersCache)
+}
+
+func (t *TaskContext) notifyLeaseExtended(d time.Duration) {
+	if t.onLeaseExtended != nil {
+		t.onLeaseExtended(d)
 	}
-	if len(t.headersRaw) == 0 || string(t.headersRaw) == "null" {
-		t.headersCache = map[string]any{}
-		return map[string]any{}
-	}
-	var headers map[string]any
-	if err := json.Unmarshal(t.headersRaw, &headers); err != nil {
-		t.headersCache = map[string]any{}
-		return map[string]any{}
-	}
-	t.headersCache = headers
-	return cloneMap(headers)
 }
 
 // TaskFromContext returns the active task context if one is present.
@@ -176,6 +197,7 @@ func (t *TaskContext) persistCheckpoint(ctx context.Context, checkpointName stri
 	if err != nil {
 		return mapTaskStateError(err)
 	}
+	t.notifyLeaseExtended(t.claimTimeout)
 	t.mu.Lock()
 	t.checkpointCache[checkpointName] = cloneRawJSON(raw)
 	t.mu.Unlock()
@@ -185,6 +207,19 @@ func (t *TaskContext) persistCheckpoint(ctx context.Context, checkpointName stri
 func (t *TaskContext) scheduleRun(ctx context.Context, wakeAt time.Time) error {
 	_, err := t.client.db.ExecContext(ctx, `SELECT absurd.schedule_run($1, $2, $3)`, t.queueName, t.runID, wakeAt)
 	return err
+}
+
+func (t *TaskContext) heartbeat(ctx context.Context, d time.Duration) error {
+	lease := d
+	if lease <= 0 {
+		lease = t.claimTimeout
+	}
+	_, err := t.client.db.ExecContext(ctx, `SELECT absurd.extend_claim($1, $2, $3)`, t.queueName, t.runID, durationSecondsOrDefault(lease, t.claimTimeout))
+	if err != nil {
+		return mapTaskStateError(err)
+	}
+	t.notifyLeaseExtended(lease)
+	return nil
 }
 
 // AwaitTaskResult waits for another task to reach a terminal state.
@@ -197,20 +232,43 @@ func (t *TaskContext) AwaitTaskResult(ctx context.Context, queueName, taskID str
 	if validatedQueue == t.queueName {
 		return TaskResultSnapshot{}, fmt.Errorf("TaskContext.AwaitTaskResult cannot wait on tasks in the same queue because this can deadlock workers. Spawn the child in a different queue")
 	}
+	stepName := opts.StepName
+	if stepName == "" {
+		stepName = "$awaitTaskResult:" + taskID
+	}
+	checkpointName := t.nextCheckpointName(stepName)
+	raw, found, err := t.lookupCheckpoint(ctx, checkpointName)
+	if err != nil {
+		return TaskResultSnapshot{}, err
+	}
+	if found {
+		var snapshot TaskResultSnapshot
+		if err := unmarshalJSON(raw, &snapshot); err != nil {
+			return TaskResultSnapshot{}, err
+		}
+		return snapshot, nil
+	}
 	heartbeatInterval := t.claimTimeout / 2
 	if heartbeatInterval < minHeartbeatInterval {
 		heartbeatInterval = minHeartbeatInterval
 	}
 	nextHeartbeatAt := time.Now().Add(heartbeatInterval)
-	return awaitTaskResultWithBackoff(ctx, func(ctx context.Context) (*TaskResultSnapshot, error) {
+	snapshot, err := awaitTaskResultWithBackoff(ctx, func(ctx context.Context) (*TaskResultSnapshot, error) {
 		return fetchTaskResultSnapshot(ctx, t.client.db, validatedQueue, taskID)
 	}, taskID, opts.Timeout, func() error {
 		if time.Now().Before(nextHeartbeatAt) {
 			return nil
 		}
 		nextHeartbeatAt = time.Now().Add(heartbeatInterval)
-		return Heartbeat(ctx, 0)
+		return t.heartbeat(ctx, 0)
 	})
+	if err != nil {
+		return TaskResultSnapshot{}, err
+	}
+	if err := t.persistCheckpoint(ctx, checkpointName, snapshot); err != nil {
+		return TaskResultSnapshot{}, err
+	}
+	return snapshot, nil
 }
 
 // Step runs an idempotent step whose result is checkpointed in Postgres.
@@ -226,15 +284,7 @@ func Step[T any](ctx context.Context, name string, fn func(context.Context) (T, 
 	if err != nil {
 		return zero[T](), err
 	}
-	return handle.Complete(ctx, value)
-}
-
-// Do is Step for functions that do not return a value.
-func Do(ctx context.Context, name string, fn func(context.Context) error) error {
-	_, err := Step(ctx, name, func(ctx context.Context) (struct{}, error) {
-		return struct{}{}, fn(ctx)
-	})
-	return err
+	return handle.CompleteStep(ctx, value)
 }
 
 // BeginStep starts a decomposed step and returns whether its state already exists.
@@ -342,6 +392,8 @@ func AwaitEvent[T any](ctx context.Context, eventName string, options ...AwaitEv
 	var timeoutSeconds any = nil
 	if opts.Timeout > 0 {
 		timeoutSeconds = durationSeconds(opts.Timeout)
+	} else if opts.Timeout < 0 {
+		timeoutSeconds = 0
 	}
 	row := task.client.db.QueryRowContext(ctx, `SELECT should_suspend, payload
         FROM absurd.await_event($1, $2, $3, $4, $5, $6)`,
@@ -378,15 +430,7 @@ func Heartbeat(ctx context.Context, d time.Duration) error {
 	if err != nil {
 		return err
 	}
-	lease := d
-	if lease <= 0 {
-		lease = task.claimTimeout
-	}
-	_, err = task.client.db.ExecContext(ctx, `SELECT absurd.extend_claim($1, $2, $3)`, task.queueName, task.runID, durationSecondsOrDefault(lease, task.claimTimeout))
-	if err != nil {
-		return mapTaskStateError(err)
-	}
-	return nil
+	return task.heartbeat(ctx, d)
 }
 
 // EmitEvent emits an event on the current task's queue.

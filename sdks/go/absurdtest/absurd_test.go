@@ -178,7 +178,7 @@ func TestWorkBatchProcessesTaskAndPreservesTaskContext(t *testing.T) {
 				return welcomeResult{}, err
 			}
 			if !handle.Done {
-				if _, err := handle.Complete(ctx, map[string]any{"ok": true}); err != nil {
+				if _, err := handle.CompleteStep(ctx, map[string]any{"ok": true}); err != nil {
 					return welcomeResult{}, err
 				}
 			}
@@ -260,7 +260,7 @@ func TestQuickstartStyleAwaitEventFlow(t *testing.T) {
 				return provisionResult{}, err
 			}
 			if !outage.Done {
-				if _, err := outage.Complete(ctx, map[string]any{"simulated": false}); err != nil {
+				if _, err := outage.CompleteStep(ctx, map[string]any{"simulated": false}); err != nil {
 					return provisionResult{}, err
 				}
 			}
@@ -381,5 +381,205 @@ func TestRunWorkerAndAwaitTaskResult(t *testing.T) {
 	cancel()
 	if err := <-workerDone; err != nil && !errors.Is(err, context.Canceled) {
 		t.Fatalf("RunWorker failed: %v", err)
+	}
+}
+
+func TestAwaitTaskResultNegativeTimeoutTimesOutImmediately(t *testing.T) {
+	queue := randomQueueName("go_negative_task_timeout")
+	client := newTestClient(t, queue)
+	client.MustRegister(absurd.Task("pending", func(ctx context.Context, params map[string]any) (map[string]any, error) {
+		return map[string]any{"ok": true}, nil
+	}))
+
+	spawned, err := client.Spawn(context.Background(), "pending", nil)
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+
+	startedAt := time.Now()
+	_, err = client.AwaitTaskResult(context.Background(), queue, spawned.TaskID, absurd.AwaitTaskResultOptions{Timeout: -time.Second})
+	var timeoutErr *absurd.TimeoutError
+	if !errors.As(err, &timeoutErr) {
+		t.Fatalf("expected TimeoutError, got %v", err)
+	}
+	if elapsed := time.Since(startedAt); elapsed > 250*time.Millisecond {
+		t.Fatalf("negative timeout should fail fast, took %s", elapsed)
+	}
+}
+
+func TestAwaitEventNegativeTimeoutDoesNotSleepForever(t *testing.T) {
+	queue := randomQueueName("go_negative_event_timeout")
+	client := newTestClient(t, queue)
+	client.MustRegister(absurd.Task("wait-negative-timeout", func(ctx context.Context, params map[string]any) (map[string]any, error) {
+		_, err := absurd.AwaitEvent[map[string]any](ctx, "never-emitted", absurd.AwaitEventOptions{Timeout: -time.Second})
+		if err != nil {
+			var timeoutErr *absurd.TimeoutError
+			if errors.As(err, &timeoutErr) {
+				return map[string]any{"timed_out": true}, nil
+			}
+			return nil, err
+		}
+		return map[string]any{"timed_out": false}, nil
+	}))
+
+	spawned, err := client.Spawn(context.Background(), "wait-negative-timeout", nil)
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	if err := client.WorkBatch(context.Background(), absurd.WorkBatchOptions{WorkerID: "worker"}); err != nil {
+		t.Fatalf("WorkBatch first pass: %v", err)
+	}
+	if err := client.WorkBatch(context.Background(), absurd.WorkBatchOptions{WorkerID: "worker"}); err != nil {
+		t.Fatalf("WorkBatch second pass: %v", err)
+	}
+
+	snapshot, err := client.AwaitTaskResult(context.Background(), queue, spawned.TaskID, absurd.AwaitTaskResultOptions{Timeout: time.Second})
+	if err != nil {
+		t.Fatalf("AwaitTaskResult: %v", err)
+	}
+	var result map[string]bool
+	if err := snapshot.DecodeResult(&result); err != nil {
+		t.Fatalf("DecodeResult: %v", err)
+	}
+	if !result["timed_out"] {
+		t.Fatalf("expected timeout result, got %#v", result)
+	}
+}
+
+func TestRunWorkerRecoversTaskPanics(t *testing.T) {
+	queue := randomQueueName("go_worker_panic")
+	db := setupTestDatabase(t)
+	client := newTestClient(t, queue)
+
+	client.MustRegister(absurd.Task("panic-task", func(ctx context.Context, params map[string]any) (map[string]any, error) {
+		panic("boom")
+	}, absurd.TaskOptions{DefaultMaxAttempts: 1}))
+	client.MustRegister(absurd.Task("ok-task", func(ctx context.Context, params map[string]any) (map[string]bool, error) {
+		return map[string]bool{"ok": true}, nil
+	}, absurd.TaskOptions{DefaultMaxAttempts: 1}))
+
+	workerCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	workerDone := make(chan error, 1)
+	go func() {
+		workerDone <- client.RunWorker(workerCtx, absurd.WorkerOptions{
+			WorkerID:     "panic-worker",
+			Concurrency:  1,
+			PollInterval: 25 * time.Millisecond,
+		})
+	}()
+
+	panicked, err := client.Spawn(context.Background(), "panic-task", nil)
+	if err != nil {
+		t.Fatalf("Spawn panic-task failed: %v", err)
+	}
+
+	panicSnapshot, err := client.AwaitTaskResult(context.Background(), queue, panicked.TaskID, absurd.AwaitTaskResultOptions{Timeout: 10 * time.Second})
+	if err != nil {
+		t.Fatalf("AwaitTaskResult panic-task failed: %v", err)
+	}
+	if panicSnapshot.State != absurd.TaskFailed {
+		t.Fatalf("unexpected panic-task state: %s", panicSnapshot.State)
+	}
+	failure := fetchFailure(t, db, queue, panicked.RunID)
+	message, _ := failure["message"].(string)
+	if !strings.Contains(message, "panic: boom") {
+		t.Fatalf("unexpected panic failure payload: %#v", failure)
+	}
+
+	select {
+	case err := <-workerDone:
+		t.Fatalf("worker exited after panic: %v", err)
+	default:
+	}
+
+	okTask, err := client.Spawn(context.Background(), "ok-task", nil)
+	if err != nil {
+		t.Fatalf("Spawn ok-task failed: %v", err)
+	}
+	okSnapshot, err := client.AwaitTaskResult(context.Background(), queue, okTask.TaskID, absurd.AwaitTaskResultOptions{Timeout: 10 * time.Second})
+	if err != nil {
+		t.Fatalf("AwaitTaskResult ok-task failed: %v", err)
+	}
+	if okSnapshot.State != absurd.TaskCompleted {
+		t.Fatalf("unexpected ok-task state: %s", okSnapshot.State)
+	}
+
+	cancel()
+	select {
+	case err := <-workerDone:
+		if err != nil && !errors.Is(err, context.Canceled) {
+			t.Fatalf("RunWorker failed: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for worker shutdown")
+	}
+}
+
+func TestRunWorkerShutdownDrainsClaimedTasks(t *testing.T) {
+	queue := randomQueueName("go_worker_shutdown")
+	client := newTestClient(t, queue)
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+
+	client.MustRegister(absurd.Task("slow-task", func(ctx context.Context, params map[string]any) (string, error) {
+		close(started)
+		select {
+		case <-release:
+			return "done", nil
+		case <-ctx.Done():
+			return "", ctx.Err()
+		}
+	}, absurd.TaskOptions{DefaultMaxAttempts: 1}))
+
+	workerCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	workerDone := make(chan error, 1)
+	go func() {
+		workerDone <- client.RunWorker(workerCtx, absurd.WorkerOptions{
+			WorkerID:     "shutdown-worker",
+			Concurrency:  1,
+			PollInterval: 25 * time.Millisecond,
+		})
+	}()
+
+	spawned, err := client.Spawn(context.Background(), "slow-task", nil)
+	if err != nil {
+		t.Fatalf("Spawn slow-task failed: %v", err)
+	}
+
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for slow-task to start")
+	}
+
+	cancel()
+	select {
+	case err := <-workerDone:
+		t.Fatalf("worker exited before draining active task: %v", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	close(release)
+
+	select {
+	case err := <-workerDone:
+		if err != nil && !errors.Is(err, context.Canceled) {
+			t.Fatalf("RunWorker failed: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for drained worker shutdown")
+	}
+
+	finalSnapshot, err := client.AwaitTaskResult(context.Background(), queue, spawned.TaskID, absurd.AwaitTaskResultOptions{Timeout: 10 * time.Second})
+	if err != nil {
+		t.Fatalf("AwaitTaskResult slow-task failed: %v", err)
+	}
+	if finalSnapshot.State != absurd.TaskCompleted {
+		t.Fatalf("unexpected slow-task state: %s", finalSnapshot.State)
 	}
 }
