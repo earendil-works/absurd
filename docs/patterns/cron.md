@@ -8,7 +8,7 @@ The only tricky is to ensure that each cron only runs once.  If your scheduler
 runs twice (deploy overlap, crash restart, two replicas), you can still
 guarantee each cron slot is enqueued only once.
 
-The trick: derive `idempotency_key` / `idempotencyKey` / `IdempotencyKey` from:
+The trick: derive an idempotency key from:
 
 1. task name
 2. cron expression
@@ -107,7 +107,7 @@ Absurd returns the already-existing task instead of creating a duplicate.
         "log"
         "time"
 
-        absurd "github.com/earendil-works/absurd/sdks/go"
+        "github.com/earendil-works/absurd/sdks/go/absurd"
         "github.com/robfig/cron/v3"
     )
 

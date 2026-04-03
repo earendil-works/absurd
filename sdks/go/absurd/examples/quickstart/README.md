@@ -11,6 +11,6 @@ Files:
 ## Run
 
 ```bash
-go run ./sdks/go/examples/quickstart/worker
-go run ./sdks/go/examples/quickstart/client --await alice alice@example.com
+go run ./sdks/go/absurd/examples/quickstart/worker
+go run ./sdks/go/absurd/examples/quickstart/client --await alice alice@example.com
 ```

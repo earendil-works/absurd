@@ -17,7 +17,7 @@ The exact examples in this guide live in the repository:
 
 - [TypeScript quickstart examples](https://github.com/earendil-works/absurd/tree/main/sdks/typescript/examples/quickstart)
 - [Python quickstart examples](https://github.com/earendil-works/absurd/tree/main/sdks/python/examples/quickstart)
-- [Go quickstart examples](https://github.com/earendil-works/absurd/tree/main/sdks/go/examples/quickstart)
+- [Go quickstart examples](https://github.com/earendil-works/absurd/tree/main/absurd/examples/quickstart)
 
 ## Prerequisites
 
@@ -214,7 +214,7 @@ The important part is the failure story:
         "log"
         "time"
 
-        absurd "github.com/earendil-works/absurd/sdks/go"
+        "github.com/earendil-works/absurd/sdks/go/absurd"
     )
 
     type ProvisionUserParams struct {
@@ -349,7 +349,7 @@ Run one of the repository examples in a terminal:
 === "Go"
 
     ```bash
-    ABSURD_DATABASE_URL="$PGDATABASE" go run ./sdks/go/examples/quickstart/worker
+    ABSURD_DATABASE_URL="$PGDATABASE" go run ./sdks/go/absurd/examples/quickstart/worker
     ```
 
 ## 4. Spawn a Task
@@ -434,7 +434,7 @@ store, inspect later, or await.
         "log"
         "time"
 
-        absurd "github.com/earendil-works/absurd/sdks/go"
+        "github.com/earendil-works/absurd/sdks/go/absurd"
     )
 
     type ProvisionUserParams struct {
@@ -521,7 +521,7 @@ Run one of the repository clients:
 === "Go"
 
     ```bash
-    ABSURD_DATABASE_URL="$PGDATABASE" go run ./sdks/go/examples/quickstart/client alice alice@example.com
+    ABSURD_DATABASE_URL="$PGDATABASE" go run ./sdks/go/absurd/examples/quickstart/client alice alice@example.com
     ```
 
 If you want to block until the task finishes, pass `--await` and then emit the
@@ -561,7 +561,7 @@ activation event from another terminal.
         "log"
         "time"
 
-        absurd "github.com/earendil-works/absurd/sdks/go"
+        "github.com/earendil-works/absurd/sdks/go/absurd"
     )
 
     type ProvisionUserParams struct {

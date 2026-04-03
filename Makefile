@@ -6,7 +6,7 @@ format:
 	@cd habitat/ui && npx prettier -w .
 	@uvx ruff format tests
 	@gofmt -w habitat
-	@gofmt -w sdks/go
+	@gofmt -w sdks/go/absurd
 
 ZENSICAL_VERSION ?= 0.0.21
 
@@ -48,6 +48,6 @@ test-python:
 # Run Go SDK tests
 test-go:
 	@echo "Running Go SDK tests (root module)"
-	@cd sdks/go && go test ./...
+	@cd sdks/go/absurd && go test ./...
 	@echo "Running Go SDK tests (integration module)"
-	@cd sdks/go/absurdtest && go test ./...
+	@cd sdks/go/absurd/absurdtest && go test ./...

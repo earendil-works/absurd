@@ -16,13 +16,13 @@ The API is intentionally Go-shaped:
 ## Installation
 
 ```bash
-go get github.com/earendil-works/absurd/sdks/go@latest
+go get github.com/earendil-works/absurd/sdks/go/absurd@latest
 ```
 
 Then import it:
 
 ```go
-import absurd "github.com/earendil-works/absurd/sdks/go"
+import "github.com/earendil-works/absurd/sdks/go/absurd"
 ```
 
 Before using the SDK, initialize the Absurd schema in Postgres and create at
@@ -40,7 +40,7 @@ import (
     "log"
     "os"
 
-    absurd "github.com/earendil-works/absurd/sdks/go"
+    "github.com/earendil-works/absurd/sdks/go/absurd"
 )
 
 func main() {
@@ -65,7 +65,7 @@ import (
     "log"
     "os"
 
-    absurd "github.com/earendil-works/absurd/sdks/go"
+    "github.com/earendil-works/absurd/sdks/go/absurd"
 )
 
 func main() {
@@ -130,7 +130,7 @@ import (
     "context"
     "log"
 
-    absurd "github.com/earendil-works/absurd/sdks/go"
+    "github.com/earendil-works/absurd/sdks/go/absurd"
 )
 
 type SendEmailParams struct {

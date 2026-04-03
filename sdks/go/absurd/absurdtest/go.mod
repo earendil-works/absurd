@@ -1,9 +1,9 @@
-module github.com/earendil-works/absurd/sdks/go/absurdtest
+module github.com/earendil-works/absurd/sdks/go/absurd/absurdtest
 
 go 1.25.0
 
 require (
-	github.com/earendil-works/absurd/sdks/go v0.0.0
+	github.com/earendil-works/absurd/sdks/go/absurd v0.0.0
 	github.com/lib/pq v1.10.9
 	github.com/testcontainers/testcontainers-go v0.41.0
 )
@@ -67,4 +67,4 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
-replace github.com/earendil-works/absurd/sdks/go => ../
+replace github.com/earendil-works/absurd/sdks/go/absurd => ../

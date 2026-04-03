@@ -98,7 +98,7 @@ them race-free.
         "context"
         "log"
 
-        absurd "github.com/earendil-works/absurd/sdks/go"
+        "github.com/earendil-works/absurd/sdks/go/absurd"
     )
 
     type OrderFulfillmentParams struct {

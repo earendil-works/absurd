@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	absurd "github.com/earendil-works/absurd/sdks/go"
+	"github.com/earendil-works/absurd/sdks/go/absurd"
 	_ "github.com/lib/pq"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
@@ -94,7 +94,7 @@ func setupTestDatabase(t *testing.T) *sql.DB {
 		}
 
 		_, filename, _, _ := runtime.Caller(0)
-		schemaPath := filepath.Join(filepath.Dir(filename), "..", "..", "..", "sql", "absurd.sql")
+		schemaPath := filepath.Join(filepath.Dir(filename), "..", "..", "..", "..", "sql", "absurd.sql")
 		var schema []byte
 		schema, testSetupErr = os.ReadFile(schemaPath)
 		if testSetupErr != nil {

@@ -17,7 +17,7 @@ Implemented in the Go SDK:
 
 ## Test Coverage Added
 
-Ported parity coverage from the Python SDK into `sdks/go/absurdtest/` for:
+Ported parity coverage from the Python SDK into `sdks/go/absurd/absurdtest/` for:
 
 - queue listing
 - spawn option serialization

@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	absurd "github.com/earendil-works/absurd/sdks/go"
+	"github.com/earendil-works/absurd/sdks/go/absurd"
 )
 
 func setFakeNow(t *testing.T, db *sql.DB, ts *time.Time) {

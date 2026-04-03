@@ -7,7 +7,7 @@ import (
 	"log"
 	"time"
 
-	absurd "github.com/earendil-works/absurd/sdks/go"
+	"github.com/earendil-works/absurd/sdks/go/absurd"
 )
 
 type ProvisionUserParams struct {

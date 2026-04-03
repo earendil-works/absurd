@@ -53,7 +53,7 @@ Currently SDKs exist for the following languages:
 
 * [TypeScript](sdks/typescript) (and JavaScript)
 * [Python](sdks/python)
-* [Go](sdks/go) *(experimental bootstrap)*
+* [Go](sdks/go/absurd) *(experimental bootstrap)*
 
 ## Push vs Pull
 
@@ -119,7 +119,7 @@ npm install absurd-sdk
 uv add absurd-sdk
 
 # Go
-go get github.com/earendil-works/absurd/sdks/go@latest
+go get github.com/earendil-works/absurd/sdks/go/absurd@latest
 ```
 
 <div style="text-align: center" align="center">

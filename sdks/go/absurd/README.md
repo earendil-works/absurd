@@ -27,4 +27,4 @@ Early work in progress. The initial implementation covers:
 See `examples/quickstart` for the current shape.
 
 For the full repository documentation, see the
-[Go SDK guide](../../docs/sdk-go.md).
+[Go SDK guide](../../../docs/sdk-go.md).

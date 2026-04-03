@@ -268,7 +268,7 @@ A practical way to do that is:
         "log"
         "os"
 
-        absurd "github.com/earendil-works/absurd/sdks/go"
+        "github.com/earendil-works/absurd/sdks/go/absurd"
     )
 
     type CleanupParams struct {
@@ -421,7 +421,7 @@ And a small script that enqueues it once per day:
         "os"
         "time"
 
-        absurd "github.com/earendil-works/absurd/sdks/go"
+        "github.com/earendil-works/absurd/sdks/go/absurd"
     )
 
     type CleanupParams struct {
