@@ -5,6 +5,8 @@ Experimental Go SDK for [Absurd](https://github.com/earendil-works/absurd).
 This bootstrap version focuses on the core durable execution model with a
 Go-native API surface:
 
+- queue-targeting control APIs take the queue name explicitly
+
 - `context.Context` everywhere inside task code
 - typed task definitions via `absurd.Task(...)`
 - durable task operations as package-level functions such as `Step` and `AwaitEvent`

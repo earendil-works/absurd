@@ -216,7 +216,7 @@ func TestRetryTaskParity(t *testing.T) {
 		t.Fatalf("expected 1 checkpoint, got %d", got)
 	}
 
-	retry, err := client.RetryTask(context.Background(), spawned.TaskID)
+	retry, err := client.RetryTask(context.Background(), queue, spawned.TaskID)
 	if err != nil {
 		t.Fatalf("RetryTask: %v", err)
 	}
@@ -232,7 +232,7 @@ func TestRetryTaskParity(t *testing.T) {
 		t.Fatalf("WorkBatch second task: %v", err)
 	}
 
-	respawn, err := client.RetryTask(context.Background(), spawned2.TaskID, absurd.RetryTaskOptions{SpawnNew: true})
+	respawn, err := client.RetryTask(context.Background(), queue, spawned2.TaskID, absurd.RetryTaskOptions{SpawnNew: true})
 	if err != nil {
 		t.Fatalf("RetryTask spawn_new: %v", err)
 	}
@@ -256,7 +256,7 @@ func TestCancelTaskParity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Spawn: %v", err)
 	}
-	if err := client.CancelTask(context.Background(), spawned.TaskID); err != nil {
+	if err := client.CancelTask(context.Background(), queue, spawned.TaskID); err != nil {
 		t.Fatalf("CancelTask: %v", err)
 	}
 	state, _, _, _, _, cancelledAt := fetchTaskRow(t, db, queue, spawned.TaskID)
@@ -288,7 +288,7 @@ func TestHooksParity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	if err := client.CreateQueue(context.Background()); err != nil {
+	if err := client.CreateQueue(context.Background(), queue); err != nil {
 		t.Fatalf("CreateQueue: %v", err)
 	}
 	client.MustRegister(absurd.Task("capture", func(ctx context.Context, params map[string]any) (string, error) {
@@ -319,7 +319,7 @@ func TestTaskContextAwaitTaskResultParity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New child client: %v", err)
 	}
-	if err := childClient.CreateQueue(context.Background()); err != nil {
+	if err := childClient.CreateQueue(context.Background(), childQueue); err != nil {
 		t.Fatalf("CreateQueue child: %v", err)
 	}
 
@@ -328,9 +328,8 @@ func TestTaskContextAwaitTaskResultParity(t *testing.T) {
 	}))
 	parentClient.MustRegister(absurd.Task("parent", func(ctx context.Context, params map[string]any) (map[string]any, error) {
 		taskCtx := absurd.MustTaskContext(ctx)
-		snapshot, err := taskCtx.AwaitTaskResult(ctx, params["child_id"].(string), absurd.AwaitTaskResultOptions{
-			QueueName: childQueue,
-			Timeout:   5 * time.Second,
+		snapshot, err := taskCtx.AwaitTaskResult(ctx, childQueue, params["child_id"].(string), absurd.AwaitTaskResultOptions{
+			Timeout: 5 * time.Second,
 		})
 		if err != nil {
 			return nil, err
@@ -363,7 +362,7 @@ func TestTaskContextAwaitTaskResultParity(t *testing.T) {
 	if err := parentClient.WorkBatch(context.Background(), absurd.WorkBatchOptions{WorkerID: "parent-worker", ClaimTimeout: time.Second}); err != nil {
 		t.Fatalf("parent WorkBatch: %v", err)
 	}
-	snapshot, err := parentClient.AwaitTaskResult(context.Background(), parentSpawned.TaskID, absurd.AwaitTaskResultOptions{Timeout: 5 * time.Second})
+	snapshot, err := parentClient.AwaitTaskResult(context.Background(), parentQueue, parentSpawned.TaskID, absurd.AwaitTaskResultOptions{Timeout: 5 * time.Second})
 	if err != nil {
 		t.Fatalf("AwaitTaskResult: %v", err)
 	}

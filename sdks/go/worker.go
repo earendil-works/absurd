@@ -8,33 +8,69 @@ import (
 	"time"
 )
 
-func (c *Client) claimTasks(ctx context.Context, options WorkBatchOptions) ([]claimedTask, time.Duration, error) {
+type workerConfig struct {
+	batch        WorkBatchOptions
+	concurrency  int
+	pollInterval time.Duration
+	onError      func(error)
+}
+
+func normalizeWorkBatchOptions(options WorkBatchOptions) WorkBatchOptions {
+	options.WorkerID = orString(options.WorkerID, defaultBatchWorkerID)
+	options.ClaimTimeout = durationOr(options.ClaimTimeout, defaultClaimTimeout)
+	options.BatchSize = positiveOr(options.BatchSize, 1)
+	return options
+}
+
+func (c *Client) normalizeWorkerOptions(options WorkerOptions) workerConfig {
 	workerID := options.WorkerID
 	if workerID == "" {
-		workerID = "worker"
+		hostname, _ := os.Hostname()
+		workerID = fmt.Sprintf("%s:%d", hostname, os.Getpid())
 	}
-	claimTimeout := options.ClaimTimeout
-	if claimTimeout <= 0 {
-		claimTimeout = 120 * time.Second
+	concurrency := positiveOr(options.Concurrency, 1)
+	onError := options.OnError
+	if onError == nil {
+		onError = func(err error) {
+			c.logger.Printf("worker error: %v", err)
+		}
 	}
-	batchSize := options.BatchSize
-	if batchSize <= 0 {
-		batchSize = 1
+	return workerConfig{
+		batch: normalizeWorkBatchOptions(WorkBatchOptions{
+			WorkerID:     workerID,
+			ClaimTimeout: options.ClaimTimeout,
+			BatchSize:    positiveOr(options.BatchSize, concurrency),
+		}),
+		concurrency:  concurrency,
+		pollInterval: durationOr(options.PollInterval, defaultWorkerPollInterval),
+		onError:      onError,
 	}
+}
 
-	rows, err := c.db.QueryContext(ctx, `SELECT run_id, task_id, attempt, task_name, params, retry_strategy, max_attempts,
-              headers, wake_event, event_payload
-       FROM absurd.claim_task($1, $2, $3, $4)`, c.queueName, workerID, durationSeconds(claimTimeout), batchSize)
+func sleepContext(ctx context.Context, d time.Duration) error {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func (c *Client) claimTasks(ctx context.Context, options WorkBatchOptions) ([]claimedTask, error) {
+	opts := normalizeWorkBatchOptions(options)
+
+	rows, err := c.db.QueryContext(ctx, `SELECT run_id, task_id, attempt, task_name, params, headers, wake_event, event_payload
+	       FROM absurd.claim_task($1, $2, $3, $4)`, c.queueName, opts.WorkerID, durationSeconds(opts.ClaimTimeout), opts.BatchSize)
 	if err != nil {
-		return nil, 0, err
+		return nil, err
 	}
 	defer rows.Close()
 
 	var tasks []claimedTask
 	for rows.Next() {
 		var task claimedTask
-		var retryStrategy []byte
-		var maxAttempts any
 		var headers []byte
 		var wakeEvent *string
 		var eventPayload []byte
@@ -44,13 +80,11 @@ func (c *Client) claimTasks(ctx context.Context, options WorkBatchOptions) ([]cl
 			&task.Attempt,
 			&task.TaskName,
 			&task.ParamsRaw,
-			&retryStrategy,
-			&maxAttempts,
 			&headers,
 			&wakeEvent,
 			&eventPayload,
 		); err != nil {
-			return nil, 0, err
+			return nil, err
 		}
 		task.HeadersRaw = cloneRawJSON(headers)
 		if wakeEvent != nil {
@@ -60,22 +94,19 @@ func (c *Client) claimTasks(ctx context.Context, options WorkBatchOptions) ([]cl
 		tasks = append(tasks, task)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, 0, err
+		return nil, err
 	}
-	return tasks, claimTimeout, nil
+	return tasks, nil
 }
 
 func (c *Client) WorkBatch(ctx context.Context, options ...WorkBatchOptions) error {
-	var opts WorkBatchOptions
-	if len(options) > 0 {
-		opts = options[0]
-	}
-	tasks, claimTimeout, err := c.claimTasks(ctx, opts)
+	opts := normalizeWorkBatchOptions(first(options))
+	tasks, err := c.claimTasks(ctx, opts)
 	if err != nil {
 		return err
 	}
 	for _, task := range tasks {
-		if err := c.executeTask(ctx, task, claimTimeout); err != nil {
+		if err := c.executeTask(ctx, task, opts.ClaimTimeout); err != nil {
 			return err
 		}
 	}
@@ -83,85 +114,39 @@ func (c *Client) WorkBatch(ctx context.Context, options ...WorkBatchOptions) err
 }
 
 func (c *Client) RunWorker(ctx context.Context, options ...WorkerOptions) error {
-	var opts WorkerOptions
-	if len(options) > 0 {
-		opts = options[0]
-	}
-	workerID := opts.WorkerID
-	if workerID == "" {
-		hostname, _ := os.Hostname()
-		workerID = fmt.Sprintf("%s:%d", hostname, os.Getpid())
-	}
-	claimTimeout := opts.ClaimTimeout
-	if claimTimeout <= 0 {
-		claimTimeout = 120 * time.Second
-	}
-	concurrency := opts.Concurrency
-	if concurrency <= 0 {
-		concurrency = 1
-	}
-	batchSize := opts.BatchSize
-	if batchSize <= 0 {
-		batchSize = concurrency
-	}
-	pollInterval := opts.PollInterval
-	if pollInterval <= 0 {
-		pollInterval = 250 * time.Millisecond
-	}
-	onError := opts.OnError
-	if onError == nil {
-		onError = func(err error) {
-			c.logger.Printf("worker error: %v", err)
-		}
-	}
-
-	sem := make(chan struct{}, concurrency)
+	cfg := c.normalizeWorkerOptions(first(options))
+	sem := make(chan struct{}, cfg.concurrency)
 	var wg sync.WaitGroup
+	defer wg.Wait()
 
 	for {
-		select {
-		case <-ctx.Done():
-			wg.Wait()
-			return ctx.Err()
-		default:
+		if err := ctx.Err(); err != nil {
+			return err
 		}
 
-		available := cap(sem) - len(sem)
-		if available <= 0 {
-			select {
-			case <-ctx.Done():
-				wg.Wait()
-				return ctx.Err()
-			case <-time.After(pollInterval):
+		available := cfg.concurrency - len(sem)
+		if available == 0 {
+			if err := sleepContext(ctx, cfg.pollInterval); err != nil {
+				return err
 			}
 			continue
 		}
 
-		toClaim := batchSize
-		if toClaim > available {
-			toClaim = available
+		batch := cfg.batch
+		if batch.BatchSize > available {
+			batch.BatchSize = available
 		}
-		tasks, actualClaimTimeout, err := c.claimTasks(ctx, WorkBatchOptions{
-			WorkerID:     workerID,
-			ClaimTimeout: claimTimeout,
-			BatchSize:    toClaim,
-		})
+		tasks, err := c.claimTasks(ctx, batch)
 		if err != nil {
-			onError(err)
-			select {
-			case <-ctx.Done():
-				wg.Wait()
-				return ctx.Err()
-			case <-time.After(pollInterval):
+			cfg.onError(err)
+			if err := sleepContext(ctx, cfg.pollInterval); err != nil {
+				return err
 			}
 			continue
 		}
 		if len(tasks) == 0 {
-			select {
-			case <-ctx.Done():
-				wg.Wait()
-				return ctx.Err()
-			case <-time.After(pollInterval):
+			if err := sleepContext(ctx, cfg.pollInterval); err != nil {
+				return err
 			}
 			continue
 		}
@@ -169,13 +154,13 @@ func (c *Client) RunWorker(ctx context.Context, options ...WorkerOptions) error 
 		for _, task := range tasks {
 			sem <- struct{}{}
 			wg.Add(1)
-			go func(task claimedTask) {
+			go func(task claimedTask, claimTimeout time.Duration) {
 				defer wg.Done()
 				defer func() { <-sem }()
-				if err := c.executeTask(ctx, task, actualClaimTimeout); err != nil {
-					onError(err)
+				if err := c.executeTask(ctx, task, claimTimeout); err != nil {
+					cfg.onError(err)
 				}
-			}(task)
+			}(task, batch.ClaimTimeout)
 		}
 	}
 }

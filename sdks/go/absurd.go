@@ -15,7 +15,17 @@ import (
 	"github.com/lib/pq"
 )
 
-const maxQueueNameLength = 57
+const (
+	maxQueueNameLength        = 57
+	defaultQueueName          = "default"
+	defaultClientMaxAttempts  = 5
+	defaultClaimTimeout       = 120 * time.Second
+	defaultBatchWorkerID      = "worker"
+	defaultWorkerPollInterval = 250 * time.Millisecond
+	minHeartbeatInterval      = 500 * time.Millisecond
+	initialBackoff            = 50 * time.Millisecond
+	maxBackoff                = time.Second
+)
 
 // Errors
 var (
@@ -92,7 +102,6 @@ type SpawnOptions struct {
 
 // RetryTaskOptions configure retrying a failed task.
 type RetryTaskOptions struct {
-	QueueName   string
 	MaxAttempts int
 	SpawnNew    bool
 }
@@ -117,8 +126,7 @@ type AwaitEventOptions struct {
 
 // AwaitTaskResultOptions configure AwaitTaskResult.
 type AwaitTaskResultOptions struct {
-	QueueName string
-	Timeout   time.Duration
+	Timeout time.Duration
 }
 
 // WorkBatchOptions configure a single worker batch.
@@ -221,11 +229,7 @@ type TaskDefinition[P, R any] struct {
 
 // Task creates a typed task definition.
 func Task[P, R any](name string, handler TaskHandler[P, R], options ...TaskOptions) TaskDefinition[P, R] {
-	var opts TaskOptions
-	if len(options) > 0 {
-		opts = options[0]
-	}
-	return TaskDefinition[P, R]{name: name, handler: handler, options: opts}
+	return TaskDefinition[P, R]{name: name, handler: handler, options: first(options)}
 }
 
 func (t TaskDefinition[P, R]) Name() string { return t.name }
@@ -355,17 +359,14 @@ type Client struct {
 
 // New constructs a client.
 func New(options Options) (*Client, error) {
-	queueName := options.QueueName
-	if queueName == "" {
-		queueName = "default"
-	}
+	queueName := orString(options.QueueName, defaultQueueName)
 	validatedQueue, err := validateQueueName(queueName)
 	if err != nil {
 		return nil, err
 	}
 	defaultMaxAttempts := options.DefaultMaxAttempts
 	if defaultMaxAttempts == 0 {
-		defaultMaxAttempts = 5
+		defaultMaxAttempts = defaultClientMaxAttempts
 	}
 	if defaultMaxAttempts < 1 {
 		return nil, fmt.Errorf("default max attempts must be at least 1")
@@ -430,12 +431,8 @@ func (c *Client) MustRegister(task taskRegistration) {
 	}
 }
 
-func (c *Client) CreateQueue(ctx context.Context, queueName ...string) error {
-	queue := c.queueName
-	if len(queueName) > 0 && queueName[0] != "" {
-		queue = queueName[0]
-	}
-	validated, err := validateQueueName(queue)
+func (c *Client) CreateQueue(ctx context.Context, queueName string) error {
+	validated, err := validateQueueName(queueName)
 	if err != nil {
 		return err
 	}
@@ -443,12 +440,8 @@ func (c *Client) CreateQueue(ctx context.Context, queueName ...string) error {
 	return err
 }
 
-func (c *Client) DropQueue(ctx context.Context, queueName ...string) error {
-	queue := c.queueName
-	if len(queueName) > 0 && queueName[0] != "" {
-		queue = queueName[0]
-	}
-	validated, err := validateQueueName(queue)
+func (c *Client) DropQueue(ctx context.Context, queueName string) error {
+	validated, err := validateQueueName(queueName)
 	if err != nil {
 		return err
 	}
@@ -473,15 +466,11 @@ func (c *Client) ListQueues(ctx context.Context) ([]string, error) {
 	return queues, rows.Err()
 }
 
-func (c *Client) EmitEvent(ctx context.Context, eventName string, payload any, queueName ...string) error {
+func (c *Client) EmitEvent(ctx context.Context, queueName, eventName string, payload any) error {
 	if eventName == "" {
 		return fmt.Errorf("event name must be a non-empty string")
 	}
-	queue := c.queueName
-	if len(queueName) > 0 && queueName[0] != "" {
-		queue = queueName[0]
-	}
-	validated, err := validateQueueName(queue)
+	validated, err := validateQueueName(queueName)
 	if err != nil {
 		return err
 	}
@@ -494,10 +483,7 @@ func (c *Client) EmitEvent(ctx context.Context, eventName string, payload any, q
 }
 
 func (c *Client) Spawn(ctx context.Context, taskName string, params any, options ...SpawnOptions) (SpawnResult, error) {
-	var opts SpawnOptions
-	if len(options) > 0 {
-		opts = cloneSpawnOptions(options[0])
-	}
+	opts := cloneSpawnOptions(first(options))
 	if c.hooks.BeforeSpawn != nil {
 		var err error
 		opts, err = c.hooks.BeforeSpawn(taskName, params, cloneSpawnOptions(opts))
@@ -505,35 +491,9 @@ func (c *Client) Spawn(ctx context.Context, taskName string, params any, options
 			return SpawnResult{}, err
 		}
 	}
-	queue := c.queueName
-	maxAttempts := c.defaultMaxAttempts
-	var cancellation *CancellationPolicy
-
-	if registration, ok := c.registry[taskName]; ok {
-		queue = registration.queueName
-		if opts.QueueName != "" && opts.QueueName != queue {
-			return SpawnResult{}, fmt.Errorf("task %q is registered for queue %q but spawn requested queue %q", taskName, queue, opts.QueueName)
-		}
-		if registration.hasDefaultMaxAttempts {
-			maxAttempts = registration.defaultMaxAttempts
-		}
-		cancellation = cloneCancellationPolicy(registration.defaultCancellation)
-	} else if opts.QueueName != "" {
-		queue = opts.QueueName
-	}
-
-	if opts.MaxAttempts > 0 {
-		maxAttempts = opts.MaxAttempts
-	}
-	if opts.Cancellation != nil {
-		cancellation = cloneCancellationPolicy(opts.Cancellation)
-	}
-	validatedQueue, err := validateQueueName(queue)
+	validatedQueue, maxAttempts, cancellation, err := c.resolveSpawn(taskName, opts)
 	if err != nil {
 		return SpawnResult{}, err
-	}
-	if maxAttempts < 1 {
-		return SpawnResult{}, fmt.Errorf("max attempts must be at least 1")
 	}
 
 	paramsRaw, err := marshalJSON(params)
@@ -560,28 +520,17 @@ func (c *Client) Spawn(ctx context.Context, taskName string, params any, options
 	return result, nil
 }
 
-func (c *Client) FetchTaskResult(ctx context.Context, taskID string, options ...AwaitTaskResultOptions) (*TaskResultSnapshot, error) {
-	queue := c.queueName
-	if len(options) > 0 && options[0].QueueName != "" {
-		queue = options[0].QueueName
-	}
-	validatedQueue, err := validateQueueName(queue)
+func (c *Client) FetchTaskResult(ctx context.Context, queueName, taskID string) (*TaskResultSnapshot, error) {
+	validatedQueue, err := validateQueueName(queueName)
 	if err != nil {
 		return nil, err
 	}
 	return fetchTaskResultSnapshot(ctx, c.db, validatedQueue, taskID)
 }
 
-func (c *Client) AwaitTaskResult(ctx context.Context, taskID string, options ...AwaitTaskResultOptions) (TaskResultSnapshot, error) {
-	var opts AwaitTaskResultOptions
-	if len(options) > 0 {
-		opts = options[0]
-	}
-	queue := c.queueName
-	if opts.QueueName != "" {
-		queue = opts.QueueName
-	}
-	validatedQueue, err := validateQueueName(queue)
+func (c *Client) AwaitTaskResult(ctx context.Context, queueName, taskID string, options ...AwaitTaskResultOptions) (TaskResultSnapshot, error) {
+	opts := first(options)
+	validatedQueue, err := validateQueueName(queueName)
 	if err != nil {
 		return TaskResultSnapshot{}, err
 	}
@@ -590,16 +539,9 @@ func (c *Client) AwaitTaskResult(ctx context.Context, taskID string, options ...
 	}, taskID, opts.Timeout, nil)
 }
 
-func (c *Client) RetryTask(ctx context.Context, taskID string, options ...RetryTaskOptions) (SpawnResult, error) {
-	var opts RetryTaskOptions
-	if len(options) > 0 {
-		opts = options[0]
-	}
-	queue := c.queueName
-	if opts.QueueName != "" {
-		queue = opts.QueueName
-	}
-	validatedQueue, err := validateQueueName(queue)
+func (c *Client) RetryTask(ctx context.Context, queueName, taskID string, options ...RetryTaskOptions) (SpawnResult, error) {
+	opts := first(options)
+	validatedQueue, err := validateQueueName(queueName)
 	if err != nil {
 		return SpawnResult{}, err
 	}
@@ -623,12 +565,8 @@ func (c *Client) RetryTask(ctx context.Context, taskID string, options ...RetryT
 	return result, nil
 }
 
-func (c *Client) CancelTask(ctx context.Context, taskID string, queueName ...string) error {
-	queue := c.queueName
-	if len(queueName) > 0 && queueName[0] != "" {
-		queue = queueName[0]
-	}
-	validatedQueue, err := validateQueueName(queue)
+func (c *Client) CancelTask(ctx context.Context, queueName, taskID string) error {
+	validatedQueue, err := validateQueueName(queueName)
 	if err != nil {
 		return err
 	}
@@ -670,7 +608,7 @@ func fetchTaskResultSnapshot(ctx context.Context, db *sql.DB, queueName string, 
 
 func awaitTaskResultWithBackoff(ctx context.Context, fetch func(context.Context) (*TaskResultSnapshot, error), taskID string, timeout time.Duration, beforeSleep func() error) (TaskResultSnapshot, error) {
 	startedAt := time.Now()
-	delay := 50 * time.Millisecond
+	delay := initialBackoff
 	for {
 		snapshot, err := fetch(ctx)
 		if err != nil {
@@ -705,13 +643,47 @@ func awaitTaskResultWithBackoff(ctx context.Context, fetch func(context.Context)
 			return TaskResultSnapshot{}, ctx.Err()
 		case <-time.After(waitFor):
 		}
-		if delay < time.Second {
+		if delay < maxBackoff {
 			delay *= 2
-			if delay > time.Second {
-				delay = time.Second
+			if delay > maxBackoff {
+				delay = maxBackoff
 			}
 		}
 	}
+}
+
+func (c *Client) resolveSpawn(taskName string, opts SpawnOptions) (string, int, *CancellationPolicy, error) {
+	queue := c.queueName
+	maxAttempts := c.defaultMaxAttempts
+	var cancellation *CancellationPolicy
+
+	if registration, ok := c.registry[taskName]; ok {
+		queue = registration.queueName
+		if opts.QueueName != "" && opts.QueueName != queue {
+			return "", 0, nil, fmt.Errorf("task %q is registered for queue %q but spawn requested queue %q", taskName, queue, opts.QueueName)
+		}
+		if registration.hasDefaultMaxAttempts {
+			maxAttempts = registration.defaultMaxAttempts
+		}
+		cancellation = cloneCancellationPolicy(registration.defaultCancellation)
+	} else {
+		queue = orString(opts.QueueName, queue)
+	}
+
+	if opts.MaxAttempts > 0 {
+		maxAttempts = opts.MaxAttempts
+	}
+	if maxAttempts < 1 {
+		return "", 0, nil, fmt.Errorf("max attempts must be at least 1")
+	}
+	if opts.Cancellation != nil {
+		cancellation = cloneCancellationPolicy(opts.Cancellation)
+	}
+	validatedQueue, err := validateQueueName(queue)
+	if err != nil {
+		return "", 0, nil, err
+	}
+	return validatedQueue, maxAttempts, cancellation, nil
 }
 
 func completeTaskRun(ctx context.Context, db *sql.DB, queueName string, runID string, result any) error {
@@ -788,6 +760,43 @@ func cloneMap(in map[string]any) map[string]any {
 		out[key] = value
 	}
 	return out
+}
+
+func zero[T any]() T {
+	var zero T
+	return zero
+}
+
+func first[T any](values []T) T {
+	switch len(values) {
+	case 0:
+		return zero[T]()
+	case 1:
+		return values[0]
+	default:
+		panic(fmt.Sprintf("absurd: expected 0 or 1 optional arguments, got %d", len(values)))
+	}
+}
+
+func orString(value, fallback string) string {
+	if value != "" {
+		return value
+	}
+	return fallback
+}
+
+func positiveOr(value, fallback int) int {
+	if value > 0 {
+		return value
+	}
+	return fallback
+}
+
+func durationOr(value, fallback time.Duration) time.Duration {
+	if value > 0 {
+		return value
+	}
+	return fallback
 }
 
 func durationSeconds(d time.Duration) int {

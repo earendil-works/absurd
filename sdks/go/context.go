@@ -52,7 +52,7 @@ func newTaskContext(parent context.Context, client *Client, queueName string, ta
 	}
 	taskCtx.Context = context.WithValue(parent, taskContextKey{}, taskCtx)
 
-	rows, err := client.db.QueryContext(taskCtx, `SELECT checkpoint_name, state, status, owner_run_id, updated_at
+	rows, err := client.db.QueryContext(taskCtx, `SELECT checkpoint_name, state
        FROM absurd.get_task_checkpoint_states($1, $2, $3)`, queueName, task.TaskID, task.RunID)
 	if err != nil {
 		return nil, err
@@ -62,10 +62,7 @@ func newTaskContext(parent context.Context, client *Client, queueName string, ta
 	for rows.Next() {
 		var checkpointName string
 		var state []byte
-		var status string
-		var ownerRunID string
-		var updatedAt time.Time
-		if err := rows.Scan(&checkpointName, &state, &status, &ownerRunID, &updatedAt); err != nil {
+		if err := rows.Scan(&checkpointName, &state); err != nil {
 			return nil, err
 		}
 		taskCtx.checkpointCache[checkpointName] = normalizeRawJSON(state)
@@ -147,14 +144,10 @@ func (t *TaskContext) lookupCheckpoint(ctx context.Context, checkpointName strin
 		return cloneRawJSON(cached), true, nil
 	}
 
-	row := t.client.db.QueryRowContext(ctx, `SELECT checkpoint_name, state, status, owner_run_id, updated_at
+	row := t.client.db.QueryRowContext(ctx, `SELECT state
        FROM absurd.get_task_checkpoint_state($1, $2, $3)`, t.queueName, t.taskID, checkpointName)
-	var name string
 	var state []byte
-	var status string
-	var ownerRunID string
-	var updatedAt time.Time
-	if err := row.Scan(&name, &state, &status, &ownerRunID, &updatedAt); err != nil {
+	if err := row.Scan(&state); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, false, nil
 		}
@@ -178,7 +171,7 @@ func (t *TaskContext) persistCheckpoint(ctx context.Context, checkpointName stri
 		checkpointName,
 		string(raw),
 		t.runID,
-		durationSecondsOrDefault(t.claimTimeout, 120*time.Second),
+		durationSecondsOrDefault(t.claimTimeout, defaultClaimTimeout),
 	)
 	if err != nil {
 		return mapTaskStateError(err)
@@ -195,25 +188,18 @@ func (t *TaskContext) scheduleRun(ctx context.Context, wakeAt time.Time) error {
 }
 
 // AwaitTaskResult waits for another task to reach a terminal state.
-func (t *TaskContext) AwaitTaskResult(ctx context.Context, taskID string, options ...AwaitTaskResultOptions) (TaskResultSnapshot, error) {
-	var opts AwaitTaskResultOptions
-	if len(options) > 0 {
-		opts = options[0]
-	}
-	queue := t.queueName
-	if opts.QueueName != "" {
-		queue = opts.QueueName
-	}
-	validatedQueue, err := validateQueueName(queue)
+func (t *TaskContext) AwaitTaskResult(ctx context.Context, queueName, taskID string, options ...AwaitTaskResultOptions) (TaskResultSnapshot, error) {
+	opts := first(options)
+	validatedQueue, err := validateQueueName(queueName)
 	if err != nil {
 		return TaskResultSnapshot{}, err
 	}
 	if validatedQueue == t.queueName {
-		return TaskResultSnapshot{}, fmt.Errorf("TaskContext.AwaitTaskResult cannot wait on tasks in the same queue because this can deadlock workers. Spawn the child in a different queue and pass QueueName")
+		return TaskResultSnapshot{}, fmt.Errorf("TaskContext.AwaitTaskResult cannot wait on tasks in the same queue because this can deadlock workers. Spawn the child in a different queue")
 	}
 	heartbeatInterval := t.claimTimeout / 2
-	if heartbeatInterval < 500*time.Millisecond {
-		heartbeatInterval = 500 * time.Millisecond
+	if heartbeatInterval < minHeartbeatInterval {
+		heartbeatInterval = minHeartbeatInterval
 	}
 	nextHeartbeatAt := time.Now().Add(heartbeatInterval)
 	return awaitTaskResultWithBackoff(ctx, func(ctx context.Context) (*TaskResultSnapshot, error) {
@@ -231,16 +217,14 @@ func (t *TaskContext) AwaitTaskResult(ctx context.Context, taskID string, option
 func Step[T any](ctx context.Context, name string, fn func(context.Context) (T, error)) (T, error) {
 	handle, err := BeginStep[T](ctx, name)
 	if err != nil {
-		var zero T
-		return zero, err
+		return zero[T](), err
 	}
 	if handle.Done {
 		return handle.State, nil
 	}
 	value, err := fn(ctx)
 	if err != nil {
-		var zero T
-		return zero, err
+		return zero[T](), err
 	}
 	return handle.Complete(ctx, value)
 }
@@ -257,14 +241,12 @@ func Do(ctx context.Context, name string, fn func(context.Context) error) error 
 func BeginStep[T any](ctx context.Context, name string) (StepHandle[T], error) {
 	task, err := requireTaskContext(ctx)
 	if err != nil {
-		var zero StepHandle[T]
-		return zero, err
+		return zero[StepHandle[T]](), err
 	}
 	checkpointName := task.nextCheckpointName(name)
 	raw, found, err := task.lookupCheckpoint(ctx, checkpointName)
 	if err != nil {
-		var zero StepHandle[T]
-		return zero, err
+		return zero[StepHandle[T]](), err
 	}
 	if !found {
 		return StepHandle[T]{
@@ -275,8 +257,7 @@ func BeginStep[T any](ctx context.Context, name string) (StepHandle[T], error) {
 	}
 	var value T
 	if err := unmarshalJSON(raw, &value); err != nil {
-		var zero StepHandle[T]
-		return zero, err
+		return zero[StepHandle[T]](), err
 	}
 	return StepHandle[T]{
 		Name:           name,
@@ -331,14 +312,10 @@ func SleepUntil(ctx context.Context, stepName string, wakeAt time.Time) error {
 
 // AwaitEvent durably waits for an event and returns its payload.
 func AwaitEvent[T any](ctx context.Context, eventName string, options ...AwaitEventOptions) (T, error) {
-	var opts AwaitEventOptions
-	if len(options) > 0 {
-		opts = options[0]
-	}
+	opts := first(options)
 	task, err := requireTaskContext(ctx)
 	if err != nil {
-		var zero T
-		return zero, err
+		return zero[T](), err
 	}
 	stepName := opts.StepName
 	if stepName == "" {
@@ -347,22 +324,19 @@ func AwaitEvent[T any](ctx context.Context, eventName string, options ...AwaitEv
 	checkpointName := task.nextCheckpointName(stepName)
 	raw, found, err := task.lookupCheckpoint(ctx, checkpointName)
 	if err != nil {
-		var zero T
-		return zero, err
+		return zero[T](), err
 	}
 	if found {
 		var value T
 		if err := unmarshalJSON(raw, &value); err != nil {
-			var zero T
-			return zero, err
+			return zero[T](), err
 		}
 		return value, nil
 	}
 	if task.wakeEvent == eventName && len(task.eventRaw) == 0 {
 		task.wakeEvent = ""
 		task.eventRaw = nil
-		var zero T
-		return zero, newTimeoutError(`timed out waiting for event %q`, eventName)
+		return zero[T](), newTimeoutError(`timed out waiting for event %q`, eventName)
 	}
 
 	var timeoutSeconds any = nil
@@ -381,12 +355,10 @@ func AwaitEvent[T any](ctx context.Context, eventName string, options ...AwaitEv
 	var shouldSuspend bool
 	var payload []byte
 	if err := row.Scan(&shouldSuspend, &payload); err != nil {
-		var zero T
-		return zero, mapTaskStateError(err)
+		return zero[T](), mapTaskStateError(err)
 	}
 	if shouldSuspend {
-		var zero T
-		return zero, errSuspend
+		return zero[T](), errSuspend
 	}
 	raw = normalizeRawJSON(payload)
 	task.mu.Lock()
@@ -395,8 +367,7 @@ func AwaitEvent[T any](ctx context.Context, eventName string, options ...AwaitEv
 	task.mu.Unlock()
 	var value T
 	if err := unmarshalJSON(raw, &value); err != nil {
-		var zero T
-		return zero, err
+		return zero[T](), err
 	}
 	return value, nil
 }

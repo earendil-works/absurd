@@ -42,6 +42,8 @@ func main() {
 		}
 	}()
 
+	queue := app.QueueName()
+
 	spawned, err := app.Spawn(ctx, "provision-user", ProvisionUserParams{
 		UserID: userID,
 		Email:  email,
@@ -52,7 +54,7 @@ func main() {
 
 	fmt.Printf("spawned: %+v\n", spawned)
 
-	snapshot, err := app.FetchTaskResult(ctx, spawned.TaskID)
+	snapshot, err := app.FetchTaskResult(ctx, queue, spawned.TaskID)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -60,7 +62,7 @@ func main() {
 
 	if shouldAwait {
 		fmt.Printf("waiting for completion; emit user-activated:%s on queue default\n", userID)
-		final, err := app.AwaitTaskResult(ctx, spawned.TaskID, absurd.AwaitTaskResultOptions{
+		final, err := app.AwaitTaskResult(ctx, queue, spawned.TaskID, absurd.AwaitTaskResultOptions{
 			Timeout: 5 * time.Minute,
 		})
 		if err != nil {

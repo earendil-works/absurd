@@ -118,7 +118,7 @@ func newTestClient(t *testing.T, queue string) *absurd.Client {
 	if err != nil {
 		t.Fatalf("New failed: %v", err)
 	}
-	if err := client.CreateQueue(context.Background()); err != nil {
+	if err := client.CreateQueue(context.Background(), queue); err != nil {
 		t.Fatalf("CreateQueue failed: %v", err)
 	}
 	return client
@@ -196,7 +196,7 @@ func TestWorkBatchProcessesTaskAndPreservesTaskContext(t *testing.T) {
 		t.Fatalf("WorkBatch failed: %v", err)
 	}
 
-	snapshot, err := client.FetchTaskResult(context.Background(), spawned.TaskID)
+	snapshot, err := client.FetchTaskResult(context.Background(), queue, spawned.TaskID)
 	if err != nil {
 		t.Fatalf("FetchTaskResult failed: %v", err)
 	}
@@ -293,7 +293,7 @@ func TestQuickstartStyleAwaitEventFlow(t *testing.T) {
 		t.Fatalf("WorkBatch failed: %v", err)
 	}
 
-	snapshot, err := client.FetchTaskResult(context.Background(), spawned.TaskID)
+	snapshot, err := client.FetchTaskResult(context.Background(), queue, spawned.TaskID)
 	if err != nil {
 		t.Fatalf("FetchTaskResult failed: %v", err)
 	}
@@ -302,14 +302,14 @@ func TestQuickstartStyleAwaitEventFlow(t *testing.T) {
 	}
 
 	activatedAt := time.Now().UTC().Round(time.Second)
-	if err := client.EmitEvent(context.Background(), "user-activated:alice", activationEvent{ActivatedAt: activatedAt}); err != nil {
+	if err := client.EmitEvent(context.Background(), queue, "user-activated:alice", activationEvent{ActivatedAt: activatedAt}); err != nil {
 		t.Fatalf("EmitEvent failed: %v", err)
 	}
 	if err := client.WorkBatch(context.Background(), absurd.WorkBatchOptions{WorkerID: "waiter"}); err != nil {
 		t.Fatalf("WorkBatch after event failed: %v", err)
 	}
 
-	finalSnapshot, err := client.AwaitTaskResult(context.Background(), spawned.TaskID, absurd.AwaitTaskResultOptions{Timeout: 5 * time.Second})
+	finalSnapshot, err := client.AwaitTaskResult(context.Background(), queue, spawned.TaskID, absurd.AwaitTaskResultOptions{Timeout: 5 * time.Second})
 	if err != nil {
 		t.Fatalf("AwaitTaskResult failed: %v", err)
 	}
@@ -363,7 +363,7 @@ func TestRunWorkerAndAwaitTaskResult(t *testing.T) {
 		t.Fatalf("Spawn failed: %v", err)
 	}
 
-	finalSnapshot, err := client.AwaitTaskResult(context.Background(), spawned.TaskID, absurd.AwaitTaskResultOptions{Timeout: 10 * time.Second})
+	finalSnapshot, err := client.AwaitTaskResult(context.Background(), queue, spawned.TaskID, absurd.AwaitTaskResultOptions{Timeout: 10 * time.Second})
 	if err != nil {
 		t.Fatalf("AwaitTaskResult failed: %v", err)
 	}
