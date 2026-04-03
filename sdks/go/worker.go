@@ -20,7 +20,7 @@ type workerConfig struct {
 
 func normalizeWorkBatchOptions(options WorkBatchOptions) WorkBatchOptions {
 	options.WorkerID = orString(options.WorkerID, defaultBatchWorkerID)
-	options.ClaimTimeout = durationOr(options.ClaimTimeout, defaultClaimTimeout)
+	options.ClaimTimeout = normalizeLeaseDuration(options.ClaimTimeout, defaultClaimTimeout)
 	options.BatchSize = positiveOr(options.BatchSize, 1)
 	return options
 }
@@ -280,9 +280,10 @@ func (w *leaseWatchdog) stop() {
 
 func (c *Client) executeTask(ctx context.Context, task claimedTask, claimTimeout time.Duration, fatalOnLeaseTimeout bool) (err error) {
 	completionCtx := context.WithoutCancel(ctx)
+	effectiveLease := normalizeLeaseDuration(claimTimeout, defaultClaimTimeout)
 	watchdog := newLeaseWatchdog(c.logger, task.TaskName, task.TaskID, fatalOnLeaseTimeout)
 	defer watchdog.stop()
-	watchdog.schedule(claimTimeout)
+	watchdog.schedule(effectiveLease)
 
 	defer func() {
 		if v := recover(); v != nil {
@@ -303,7 +304,7 @@ func (c *Client) executeTask(ctx context.Context, task claimedTask, claimTimeout
 		c.logger.Printf("[absurd] %v", err)
 		return failTaskRun(completionCtx, c.db, c.queueName, task.RunID, err)
 	}
-	taskCtx, err := newTaskContext(ctx, c, registration.queueName, task, claimTimeout, func(d time.Duration) {
+	taskCtx, err := newTaskContext(ctx, c, registration.queueName, task, effectiveLease, func(d time.Duration) {
 		watchdog.schedule(d)
 	})
 	if err != nil {

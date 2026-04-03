@@ -25,10 +25,10 @@ type TaskContext struct {
 	attempt      int
 	claimTimeout time.Duration
 
-	headersRaw       json.RawMessage
-	wakeEvent        string
-	eventRaw         json.RawMessage
-	onLeaseExtended  func(time.Duration)
+	headersRaw      json.RawMessage
+	wakeEvent       string
+	eventRaw        json.RawMessage
+	onLeaseExtended func(time.Duration)
 
 	mu              sync.Mutex
 	headersCache    map[string]any
@@ -44,6 +44,7 @@ func newTaskContext(parent context.Context, client *Client, queueName string, ta
 		return nil, fmt.Errorf("%w: %w", errInvalidTaskHeaders, err)
 	}
 
+	effectiveLease := normalizeLeaseDuration(claimTimeout, defaultClaimTimeout)
 	taskCtx := &TaskContext{
 		client:          client,
 		queueName:       queueName,
@@ -51,7 +52,7 @@ func newTaskContext(parent context.Context, client *Client, queueName string, ta
 		runID:           task.RunID,
 		taskName:        task.TaskName,
 		attempt:         task.Attempt,
-		claimTimeout:    claimTimeout,
+		claimTimeout:    effectiveLease,
 		headersRaw:      cloneRawJSON(task.HeadersRaw),
 		wakeEvent:       task.WakeEvent,
 		eventRaw:        cloneRawJSON(task.EventRaw),
@@ -210,11 +211,8 @@ func (t *TaskContext) scheduleRun(ctx context.Context, wakeAt time.Time) error {
 }
 
 func (t *TaskContext) heartbeat(ctx context.Context, d time.Duration) error {
-	lease := d
-	if lease <= 0 {
-		lease = t.claimTimeout
-	}
-	_, err := t.client.db.ExecContext(ctx, `SELECT absurd.extend_claim($1, $2, $3)`, t.queueName, t.runID, durationSecondsOrDefault(lease, t.claimTimeout))
+	lease := normalizeLeaseDuration(d, t.claimTimeout)
+	_, err := t.client.db.ExecContext(ctx, `SELECT absurd.extend_claim($1, $2, $3)`, t.queueName, t.runID, durationSeconds(lease))
 	if err != nil {
 		return mapTaskStateError(err)
 	}
@@ -383,12 +381,6 @@ func AwaitEvent[T any](ctx context.Context, eventName string, options ...AwaitEv
 		}
 		return value, nil
 	}
-	if task.wakeEvent == eventName && len(task.eventRaw) == 0 {
-		task.wakeEvent = ""
-		task.eventRaw = nil
-		return zero[T](), newTimeoutError(`timed out waiting for event %q`, eventName)
-	}
-
 	var timeoutSeconds any = nil
 	if opts.Timeout > 0 {
 		timeoutSeconds = durationSeconds(opts.Timeout)
@@ -412,9 +404,17 @@ func AwaitEvent[T any](ctx context.Context, eventName string, options ...AwaitEv
 	if shouldSuspend {
 		return zero[T](), errSuspend
 	}
+	if payload == nil {
+		task.mu.Lock()
+		task.wakeEvent = ""
+		task.eventRaw = nil
+		task.mu.Unlock()
+		return zero[T](), newTimeoutError(`timed out waiting for event %q`, eventName)
+	}
 	raw = normalizeRawJSON(payload)
 	task.mu.Lock()
 	task.checkpointCache[checkpointName] = cloneRawJSON(raw)
+	task.wakeEvent = ""
 	task.eventRaw = nil
 	task.mu.Unlock()
 	var value T

@@ -386,7 +386,7 @@ func New(options Options) (*Client, error) {
 			dsn = os.Getenv("ABSURD_DATABASE_URL")
 		}
 		if dsn == "" {
-			dsn = os.Getenv("PGDATABASE")
+			dsn = dsnFromPGDatabase(os.Getenv("PGDATABASE"))
 		}
 		if dsn == "" {
 			dsn = "postgresql://localhost/absurd"
@@ -810,6 +810,25 @@ func durationOr(value, fallback time.Duration) time.Duration {
 		return value
 	}
 	return fallback
+}
+
+func dsnFromPGDatabase(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	if strings.Contains(value, "://") || strings.Contains(value, "=") {
+		return value
+	}
+	return "dbname=" + value
+}
+
+func normalizeLeaseDuration(d time.Duration, fallback time.Duration) time.Duration {
+	seconds := durationSecondsOrDefault(d, fallback)
+	if seconds <= 0 {
+		return 0
+	}
+	return time.Duration(seconds) * time.Second
 }
 
 func durationSeconds(d time.Duration) int {
