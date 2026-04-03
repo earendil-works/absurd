@@ -272,12 +272,19 @@ func (c *Client) executeTask(ctx context.Context, task claimedTask, claimTimeout
 	defer cancelExecution()
 
 	var leaseTimedOut atomic.Bool
+	var watchdogFailErr error
+	var watchdogFailErrMu sync.Mutex
 	watchdog := newLeaseWatchdog(c.logger, task.TaskID, func() {
 		if !leaseTimedOut.CompareAndSwap(false, true) {
 			return
 		}
 		watchdogErr := fmt.Errorf("task exceeded claim timeout and may have lost lease")
-		_ = failTaskRunWithTraceback(completionCtx, c.db, c.queueName, task.RunID, "LeaseTimeout", watchdogErr.Error(), debug.Stack())
+		if err := failTaskRunWithTraceback(completionCtx, c.db, c.queueName, task.RunID, "LeaseTimeout", watchdogErr.Error(), debug.Stack()); err != nil {
+			c.logger.Printf("[absurd] failed to persist lease-timeout failure for task %s run %s: %v", task.TaskID, task.RunID, err)
+			watchdogFailErrMu.Lock()
+			watchdogFailErr = err
+			watchdogFailErrMu.Unlock()
+		}
 		cancelExecution()
 	})
 	defer watchdog.stop()
@@ -327,6 +334,11 @@ func (c *Client) executeTask(ctx context.Context, task claimedTask, claimTimeout
 			return nil
 		default:
 			if leaseTimedOut.Load() {
+				watchdogFailErrMu.Lock()
+				defer watchdogFailErrMu.Unlock()
+				if watchdogFailErr != nil {
+					return fmt.Errorf("failed to persist lease-timeout failure: %w", watchdogFailErr)
+				}
 				return nil
 			}
 			c.logger.Printf("[absurd] task execution failed: %v", err)
@@ -334,6 +346,11 @@ func (c *Client) executeTask(ctx context.Context, task claimedTask, claimTimeout
 		}
 	}
 	if leaseTimedOut.Load() {
+		watchdogFailErrMu.Lock()
+		defer watchdogFailErrMu.Unlock()
+		if watchdogFailErr != nil {
+			return fmt.Errorf("failed to persist lease-timeout failure: %w", watchdogFailErr)
+		}
 		return nil
 	}
 	return completeTaskRun(completionCtx, c.db, c.queueName, task.RunID, result)

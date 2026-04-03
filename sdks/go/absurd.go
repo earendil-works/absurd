@@ -383,6 +383,9 @@ func New(options Options) (*Client, error) {
 			dsn = os.Getenv("ABSURD_DATABASE_URL")
 		}
 		if dsn == "" {
+			dsn = os.Getenv("PGDATABASE")
+		}
+		if dsn == "" {
 			dsn = "postgresql://localhost/absurd"
 		}
 		sqlDB, err := sql.Open("postgres", dsn)
