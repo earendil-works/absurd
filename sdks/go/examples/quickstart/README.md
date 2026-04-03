@@ -5,7 +5,7 @@ SDK shape.
 
 Files:
 
-- `worker/main.go` — durable worker with `Step`, `BeginStep` / `Complete`, and `AwaitEvent`
+- `worker/main.go` — durable worker with `Step`, `BeginStep` / `CompleteStep`, and `AwaitEvent`
 - `client/main.go` — spawn a task and inspect or await its result
 
 ## Run

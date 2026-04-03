@@ -25,3 +25,6 @@ Early work in progress. The initial implementation covers:
 - task result polling
 
 See `examples/quickstart` for the current shape.
+
+For the full repository documentation, see the
+[Go SDK guide](../../docs/sdk-go.md).
