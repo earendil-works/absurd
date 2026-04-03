@@ -8,8 +8,6 @@ import (
 	"fmt"
 	"sync"
 	"time"
-
-	"github.com/lib/pq"
 )
 
 type taskContextKey struct{}
@@ -79,25 +77,11 @@ func newTaskContext(parent context.Context, client *Client, queueName string, ta
 	return taskCtx, nil
 }
 
-func (t *TaskContext) TaskID() string {
-	return t.taskID
-}
-
-func (t *TaskContext) RunID() string {
-	return t.runID
-}
-
-func (t *TaskContext) TaskName() string {
-	return t.taskName
-}
-
-func (t *TaskContext) QueueName() string {
-	return t.queueName
-}
-
-func (t *TaskContext) Attempt() int {
-	return t.attempt
-}
+func (t *TaskContext) TaskID() string    { return t.taskID }
+func (t *TaskContext) RunID() string     { return t.runID }
+func (t *TaskContext) TaskName() string  { return t.taskName }
+func (t *TaskContext) QueueName() string { return t.queueName }
+func (t *TaskContext) Attempt() int      { return t.attempt }
 
 func (t *TaskContext) Headers() map[string]any {
 	t.mu.Lock()
@@ -415,18 +399,5 @@ func EmitEvent(ctx context.Context, eventName string, payload any) error {
 		return err
 	}
 	_, err = task.client.db.ExecContext(ctx, `SELECT absurd.emit_event($1, $2, $3)`, task.queueName, eventName, string(raw))
-	return err
-}
-
-func mapTaskStateError(err error) error {
-	var pqErr *pq.Error
-	if errors.As(err, &pqErr) {
-		switch string(pqErr.Code) {
-		case "AB001":
-			return errCancelled
-		case "AB002":
-			return errFailedRun
-		}
-	}
 	return err
 }

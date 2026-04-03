@@ -1,4 +1,4 @@
-package absurd
+package absurdtest
 
 import (
 	"context"
@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	absurd "github.com/earendil-works/absurd/sdks/go"
+	_ "github.com/lib/pq"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
 )
@@ -92,7 +94,7 @@ func setupTestDatabase(t *testing.T) *sql.DB {
 		}
 
 		_, filename, _, _ := runtime.Caller(0)
-		schemaPath := filepath.Join(filepath.Dir(filename), "..", "..", "sql", "absurd.sql")
+		schemaPath := filepath.Join(filepath.Dir(filename), "..", "..", "..", "sql", "absurd.sql")
 		var schema []byte
 		schema, testSetupErr = os.ReadFile(schemaPath)
 		if testSetupErr != nil {
@@ -106,10 +108,10 @@ func setupTestDatabase(t *testing.T) *sql.DB {
 	return testDB
 }
 
-func newTestClient(t *testing.T, queue string) *Client {
+func newTestClient(t *testing.T, queue string) *absurd.Client {
 	t.Helper()
 	db := setupTestDatabase(t)
-	client, err := New(Options{
+	client, err := absurd.New(absurd.Options{
 		DB:        db,
 		QueueName: queue,
 	})
@@ -144,10 +146,10 @@ func TestWorkBatchProcessesTaskAndPreservesTaskContext(t *testing.T) {
 		derivedFound bool
 	)
 
-	welcomeTask := Task(
+	welcomeTask := absurd.Task(
 		"send-welcome",
 		func(ctx context.Context, params welcomeParams) (welcomeResult, error) {
-			task := MustTaskContext(ctx)
+			task := absurd.MustTaskContext(ctx)
 			if task.QueueName() != queue {
 				t.Fatalf("unexpected queue: %s", task.QueueName())
 			}
@@ -155,9 +157,9 @@ func TestWorkBatchProcessesTaskAndPreservesTaskContext(t *testing.T) {
 			derivedCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 			defer cancel()
 
-			profile, err := Step(derivedCtx, "load-profile", func(stepCtx context.Context) (map[string]int, error) {
+			profile, err := absurd.Step(derivedCtx, "load-profile", func(stepCtx context.Context) (map[string]int, error) {
 				stepCalls++
-				derivedTask, ok := TaskFromContext(stepCtx)
+				derivedTask, ok := absurd.TaskFromContext(stepCtx)
 				if !ok {
 					t.Fatal("task context not found in derived context")
 				}
@@ -171,7 +173,7 @@ func TestWorkBatchProcessesTaskAndPreservesTaskContext(t *testing.T) {
 				return welcomeResult{}, err
 			}
 
-			handle, err := BeginStep[map[string]any](ctx, "audit")
+			handle, err := absurd.BeginStep[map[string]any](ctx, "audit")
 			if err != nil {
 				return welcomeResult{}, err
 			}
@@ -190,7 +192,7 @@ func TestWorkBatchProcessesTaskAndPreservesTaskContext(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Spawn failed: %v", err)
 	}
-	if err := client.WorkBatch(context.Background(), WorkBatchOptions{WorkerID: "sync-worker"}); err != nil {
+	if err := client.WorkBatch(context.Background(), absurd.WorkBatchOptions{WorkerID: "sync-worker"}); err != nil {
 		t.Fatalf("WorkBatch failed: %v", err)
 	}
 
@@ -201,7 +203,7 @@ func TestWorkBatchProcessesTaskAndPreservesTaskContext(t *testing.T) {
 	if snapshot == nil {
 		t.Fatal("expected task snapshot")
 	}
-	if snapshot.State != TaskCompleted {
+	if snapshot.State != absurd.TaskCompleted {
 		t.Fatalf("unexpected task state: %s", snapshot.State)
 	}
 	var result welcomeResult
@@ -239,11 +241,11 @@ func TestQuickstartStyleAwaitEventFlow(t *testing.T) {
 	queue := randomQueueName("go_quickstart")
 	client := newTestClient(t, queue)
 
-	provisionTask := Task(
+	provisionTask := absurd.Task(
 		"provision-user",
 		func(ctx context.Context, params provisionParams) (provisionResult, error) {
-			task := MustTaskContext(ctx)
-			_, err := Step(ctx, "create-user-record", func(ctx context.Context) (map[string]string, error) {
+			task := absurd.MustTaskContext(ctx)
+			_, err := absurd.Step(ctx, "create-user-record", func(ctx context.Context) (map[string]string, error) {
 				return map[string]string{
 					"user_id": params.UserID,
 					"email":   params.Email,
@@ -253,7 +255,7 @@ func TestQuickstartStyleAwaitEventFlow(t *testing.T) {
 				return provisionResult{}, err
 			}
 
-			outage, err := BeginStep[map[string]any](ctx, "demo-transient-outage")
+			outage, err := absurd.BeginStep[map[string]any](ctx, "demo-transient-outage")
 			if err != nil {
 				return provisionResult{}, err
 			}
@@ -264,7 +266,7 @@ func TestQuickstartStyleAwaitEventFlow(t *testing.T) {
 			}
 
 			eventName := fmt.Sprintf("user-activated:%s", params.UserID)
-			activation, err := AwaitEvent[activationEvent](ctx, eventName, AwaitEventOptions{Timeout: time.Hour})
+			activation, err := absurd.AwaitEvent[activationEvent](ctx, eventName, absurd.AwaitEventOptions{Timeout: time.Hour})
 			if err != nil {
 				return provisionResult{}, err
 			}
@@ -275,7 +277,7 @@ func TestQuickstartStyleAwaitEventFlow(t *testing.T) {
 				ActivatedAt: activation.ActivatedAt,
 			}, nil
 		},
-		TaskOptions{DefaultMaxAttempts: 2},
+		absurd.TaskOptions{DefaultMaxAttempts: 2},
 	)
 	client.MustRegister(provisionTask)
 
@@ -287,7 +289,7 @@ func TestQuickstartStyleAwaitEventFlow(t *testing.T) {
 		t.Fatalf("Spawn failed: %v", err)
 	}
 
-	if err := client.WorkBatch(context.Background(), WorkBatchOptions{WorkerID: "waiter"}); err != nil {
+	if err := client.WorkBatch(context.Background(), absurd.WorkBatchOptions{WorkerID: "waiter"}); err != nil {
 		t.Fatalf("WorkBatch failed: %v", err)
 	}
 
@@ -295,7 +297,7 @@ func TestQuickstartStyleAwaitEventFlow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FetchTaskResult failed: %v", err)
 	}
-	if snapshot == nil || snapshot.State != TaskSleeping {
+	if snapshot == nil || snapshot.State != absurd.TaskSleeping {
 		t.Fatalf("expected sleeping snapshot, got %#v", snapshot)
 	}
 
@@ -303,15 +305,15 @@ func TestQuickstartStyleAwaitEventFlow(t *testing.T) {
 	if err := client.EmitEvent(context.Background(), "user-activated:alice", activationEvent{ActivatedAt: activatedAt}); err != nil {
 		t.Fatalf("EmitEvent failed: %v", err)
 	}
-	if err := client.WorkBatch(context.Background(), WorkBatchOptions{WorkerID: "waiter"}); err != nil {
+	if err := client.WorkBatch(context.Background(), absurd.WorkBatchOptions{WorkerID: "waiter"}); err != nil {
 		t.Fatalf("WorkBatch after event failed: %v", err)
 	}
 
-	finalSnapshot, err := client.AwaitTaskResult(context.Background(), spawned.TaskID, AwaitTaskResultOptions{Timeout: 5 * time.Second})
+	finalSnapshot, err := client.AwaitTaskResult(context.Background(), spawned.TaskID, absurd.AwaitTaskResultOptions{Timeout: 5 * time.Second})
 	if err != nil {
 		t.Fatalf("AwaitTaskResult failed: %v", err)
 	}
-	if finalSnapshot.State != TaskCompleted {
+	if finalSnapshot.State != absurd.TaskCompleted {
 		t.Fatalf("unexpected final state: %s", finalSnapshot.State)
 	}
 	var result provisionResult
@@ -330,10 +332,10 @@ func TestRunWorkerAndAwaitTaskResult(t *testing.T) {
 	queue := randomQueueName("go_worker")
 	client := newTestClient(t, queue)
 
-	workerTask := Task(
+	workerTask := absurd.Task(
 		"double",
 		func(ctx context.Context, params map[string]int) (map[string]int, error) {
-			value, err := Step(ctx, "double", func(ctx context.Context) (int, error) {
+			value, err := absurd.Step(ctx, "double", func(ctx context.Context) (int, error) {
 				return params["value"] * 2, nil
 			})
 			if err != nil {
@@ -349,7 +351,7 @@ func TestRunWorkerAndAwaitTaskResult(t *testing.T) {
 
 	workerDone := make(chan error, 1)
 	go func() {
-		workerDone <- client.RunWorker(workerCtx, WorkerOptions{
+		workerDone <- client.RunWorker(workerCtx, absurd.WorkerOptions{
 			WorkerID:     "bg-worker",
 			Concurrency:  2,
 			PollInterval: 50 * time.Millisecond,
@@ -361,11 +363,11 @@ func TestRunWorkerAndAwaitTaskResult(t *testing.T) {
 		t.Fatalf("Spawn failed: %v", err)
 	}
 
-	finalSnapshot, err := client.AwaitTaskResult(context.Background(), spawned.TaskID, AwaitTaskResultOptions{Timeout: 10 * time.Second})
+	finalSnapshot, err := client.AwaitTaskResult(context.Background(), spawned.TaskID, absurd.AwaitTaskResultOptions{Timeout: 10 * time.Second})
 	if err != nil {
 		t.Fatalf("AwaitTaskResult failed: %v", err)
 	}
-	if finalSnapshot.State != TaskCompleted {
+	if finalSnapshot.State != absurd.TaskCompleted {
 		t.Fatalf("unexpected final state: %s", finalSnapshot.State)
 	}
 	var result map[string]int
