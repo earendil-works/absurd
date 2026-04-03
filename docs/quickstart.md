@@ -666,6 +666,6 @@ while Postgres keeps the checkpoints, retries, and wake-up state.
 - Read the **[Concepts](./concepts.md)** page to understand the full model
 - Read **[Cleanup and Retention](./cleanup.md)** before production so task and event data do not grow forever
 - Read the **[Living with Code Changes](./patterns/living-with-code-changes.md)** pattern if your tasks may survive deploys or long sleeps
-- Explore the **[TypeScript SDK](./sdk-typescript.md)**, **[Python SDK](./sdk-python.md)**, or **[Go SDK](./sdk-go.md)** API reference
+- Explore the **[TypeScript SDK](./sdks/typescript.md)**, **[Python SDK](./sdks/python.md)**, or **[Go SDK](./sdks/go.md)** API reference
 - Use **[Habitat](./habitat.md)** to monitor tasks in a web dashboard
 - Use **[absurdctl](./absurdctl.md)** for advanced queue and task management

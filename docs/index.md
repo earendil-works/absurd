@@ -173,9 +173,9 @@ them race-free.
 
 ## SDKs
 
-- **[TypeScript SDK](./sdk-typescript.md)** — full API reference for Node.js / TypeScript
-- **[Python SDK](./sdk-python.md)** — sync and async clients using psycopg
-- **[Go SDK](./sdk-go.md)** — typed `context.Context`-based API *(experimental)*
+- **[TypeScript SDK](./sdks/typescript.md)** — full API reference for Node.js / TypeScript
+- **[Python SDK](./sdks/python.md)** — sync and async clients using psycopg
+- **[Go SDK](./sdks/go.md)** — typed `context.Context`-based API *(experimental)*
 
 ## Tools
 
