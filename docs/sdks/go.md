@@ -198,25 +198,39 @@ type SendEmailResult struct {
 
 var sendEmailTask = absurd.Task(
     "send-email",
-    func(ctx context.Context, params SendEmailParams) (SendEmailResult, error) {
-        rendered, err := absurd.Step(ctx, "render", func(ctx context.Context) (string, error) {
-            return "<h1>" + params.Template + "</h1>", nil
-        })
+    func(
+        ctx context.Context,
+        params SendEmailParams,
+    ) (SendEmailResult, error) {
+        rendered, err := absurd.Step(
+            ctx,
+            "render",
+            func(ctx context.Context) (string, error) {
+                return "<h1>" + params.Template + "</h1>", nil
+            },
+        )
         if err != nil {
             return SendEmailResult{}, err
         }
 
-        return absurd.Step(ctx, "send", func(ctx context.Context) (SendEmailResult, error) {
-            return SendEmailResult{
-                Accepted: []string{params.To},
-                HTML:     rendered,
-            }, nil
-        })
+        return absurd.Step(
+            ctx,
+            "send",
+            func(ctx context.Context) (SendEmailResult, error) {
+                return SendEmailResult{
+                    Accepted: []string{params.To},
+                    HTML:     rendered,
+                }, nil
+            },
+        )
     },
 )
 
 func main() {
-    app, err := absurd.New(absurd.Options{QueueName: "default", DriverName: "pgx"})
+    app, err := absurd.New(absurd.Options{
+        QueueName:  "default",
+        DriverName: "pgx",
+    })
     if err != nil {
         log.Fatal(err)
     }
@@ -275,7 +289,12 @@ if err != nil {
     log.Fatal(err)
 }
 
-log.Printf("task=%s run=%s created=%v", result.TaskID, result.RunID, result.Created)
+log.Printf(
+    "task=%s run=%s created=%v",
+    result.TaskID,
+    result.RunID,
+    result.Created,
+)
 ```
 
 If you already have a typed task definition, you can also spawn through it:
@@ -376,9 +395,13 @@ log.Println(task.TaskID(), task.RunID(), task.Attempt(), task.Headers())
 Run an idempotent step.  The result is checkpointed in Postgres.
 
 ```go
-result, err := absurd.Step(ctx, "fetch-data", func(ctx context.Context) (map[string]any, error) {
-    return map[string]any{"ok": true, "source": "demo"}, nil
-})
+result, err := absurd.Step(
+    ctx,
+    "fetch-data",
+    func(ctx context.Context) (map[string]any, error) {
+        return map[string]any{"ok": true, "source": "demo"}, nil
+    },
+)
 ```
 
 ### `absurd.BeginStep(ctx, name)` + `handle.CompleteStep(ctx, value)`
@@ -411,7 +434,11 @@ if err := absurd.SleepFor(ctx, "cooldown", time.Hour); err != nil {
     return err
 }
 
-if err := absurd.SleepUntil(ctx, "deadline", time.Date(2025, 12, 31, 0, 0, 0, 0, time.UTC)); err != nil {
+if err := absurd.SleepUntil(
+    ctx,
+    "deadline",
+    time.Date(2025, 12, 31, 0, 0, 0, 0, time.UTC),
+); err != nil {
     return err
 }
 ```
@@ -442,7 +469,12 @@ Durably wait for another task's terminal result from inside a task handler.
 This must target a **different queue** than the current task's queue.
 
 ```go
-child, err := app.Spawn(ctx, "child-task", map[string]any{}, absurd.SpawnOptions{QueueName: "child-workers"})
+child, err := app.Spawn(
+    ctx,
+    "child-task",
+    map[string]any{},
+    absurd.SpawnOptions{QueueName: "child-workers"},
+)
 if err != nil {
     return err
 }
@@ -475,7 +507,11 @@ if err := absurd.Heartbeat(ctx, 5*time.Minute); err != nil {
 Emit an event on the current task's queue.
 
 ```go
-if err := absurd.EmitEvent(ctx, "order.completed", map[string]any{"order_id": "42"}); err != nil {
+if err := absurd.EmitEvent(
+    ctx,
+    "order.completed",
+    map[string]any{"order_id": "42"},
+); err != nil {
     return err
 }
 ```
@@ -572,7 +608,11 @@ Called before every `Spawn()`.  Use it to inject headers or modify options.
 ```go
 app, err := absurd.New(absurd.Options{
     Hooks: absurd.Hooks{
-        BeforeSpawn: func(taskName string, params any, options absurd.SpawnOptions) (absurd.SpawnOptions, error) {
+        BeforeSpawn: func(
+            taskName string,
+            params any,
+            options absurd.SpawnOptions,
+        ) (absurd.SpawnOptions, error) {
             if options.Headers == nil {
                 options.Headers = map[string]any{}
             }
@@ -590,7 +630,10 @@ Wrap task execution for tracing, logging, or context propagation.
 ```go
 app, err := absurd.New(absurd.Options{
     Hooks: absurd.Hooks{
-        WrapTaskExecution: func(task *absurd.TaskContext, execute func() (any, error)) (any, error) {
+        WrapTaskExecution: func(
+            task *absurd.TaskContext,
+            execute func() (any, error),
+        ) (any, error) {
             traceID := task.Headers()["trace_id"]
             log.Printf("starting task %s trace=%v", task.TaskID(), traceID)
             return execute()

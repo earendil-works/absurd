@@ -95,7 +95,9 @@ The important part is the failure story:
       },
       async (params, ctx) => {
         const user = await ctx.step("create-user-record", async () => {
-          console.log(`[${ctx.taskID}] creating user record for ${params.user_id}`);
+          console.log(
+            `[${ctx.taskID}] creating user record for ${params.user_id}`,
+          );
           return {
             user_id: params.user_id,
             email: params.email,
@@ -103,18 +105,23 @@ The important part is the failure story:
           };
         });
 
-        // Demo only: fail once after the first checkpoint so the retry behavior is visible.
+        // Demo only: fail once after the first checkpoint so retry behavior
+        // is visible.
         const outage = await ctx.beginStep<{ simulated: boolean }>(
           "demo-transient-outage",
         );
         if (!outage.done) {
-          console.log(`[${ctx.taskID}] simulating a temporary email provider outage`);
+          console.log(
+            `[${ctx.taskID}] simulating a temporary email provider outage`,
+          );
           await ctx.completeStep(outage, { simulated: true });
           throw new Error("temporary email provider outage");
         }
 
         const delivery = await ctx.step("send-activation-email", async () => {
-          console.log(`[${ctx.taskID}] sending activation email to ${user.email}`);
+          console.log(
+            `[${ctx.taskID}] sending activation email to ${user.email}`,
+          );
           return {
             sent: true,
             provider: "demo-mail",
@@ -122,7 +129,9 @@ The important part is the failure story:
           };
         });
 
-        console.log(`[${ctx.taskID}] waiting for user-activated:${user.user_id}`);
+        console.log(
+          `[${ctx.taskID}] waiting for user-activated:${user.user_id}`,
+        );
         const activation = (await ctx.awaitEvent(
           `user-activated:${user.user_id}`,
           {
@@ -157,7 +166,9 @@ The important part is the failure story:
     @app.register_task("provision-user", default_max_attempts=5)
     def provision_user(params, ctx):
         def create_user_record():
-            print(f"[{ctx.task_id}] creating user record for {params['user_id']}")
+            print(
+                f"[{ctx.task_id}] creating user record for {params['user_id']}"
+            )
             return {
                 "user_id": params["user_id"],
                 "email": params["email"],
@@ -166,15 +177,20 @@ The important part is the failure story:
 
         user = ctx.step("create-user-record", create_user_record)
 
-        # Demo only: fail once after the first checkpoint so the retry behavior is visible.
+        # Demo only: fail once after the first checkpoint so the retry
+        # behavior is visible.
         outage = ctx.begin_step("demo-transient-outage")
         if not outage.done:
-            print(f"[{ctx.task_id}] simulating a temporary email provider outage")
+            print(
+                f"[{ctx.task_id}] simulating a temporary email provider outage"
+            )
             ctx.complete_step(outage, {"simulated": True})
             raise RuntimeError("temporary email provider outage")
 
         def send_activation_email():
-            print(f"[{ctx.task_id}] sending activation email to {user['email']}")
+            print(
+                f"[{ctx.task_id}] sending activation email to {user['email']}"
+            )
             return {
                 "sent": True,
                 "provider": "demo-mail",
@@ -184,7 +200,10 @@ The important part is the failure story:
         delivery = ctx.step("send-activation-email", send_activation_email)
 
         print(f"[{ctx.task_id}] waiting for user-activated:{user['user_id']}")
-        activation = ctx.await_event(f"user-activated:{user['user_id']}", timeout=3600)
+        activation = ctx.await_event(
+            f"user-activated:{user['user_id']}",
+            timeout=3600,
+        )
 
         return {
             "user_id": user["user_id"],
@@ -250,42 +269,73 @@ The important part is the failure story:
 
     var provisionUserTask = absurd.Task(
         "provision-user",
-        func(ctx context.Context, params ProvisionUserParams) (ProvisionUserResult, error) {
+        func(
+            ctx context.Context,
+            params ProvisionUserParams,
+        ) (ProvisionUserResult, error) {
             task := absurd.MustTaskContext(ctx)
 
-            user, err := absurd.Step(ctx, "create-user-record", func(ctx context.Context) (UserRecord, error) {
-                log.Printf("[%s] creating user record for %s", task.TaskID(), params.UserID)
-                return UserRecord{
-                    UserID:    params.UserID,
-                    Email:     params.Email,
-                    CreatedAt: time.Now().UTC(),
-                }, nil
-            })
+            user, err := absurd.Step(
+                ctx,
+                "create-user-record",
+                func(ctx context.Context) (UserRecord, error) {
+                    log.Printf(
+                        "[%s] creating user record for %s",
+                        task.TaskID(),
+                        params.UserID,
+                    )
+                    return UserRecord{
+                        UserID:    params.UserID,
+                        Email:     params.Email,
+                        CreatedAt: time.Now().UTC(),
+                    }, nil
+                },
+            )
             if err != nil {
                 return ProvisionUserResult{}, err
             }
 
-            // Demo only: fail once after the first checkpoint so the retry behavior is visible.
-            outage, err := absurd.BeginStep[OutageState](ctx, "demo-transient-outage")
+            // Demo only: fail once after the first checkpoint so the retry
+            // behavior is visible.
+            outage, err := absurd.BeginStep[OutageState](
+                ctx,
+                "demo-transient-outage",
+            )
             if err != nil {
                 return ProvisionUserResult{}, err
             }
             if !outage.Done {
-                log.Printf("[%s] simulating a temporary email provider outage", task.TaskID())
-                if _, err := outage.CompleteStep(ctx, OutageState{Simulated: true}); err != nil {
+                log.Printf(
+                    "[%s] simulating a temporary email provider outage",
+                    task.TaskID(),
+                )
+                if _, err := outage.CompleteStep(
+                    ctx,
+                    OutageState{Simulated: true},
+                ); err != nil {
                     return ProvisionUserResult{}, err
                 }
-                return ProvisionUserResult{}, errors.New("temporary email provider outage")
+                return ProvisionUserResult{}, errors.New(
+                    "temporary email provider outage",
+                )
             }
 
-            delivery, err := absurd.Step(ctx, "send-activation-email", func(ctx context.Context) (DeliveryResult, error) {
-                log.Printf("[%s] sending activation email to %s", task.TaskID(), user.Email)
-                return DeliveryResult{
-                    Sent:     true,
-                    Provider: "demo-mail",
-                    To:       user.Email,
-                }, nil
-            })
+            delivery, err := absurd.Step(
+                ctx,
+                "send-activation-email",
+                func(ctx context.Context) (DeliveryResult, error) {
+                    log.Printf(
+                        "[%s] sending activation email to %s",
+                        task.TaskID(),
+                        user.Email,
+                    )
+                    return DeliveryResult{
+                        Sent:     true,
+                        Provider: "demo-mail",
+                        To:       user.Email,
+                    }, nil
+                },
+            )
             if err != nil {
                 return ProvisionUserResult{}, err
             }
@@ -293,9 +343,11 @@ The important part is the failure story:
             eventName := fmt.Sprintf("user-activated:%s", user.UserID)
             log.Printf("[%s] waiting for %s", task.TaskID(), eventName)
 
-            activation, err := absurd.AwaitEvent[ActivationEvent](ctx, eventName, absurd.AwaitEventOptions{
-                Timeout: time.Hour,
-            })
+            activation, err := absurd.AwaitEvent[ActivationEvent](
+                ctx,
+                eventName,
+                absurd.AwaitEventOptions{Timeout: time.Hour},
+            )
             if err != nil {
                 return ProvisionUserResult{}, err
             }
@@ -312,7 +364,10 @@ The important part is the failure story:
     )
 
     func main() {
-        app, err := absurd.New(absurd.Options{QueueName: "default", DriverName: "pgx"})
+        app, err := absurd.New(absurd.Options{
+            QueueName:  "default",
+            DriverName: "pgx",
+        })
         if err != nil {
             log.Fatal(err)
         }
@@ -321,7 +376,10 @@ The important part is the failure story:
         app.MustRegister(provisionUserTask)
 
         log.Println("worker listening on queue default")
-        if err := app.RunWorker(context.Background(), absurd.WorkerOptions{Concurrency: 4}); err != nil {
+        if err := app.RunWorker(
+            context.Background(),
+            absurd.WorkerOptions{Concurrency: 4},
+        ); err != nil {
             log.Fatal(err)
         }
     }
@@ -374,11 +432,15 @@ store, inspect later, or await.
     });
 
     console.log("spawned:", spawned);
-    console.log("current snapshot:", await app.fetchTaskResult(spawned.taskID));
+    console.log(
+      "current snapshot:",
+      await app.fetchTaskResult(spawned.taskID),
+    );
 
     if (shouldAwait) {
       console.log(
-        `waiting for completion; emit user-activated:${userID} on queue default`,
+        `waiting for completion; emit user-activated:${userID} ` +
+          "on queue default",
       );
       console.log(
         "final snapshot:",
@@ -415,8 +477,14 @@ store, inspect later, or await.
     print("current snapshot:", app.fetch_task_result(spawned["task_id"]))
 
     if should_await:
-        print(f"waiting for completion; emit user-activated:{user_id} on queue default")
-        print("final snapshot:", app.await_task_result(spawned["task_id"], timeout=300))
+        print(
+            f"waiting for completion; emit user-activated:{user_id} "
+            "on queue default"
+        )
+        print(
+            "final snapshot:",
+            app.await_task_result(spawned["task_id"], timeout=300),
+        )
 
     app.close()
     ```
@@ -459,7 +527,10 @@ store, inspect later, or await.
 
         ctx := context.Background()
 
-        app, err := absurd.New(absurd.Options{QueueName: "default", DriverName: "pgx"})
+        app, err := absurd.New(absurd.Options{
+            QueueName:  "default",
+            DriverName: "pgx",
+        })
         if err != nil {
             log.Fatal(err)
         }
@@ -475,17 +546,28 @@ store, inspect later, or await.
 
         fmt.Printf("spawned: %+v\n", spawned)
 
-        snapshot, err := app.FetchTaskResult(ctx, app.QueueName(), spawned.TaskID)
+        snapshot, err := app.FetchTaskResult(
+            ctx,
+            app.QueueName(),
+            spawned.TaskID,
+        )
         if err != nil {
             log.Fatal(err)
         }
         fmt.Printf("current snapshot: %+v\n", snapshot)
 
         if shouldAwait {
-            fmt.Printf("waiting for completion; emit user-activated:%s on queue default\n", userID)
-            final, err := app.AwaitTaskResult(ctx, app.QueueName(), spawned.TaskID, absurd.AwaitTaskResultOptions{
-                Timeout: 5 * time.Minute,
-            })
+            fmt.Printf(
+                "waiting for completion; emit user-activated:%s "+
+                    "on queue default\n",
+                userID,
+            )
+            final, err := app.AwaitTaskResult(
+                ctx,
+                app.QueueName(),
+                spawned.TaskID,
+                absurd.AwaitTaskResultOptions{Timeout: 5 * time.Minute},
+            )
             if err != nil {
                 log.Fatal(err)
             }
@@ -574,7 +656,10 @@ activation event from another terminal.
     func main() {
         ctx := context.Background()
 
-        app, err := absurd.New(absurd.Options{QueueName: "default", DriverName: "pgx"})
+        app, err := absurd.New(absurd.Options{
+            QueueName:  "default",
+            DriverName: "pgx",
+        })
         if err != nil {
             log.Fatal(err)
         }
@@ -590,15 +675,22 @@ activation event from another terminal.
 
         fmt.Printf("%+v\n", spawned)
 
-        snapshot, err := app.FetchTaskResult(ctx, app.QueueName(), spawned.TaskID)
+        snapshot, err := app.FetchTaskResult(
+            ctx,
+            app.QueueName(),
+            spawned.TaskID,
+        )
         if err != nil {
             log.Fatal(err)
         }
         fmt.Printf("%+v\n", snapshot)
 
-        final, err := app.AwaitTaskResult(ctx, app.QueueName(), spawned.TaskID, absurd.AwaitTaskResultOptions{
-            Timeout: 5 * time.Minute,
-        })
+        final, err := app.AwaitTaskResult(
+            ctx,
+            app.QueueName(),
+            spawned.TaskID,
+            absurd.AwaitTaskResultOptions{Timeout: 5 * time.Minute},
+        )
         if err != nil {
             log.Fatal(err)
         }
@@ -620,7 +712,20 @@ activation event from another terminal.
     >>> app.fetch_task_result(spawned["task_id"])
     TaskResultSnapshot(state='pending')
     >>> app.await_task_result(spawned["task_id"], timeout=300)
-    TaskResultSnapshot(state='completed', result={'user_id': 'bob', 'email': 'bob@example.com', 'delivery': {'sent': True, 'provider': 'demo-mail', 'to': 'bob@example.com'}, 'status': 'active', 'activated_at': '2026-04-02T12:00:00Z'})
+    TaskResultSnapshot(
+      state='completed',
+      result={
+        'user_id': 'bob',
+        'email': 'bob@example.com',
+        'delivery': {
+          'sent': True,
+          'provider': 'demo-mail',
+          'to': 'bob@example.com',
+        },
+        'status': 'active',
+        'activated_at': '2026-04-02T12:00:00Z',
+      },
+    )
     ```
 
 === "TypeScript"

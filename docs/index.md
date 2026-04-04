@@ -39,13 +39,22 @@ them race-free.
         return { paymentId: `pay-${params.orderId}`, amount: params.amount };
       });
 
-      const shipment = await ctx.awaitEvent(`shipment.packed:${params.orderId}`);
+      const shipment = await ctx.awaitEvent(
+        `shipment.packed:${params.orderId}`,
+      );
 
       await ctx.step('send-notification', async () => {
-        return { sentTo: params.email, trackingNumber: shipment.trackingNumber };
+        return {
+          sentTo: params.email,
+          trackingNumber: shipment.trackingNumber,
+        };
       });
 
-      return { orderId: params.orderId, payment, trackingNumber: shipment.trackingNumber };
+      return {
+        orderId: params.orderId,
+        payment,
+        trackingNumber: shipment.trackingNumber,
+      };
     });
 
     await app.startWorker();
@@ -114,28 +123,42 @@ them race-free.
 
     var orderFulfillmentTask = absurd.Task(
         "order-fulfillment",
-        func(ctx context.Context, params OrderFulfillmentParams) (map[string]any, error) {
-            payment, err := absurd.Step(ctx, "process-payment", func(ctx context.Context) (map[string]any, error) {
-                return map[string]any{
-                    "payment_id": "pay-" + params.OrderID,
-                    "amount":     params.Amount,
-                }, nil
-            })
+        func(
+            ctx context.Context,
+            params OrderFulfillmentParams,
+        ) (map[string]any, error) {
+            payment, err := absurd.Step(
+                ctx,
+                "process-payment",
+                func(ctx context.Context) (map[string]any, error) {
+                    return map[string]any{
+                        "payment_id": "pay-" + params.OrderID,
+                        "amount":     params.Amount,
+                    }, nil
+                },
+            )
             if err != nil {
                 return nil, err
             }
 
-            shipment, err := absurd.AwaitEvent[ShipmentEvent](ctx, "shipment.packed:"+params.OrderID)
+            shipment, err := absurd.AwaitEvent[ShipmentEvent](
+                ctx,
+                "shipment.packed:"+params.OrderID,
+            )
             if err != nil {
                 return nil, err
             }
 
-            if _, err := absurd.Step(ctx, "send-notification", func(ctx context.Context) (map[string]any, error) {
-                return map[string]any{
-                    "sent_to":         params.Email,
-                    "tracking_number": shipment.TrackingNumber,
-                }, nil
-            }); err != nil {
+            if _, err := absurd.Step(
+                ctx,
+                "send-notification",
+                func(ctx context.Context) (map[string]any, error) {
+                    return map[string]any{
+                        "sent_to":         params.Email,
+                        "tracking_number": shipment.TrackingNumber,
+                    }, nil
+                },
+            ); err != nil {
                 return nil, err
             }
 
@@ -148,7 +171,10 @@ them race-free.
     )
 
     func main() {
-        app, err := absurd.New(absurd.Options{QueueName: "default", DriverName: "pgx"})
+        app, err := absurd.New(absurd.Options{
+            QueueName:  "default",
+            DriverName: "pgx",
+        })
         if err != nil {
             log.Fatal(err)
         }

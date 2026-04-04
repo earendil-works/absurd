@@ -26,7 +26,10 @@ least one queue.  See **[Database Setup and Migrations](../database.md)** and th
 from absurd_sdk import Absurd
 
 # From a connection string
-app = Absurd("postgresql://user:pass@localhost:5432/mydb", queue_name="default")
+app = Absurd(
+    "postgresql://user:pass@localhost:5432/mydb",
+    queue_name="default",
+)
 
 # From an existing psycopg Connection
 from psycopg import Connection
@@ -43,7 +46,10 @@ app = Absurd()
 ```python
 from absurd_sdk import AsyncAbsurd
 
-app = AsyncAbsurd("postgresql://user:pass@localhost:5432/mydb", queue_name="default")
+app = AsyncAbsurd(
+    "postgresql://user:pass@localhost:5432/mydb",
+    queue_name="default",
+)
 ```
 
 ### Constructor Parameters
@@ -101,7 +107,12 @@ result = app.spawn(
     "send-email",
     {"to": "user@example.com", "template": "welcome"},
     max_attempts=10,
-    retry_strategy={"kind": "exponential", "base_seconds": 2, "factor": 2, "max_seconds": 300},
+    retry_strategy={
+        "kind": "exponential",
+        "base_seconds": 2,
+        "factor": 2,
+        "max_seconds": 300,
+    },
     headers={"trace_id": "..."},
     idempotency_key="welcome:user-42",
 )
@@ -282,7 +293,11 @@ async def fetch_data():
 
 result = await ctx.step("fetch-data", fetch_data)
 handle = await ctx.begin_step("agent-turn")
-result = handle.state if handle.done else await ctx.complete_step(handle, {"ok": True})
+result = (
+    handle.state
+    if handle.done
+    else await ctx.complete_step(handle, {"ok": True})
+)
 await ctx.sleep_for("cooldown", 3600)
 payload = await ctx.await_event("order.shipped")
 child_result = await ctx.await_task_result(
@@ -393,7 +408,10 @@ def get_trace_id():
 
 
 def inject_trace(task_name, params, options):
-    options["headers"] = {**(options.get("headers") or {}), "trace_id": get_trace_id()}
+    options["headers"] = {
+        **(options.get("headers") or {}),
+        "trace_id": get_trace_id(),
+    }
     return options
 
 app = Absurd(hooks={"before_spawn": inject_trace})

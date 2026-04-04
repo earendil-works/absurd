@@ -71,9 +71,13 @@ retries.
 === "Go"
 
     ```go
-    result, err := absurd.Step(ctx, "process-payment", func(ctx context.Context) (any, error) {
-        return stripe.Charges.Create(ctx, params.Amount)
-    })
+    result, err := absurd.Step(
+        ctx,
+        "process-payment",
+        func(ctx context.Context) (any, error) {
+            return stripe.Charges.Create(ctx, params.Amount)
+        },
+    )
     if err != nil {
         return err
     }
@@ -148,15 +152,21 @@ first emit for a given name wins, subsequent emits are ignored.
     }
 
     // In a task handler — suspend until the event arrives
-    shipment, err := absurd.AwaitEvent[ShipmentEvent](ctx, "shipment.packed:order-42")
+    shipment, err := absurd.AwaitEvent[ShipmentEvent](
+        ctx,
+        "shipment.packed:order-42",
+    )
     if err != nil {
         return err
     }
 
     // From anywhere (another task, an API handler, etc.)
-    err = app.EmitEvent(ctx, app.QueueName(), "shipment.packed:order-42", map[string]any{
-        "tracking_number": "XYZ",
-    })
+    err = app.EmitEvent(
+        ctx,
+        app.QueueName(),
+        "shipment.packed:order-42",
+        map[string]any{"tracking_number": "XYZ"},
+    )
     if err != nil {
         return err
     }
@@ -185,13 +195,20 @@ the task and schedules a future run.
     from datetime import datetime, timezone
 
     ctx.sleep_for("wait-for-cooldown", 3600)  # 1 hour
-    ctx.sleep_until("wait-for-deadline", datetime(2025, 12, 31, tzinfo=timezone.utc))
+    ctx.sleep_until(
+        "wait-for-deadline",
+        datetime(2025, 12, 31, tzinfo=timezone.utc),
+    )
     ```
 
 === "Go"
 
     ```go
-    if err := absurd.SleepFor(ctx, "wait-for-cooldown", time.Hour); err != nil {
+    if err := absurd.SleepFor(
+        ctx,
+        "wait-for-cooldown",
+        time.Hour,
+    ); err != nil {
         return err
     }
 
@@ -365,10 +382,14 @@ idempotency keys, derive one from the task identity.
     ```go
     task := absurd.MustTaskContext(ctx)
 
-    payment, err := absurd.Step(ctx, "process-payment", func(ctx context.Context) (any, error) {
-        idempotencyKey := fmt.Sprintf("%s:payment", task.TaskID())
-        return stripe.Charges.Create(ctx, params.Amount, idempotencyKey)
-    })
+    payment, err := absurd.Step(
+        ctx,
+        "process-payment",
+        func(ctx context.Context) (any, error) {
+            idempotencyKey := fmt.Sprintf("%s:payment", task.TaskID())
+            return stripe.Charges.Create(ctx, params.Amount, idempotencyKey)
+        },
+    )
     if err != nil {
         return err
     }

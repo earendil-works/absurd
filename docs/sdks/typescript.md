@@ -85,7 +85,12 @@ const { taskID, runID, attempt, created } = await app.spawn(
   { to: 'user@example.com', template: 'welcome' },
   {
     maxAttempts: 10,
-    retryStrategy: { kind: 'exponential', baseSeconds: 2, factor: 2, maxSeconds: 300 },
+    retryStrategy: {
+      kind: 'exponential',
+      baseSeconds: 2,
+      factor: 2,
+      maxSeconds: 300,
+    },
     headers: { traceId: '...' },
     idempotencyKey: 'welcome:user-42',
   }
@@ -288,7 +293,8 @@ const worker = await app.startWorker({
   batchSize: 4,          // tasks to claim per poll (default: concurrency)
   pollInterval: 0.25,    // seconds between idle polls (default: 0.25)
   workerId: 'web-1',     // identifier for tracking (default: hostname:pid)
-  fatalOnLeaseTimeout: true, // exit process if task exceeds 2x lease (default: true)
+  // exit process if task exceeds 2x lease (default: true)
+  fatalOnLeaseTimeout: true,
   onError: (err) => console.error(err),
 });
 
@@ -349,7 +355,10 @@ const app = new Absurd({
 Wraps task handler execution.  Must call `execute()`:
 
 ```typescript
-const runWithTraceContext = async <T>(traceId: unknown, execute: () => Promise<T>) => {
+const runWithTraceContext = async <T>(
+  traceId: unknown,
+  execute: () => Promise<T>,
+) => {
   return await execute();
 };
 

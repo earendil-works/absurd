@@ -133,7 +133,8 @@ For most deployments, the simplest production setup is an ordinary OS cron job.
 Run every day at 03:17:
 
 ```cron
-17 3 * * * PGDATABASE=postgresql://user:pass@db/app absurdctl cleanup default 30 >> /var/log/absurd-cleanup.log 2>&1
+PGDATABASE=postgresql://user:pass@db/app
+17 3 * * * absurdctl cleanup default 30 >> /var/log/absurd-cleanup.log 2>&1
 ```
 
 For multiple queues, use a wrapper script:
@@ -299,39 +300,50 @@ A practical way to do that is:
 
         app.MustRegister(absurd.Task(
             "cleanup-retention",
-            func(ctx context.Context, params CleanupParams) (CleanupResult, error) {
+            func(
+                ctx context.Context,
+                params CleanupParams,
+            ) (CleanupResult, error) {
                 ttlSeconds := params.TTLDays * 86400
                 limit := params.Limit
                 if limit == 0 {
                     limit = 1000
                 }
 
-                deletedTasks, err := absurd.Step(ctx, "cleanup-tasks", func(ctx context.Context) (int, error) {
-                    var deleted int
-                    err := db.QueryRowContext(
-                        ctx,
-                        "select absurd.cleanup_tasks($1, $2, $3)",
-                        params.TargetQueue,
-                        ttlSeconds,
-                        limit,
-                    ).Scan(&deleted)
-                    return deleted, err
-                })
+                deletedTasks, err := absurd.Step(
+                    ctx,
+                    "cleanup-tasks",
+                    func(ctx context.Context) (int, error) {
+                        var deleted int
+                        err := db.QueryRowContext(
+                            ctx,
+                            "select absurd.cleanup_tasks($1, $2, $3)",
+                            params.TargetQueue,
+                            ttlSeconds,
+                            limit,
+                        ).Scan(&deleted)
+                        return deleted, err
+                    },
+                )
                 if err != nil {
                     return CleanupResult{}, err
                 }
 
-                deletedEvents, err := absurd.Step(ctx, "cleanup-events", func(ctx context.Context) (int, error) {
-                    var deleted int
-                    err := db.QueryRowContext(
-                        ctx,
-                        "select absurd.cleanup_events($1, $2, $3)",
-                        params.TargetQueue,
-                        ttlSeconds,
-                        limit,
-                    ).Scan(&deleted)
-                    return deleted, err
-                })
+                deletedEvents, err := absurd.Step(
+                    ctx,
+                    "cleanup-events",
+                    func(ctx context.Context) (int, error) {
+                        var deleted int
+                        err := db.QueryRowContext(
+                            ctx,
+                            "select absurd.cleanup_events($1, $2, $3)",
+                            params.TargetQueue,
+                            ttlSeconds,
+                            limit,
+                        ).Scan(&deleted)
+                        return deleted, err
+                    },
+                )
                 if err != nil {
                     return CleanupResult{}, err
                 }
@@ -468,19 +480,22 @@ Then run that enqueue script from cron:
 === "TypeScript"
 
     ```cron
-    17 3 * * * PGDATABASE=postgresql://user:pass@db/app node /srv/app/bin/spawn-cleanup.js
+    PGDATABASE=postgresql://user:pass@db/app
+    17 3 * * * node /srv/app/bin/spawn-cleanup.js
     ```
 
 === "Python"
 
     ```cron
-    17 3 * * * PGDATABASE=postgresql://user:pass@db/app uv run /srv/app/bin/spawn-cleanup.py
+    PGDATABASE=postgresql://user:pass@db/app
+    17 3 * * * uv run /srv/app/bin/spawn-cleanup.py
     ```
 
 === "Go"
 
     ```cron
-    17 3 * * * PGDATABASE=postgresql://user:pass@db/app /srv/app/bin/spawn-cleanup
+    PGDATABASE=postgresql://user:pass@db/app
+    17 3 * * * /srv/app/bin/spawn-cleanup
     ```
 
 This example handles one cleanup batch per task run.  For steady-state daily

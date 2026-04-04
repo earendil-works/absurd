@@ -37,7 +37,10 @@ Absurd returns the already-existing task instead of creating a duplicate.
     function dedupKey(taskName: string, expr: string, nextAt: Date): string {
       const slot = nextAt.toISOString().slice(0, 16); // minute precision, UTC
       const raw = `${taskName}|${expr}|${slot}`;
-      return `cron:${createHash("sha256").update(raw).digest("hex").slice(0, 24)}`;
+      return `cron:${createHash("sha256")
+        .update(raw)
+        .digest("hex")
+        .slice(0, 24)}`;
     }
 
     const now = new Date();
@@ -130,7 +133,9 @@ Absurd returns the already-existing task instead of creating a duplicate.
         }
         defer app.Close()
 
-        parser := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
+        parser := cron.NewParser(
+            cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow,
+        )
         now := time.Now().UTC().Truncate(time.Minute)
         ctx := context.Background()
 
@@ -147,8 +152,12 @@ Absurd returns the already-existing task instead of creating a duplicate.
             _, err = app.Spawn(
                 ctx,
                 taskName,
-                map[string]string{"scheduled_for": nextAt.Format(time.RFC3339)},
-                absurd.SpawnOptions{IdempotencyKey: dedupKey(taskName, expr, nextAt)},
+                map[string]string{
+                    "scheduled_for": nextAt.Format(time.RFC3339),
+                },
+                absurd.SpawnOptions{
+                    IdempotencyKey: dedupKey(taskName, expr, nextAt),
+                },
             )
             if err != nil {
                 log.Fatal(err)

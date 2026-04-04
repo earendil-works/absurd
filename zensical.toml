@@ -70,6 +70,7 @@ features = [
     "navigation.instant",
     "navigation.instant.prefetch",
     "navigation.instant.progress",
+    "toc.follow",
 ]
 
 [project.markdown_extensions.pymdownx.superfences]

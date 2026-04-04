@@ -46,9 +46,13 @@ That means if you change what this step returns:
         ChargeID string `json:"charge_id"`
     }
 
-    payment, err := absurd.Step(ctx, "process-payment", func(ctx context.Context) (PaymentV1, error) {
-        return PaymentV1{ChargeID: "ch_123"}, nil
-    })
+    payment, err := absurd.Step(
+        ctx,
+        "process-payment",
+        func(ctx context.Context) (PaymentV1, error) {
+            return PaymentV1{ChargeID: "ch_123"}, nil
+        },
+    )
     if err != nil {
         return err
     }
@@ -92,13 +96,17 @@ into this:
         ReceiptEmail string `json:"receipt_email"`
     }
 
-    payment, err := absurd.Step(ctx, "process-payment", func(ctx context.Context) (PaymentV2, error) {
-        return PaymentV2{
-            ChargeID:     "ch_123",
-            Provider:     "stripe",
-            ReceiptEmail: "jane@example.com",
-        }, nil
-    })
+    payment, err := absurd.Step(
+        ctx,
+        "process-payment",
+        func(ctx context.Context) (PaymentV2, error) {
+            return PaymentV2{
+                ChargeID:     "ch_123",
+                Provider:     "stripe",
+                ReceiptEmail: "jane@example.com",
+            }, nil
+        },
+    )
     if err != nil {
         return err
     }
@@ -149,13 +157,17 @@ cleanest move is to version the step name.
         ReceiptEmail string `json:"receipt_email"`
     }
 
-    payment, err := absurd.Step(ctx, "process-payment:v2", func(ctx context.Context) (PaymentV2, error) {
-        return PaymentV2{
-            ChargeID:     fmt.Sprintf("charge-%d", params.Amount),
-            Provider:     "stripe",
-            ReceiptEmail: params.Email,
-        }, nil
-    })
+    payment, err := absurd.Step(
+        ctx,
+        "process-payment:v2",
+        func(ctx context.Context) (PaymentV2, error) {
+            return PaymentV2{
+                ChargeID:     fmt.Sprintf("charge-%d", params.Amount),
+                Provider:     "stripe",
+                ReceiptEmail: params.Email,
+            }, nil
+        },
+    )
     if err != nil {
         return err
     }
@@ -310,30 +322,38 @@ result before using it.
         }
     }
 
-    rawPayment, err := absurd.Step[any](ctx, "process-payment", func(ctx context.Context) (any, error) {
-        return map[string]any{
-            "charge_id":     fmt.Sprintf("charge-%d", params.Amount),
-            "provider":      "stripe",
-            "receipt_email": params.Email,
-        }, nil
-    })
+    rawPayment, err := absurd.Step[any](
+        ctx,
+        "process-payment",
+        func(ctx context.Context) (any, error) {
+            return map[string]any{
+                "charge_id":     fmt.Sprintf("charge-%d", params.Amount),
+                "provider":      "stripe",
+                "receipt_email": params.Email,
+            }, nil
+        },
+    )
     if err != nil {
         return err
     }
 
     payment := normalizePayment(rawPayment)
 
-    _, err = absurd.Step(ctx, "send-receipt:v2", func(ctx context.Context) (map[string]any, error) {
-        if payment.ReceiptEmail == "" {
-            return map[string]any{"skipped": true}, nil
-        }
+    _, err = absurd.Step(
+        ctx,
+        "send-receipt:v2",
+        func(ctx context.Context) (map[string]any, error) {
+            if payment.ReceiptEmail == "" {
+                return map[string]any{"skipped": true}, nil
+            }
 
-        return map[string]any{
-            "skipped":   false,
-            "sent_to":   payment.ReceiptEmail,
-            "charge_id": payment.ChargeID,
-        }, nil
-    })
+            return map[string]any{
+                "skipped":   false,
+                "sent_to":   payment.ReceiptEmail,
+                "charge_id": payment.ChargeID,
+            }, nil
+        },
+    )
     if err != nil {
         return err
     }
