@@ -113,7 +113,7 @@ func setupTestDatabaseWithDriver(t *testing.T, driverName string) *sql.DB {
 		testDBsMu.Unlock()
 
 		_, filename, _, _ := runtime.Caller(0)
-		schemaPath := filepath.Join(filepath.Dir(filename), "..", "..", "..", "..", "sql", "absurd.sql")
+		schemaPath := filepath.Join(filepath.Dir(filename), "..", "..", "..", "sql", "absurd.sql")
 		schema, err := os.ReadFile(schemaPath)
 		if err != nil {
 			testSetupErr = err

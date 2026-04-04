@@ -1,4 +1,4 @@
-module github.com/earendil-works/absurd/sdks/go/absurd/absurdtest
+module github.com/earendil-works/absurd/sdks/go/tests
 
 go 1.25.0
 
@@ -73,4 +73,4 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
-replace github.com/earendil-works/absurd/sdks/go/absurd => ../
+replace github.com/earendil-works/absurd/sdks/go/absurd => ../absurd
