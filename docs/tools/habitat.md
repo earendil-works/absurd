@@ -5,7 +5,7 @@ events.  It's a Go application with an embedded SolidJS frontend that connects
 directly to Postgres.
 
 <div style="text-align: center" align="center">
-  <img src="../images/habitat-screenshot.png" width="550" alt="Screenshot of the Habitat dashboard">
+  <img src="../../images/habitat-screenshot.png" width="550" alt="Screenshot of the Habitat dashboard">
 </div>
 
 ## Installation
