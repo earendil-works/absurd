@@ -34,7 +34,7 @@ absurdctl init -d your-database-name
 absurdctl create-queue -d your-database-name default
 ```
 
-See the [absurdctl docs](../../docs/absurdctl.md) for installation details and
+See the [absurdctl docs](https://earendil-works.github.io/absurd/tools/absurdctl/) for installation details and
 the full CLI reference, including
 [`uvx`](https://docs.astral.sh/uv/guides/tools/) usage.
 

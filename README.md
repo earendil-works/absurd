@@ -15,7 +15,7 @@ needing any other services to run in addition to Postgres.
 More about it can be found [in the announcement post](https://lucumr.pocoo.org/2025/11/3/absurd-workflows/).
 
 You can read in the docs [how Absurd compares to PGMQ, Cadence, Temporal,
-Inngest, and DBOS](docs/comparison.md).
+Inngest, and DBOS](https://earendil-works.github.io/absurd/comparison/).
 
 ## What is Durable Execution?
 
@@ -44,8 +44,8 @@ Absurd just needs a single `.sql` file ([`absurd.sql`](sql/absurd.sql)) which
 needs to be applied to a database of your choice.  You can plug it into your
 favorite migration system of choice.  Additionally if that file changes, we
 also release [migrations](sql/migrations) which should make upgrading easy.
-See the [quickstart guide](docs/quickstart.md) for a short tutorial and the
-[documentation index](docs/index.md) for everything else.
+See the [quickstart guide](https://earendil-works.github.io/absurd/quickstart/) for a short tutorial and the
+[documentation index](https://earendil-works.github.io/absurd/) for everything else.
 
 ## Client SDKs
 
@@ -84,7 +84,7 @@ Additionally, tasks can *sleep* or *suspend for events*.  Events are cached
 ## Components
 
 Absurd comes with two basic tools that help you work with it.  One is
-called [`absurdctl`](docs/tools/absurdctl.md) which allows you to initialize and
+called [`absurdctl`](https://earendil-works.github.io/absurd/tools/absurdctl/) which allows you to initialize and
 migrate the schema, inspect schema versions, create/drop/list queues, and spawn
 or retry tasks.  The other is [habitat](habitat) which is a Go application that
 serves up a web UI to show you the current state of running and executed tasks.
@@ -203,14 +203,14 @@ await app.close();
 
 More detail lives in the docs:
 
-- [Quickstart](docs/quickstart.md)
-- [TypeScript SDK](docs/sdks/typescript.md)
-- [Python SDK](docs/sdks/python.md)
-- [Go SDK](docs/sdks/go.md) *(experimental)*
-- [Database Setup and Migrations](docs/database.md)
-- [Concepts](docs/concepts.md) — includes retry semantics, worker claims, and idempotency keys
-- [Living with Code Changes](docs/patterns/living-with-code-changes.md)
-- [Cleanup and Retention](docs/cleanup.md)
+- [Quickstart](https://earendil-works.github.io/absurd/quickstart/)
+- [TypeScript SDK](https://earendil-works.github.io/absurd/sdks/typescript/)
+- [Python SDK](https://earendil-works.github.io/absurd/sdks/python/)
+- [Go SDK](https://earendil-works.github.io/absurd/sdks/go/) *(experimental)*
+- [Database Setup and Migrations](https://earendil-works.github.io/absurd/database/)
+- [Concepts](https://earendil-works.github.io/absurd/concepts/) — includes retry semantics, worker claims, and idempotency keys
+- [Living with Code Changes](https://earendil-works.github.io/absurd/patterns/living-with-code-changes/)
+- [Cleanup and Retention](https://earendil-works.github.io/absurd/cleanup/)
 
 ## Working With Agents
 
@@ -223,7 +223,7 @@ absurdctl install-skill              # installs to .agents/skills
 absurdctl install-skill .pi/skills   # if you want a different path
 ```
 
-See [Working With Agents](docs/agents.md) for the recommended setup.
+See [Working With Agents](https://earendil-works.github.io/absurd/agents/) for the recommended setup.
 
 ## AI Use Disclaimer
 
