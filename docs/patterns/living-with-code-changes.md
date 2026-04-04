@@ -175,7 +175,10 @@ cleanest move is to version the step name.
     ```
 
 This makes old tasks keep using `process-payment`, while new tasks use
-`process-payment:v2`.
+`process-payment:v2`.  If an old task were to suspend or retry, it would however
+then invoke `process-payment:v2`!  So particularly for payment processing you
+would need to ensure that you are in fact not going to charge the user twice
+(eg: by using deduplication keys).
 
 Use this when:
 
