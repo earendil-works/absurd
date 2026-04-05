@@ -22,6 +22,13 @@
   --absurd-gold-light-strong: #f2dfaa;
 }
 
+/* Prevent content from overflowing the viewport.  Without this, a rendering
+   race (e.g. font-swap reflow or sidebar JS init) can leave the flex layout
+   in a state where the content pushes wider than the available space. */
+.md-content {
+  overflow-x: hidden;
+}
+
 /* Typography sizing */
 .md-typeset {
   font-size: 0.65rem!important;
@@ -205,17 +212,9 @@ header.md-header .md-header__topic > a.md-ellipsis:hover {
   overflow-wrap: anywhere;
 }
 
-/* Code blocks */
-.md-typeset .highlight {
-  --absurd-code-pad-x: 0.6rem;
-}
-
-.md-typeset .highlight > pre {
-  margin-left: calc(-1 * var(--absurd-code-pad-x));
-  margin-right: calc(-1 * var(--absurd-code-pad-x));
-}
-
+/* Code blocks: consistent inner padding without negative-margin bleed so the
+   layout stays stable across all viewport widths. */
 .md-typeset .highlight > pre > code {
-  padding-left: var(--absurd-code-pad-x);
-  padding-right: var(--absurd-code-pad-x);
+  padding-left: 0.6rem;
+  padding-right: 0.6rem;
 }
