@@ -47,6 +47,7 @@ nav = [
         {"Cron Jobs With Deduplication Keys" = "patterns/cron.md"},
         {"Living with Code Changes" = "patterns/living-with-code-changes.md"},
         {"Pi AI Agent Durable Turns" = "patterns/pi-ai-agent.md"},
+        {"Pydantic AI Agent" = "patterns/pydantic-ai-agent.md"},
     ]},
 
     {"Tools" = [
