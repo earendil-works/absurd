@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeAll, afterEach } from "./testlib.ts";
+import { afterEach, beforeAll, describe, expect, test } from "./testlib.ts";
 import { createTestAbsurd, randomName, type TestContext } from "./setup.ts";
 import type { Absurd } from "../src/index.ts";
 import { TimeoutError } from "../src/index.ts";
@@ -252,6 +252,175 @@ describe("Event system", () => {
     expect(await ctx.getTask(taskID)).toMatchObject({
       state: "completed",
       completed_payload: { stage: "resumed", payload: null },
+    });
+  });
+
+  test("wakes on first matching event", async () => {
+    const accepted = randomName("order_accepted");
+    const rejected = randomName("order_rejected");
+
+    absurd.registerTask({ name: "await-any-basic" }, async (_params, ctx) => {
+      return await ctx.awaitAnyEvent([accepted, rejected], { timeout: 60 });
+    });
+
+    const { taskID, runID } = await absurd.spawn("await-any-basic", undefined);
+    await absurd.workBatch("worker1", 60, 1);
+
+    const sleepingRun = await ctx.getRun(runID);
+    expect(sleepingRun?.state).toBe("sleeping");
+
+    await absurd.emitEvent(accepted, { status: "ok" });
+    await absurd.workBatch("worker1", 60, 1);
+
+    expect(await ctx.getTask(taskID)).toMatchObject({
+      state: "completed",
+      completed_payload: {
+        event_name: accepted,
+        payload: { status: "ok" },
+        remaining: [rejected],
+      },
+    });
+  });
+
+  test("wakes on second event if first did not fire", async () => {
+    const accepted = randomName("order_accepted2");
+    const rejected = randomName("order_rejected2");
+
+    absurd.registerTask({ name: "await-any-second" }, async (_params, ctx) => {
+      return await ctx.awaitAnyEvent([accepted, rejected], { timeout: 60 });
+    });
+
+    const { taskID } = await absurd.spawn("await-any-second", undefined);
+    await absurd.workBatch("worker1", 60, 1);
+
+    await absurd.emitEvent(rejected, { reason: "too busy" });
+    await absurd.workBatch("worker1", 60, 1);
+
+    expect(await ctx.getTask(taskID)).toMatchObject({
+      state: "completed",
+      completed_payload: {
+        event_name: rejected,
+        payload: { reason: "too busy" },
+        remaining: [accepted],
+      },
+    });
+  });
+
+  test("both events emitted before await — returns earliest emitted", async () => {
+    const first = randomName("first_event");
+    const second = randomName("second_event");
+    const baseTime = new Date("2024-05-01T10:00:00Z");
+
+    await ctx.setFakeNow(baseTime);
+    await absurd.emitEvent(first, { order: 1 });
+
+    await ctx.setFakeNow(new Date(baseTime.getTime() + 5000));
+    await absurd.emitEvent(second, { order: 2 });
+
+    absurd.registerTask(
+      { name: "await-any-pre-emitted" },
+      async (_params, ctx) => {
+        return await ctx.awaitAnyEvent([first, second]);
+      },
+    );
+
+    const { taskID } = await absurd.spawn("await-any-pre-emitted", undefined);
+    await absurd.workBatch("worker1", 60, 1);
+
+    expect(await ctx.getTask(taskID)).toMatchObject({
+      state: "completed",
+      completed_payload: {
+        event_name: first,
+        payload: { order: 1 },
+        remaining: [second],
+      },
+    });
+  });
+
+  test("sibling wait rows cleaned up after one event fires", async () => {
+    const e1 = randomName("cleanup_e1");
+    const e2 = randomName("cleanup_e2");
+    const e3 = randomName("cleanup_e3");
+
+    absurd.registerTask({ name: "await-any-cleanup" }, async (_params, ctx) => {
+      return await ctx.awaitAnyEvent([e1, e2, e3], { timeout: 60 });
+    });
+
+    await absurd.spawn("await-any-cleanup", undefined);
+    await absurd.workBatch("worker1", 60, 1);
+
+    const waitsBefore = await ctx.pool.query<{ count: string }>(
+      `SELECT COUNT(*)::text AS count FROM absurd.w_${ctx.queueName}`,
+    );
+    expect(Number(waitsBefore.rows[0].count)).toBe(3);
+
+    await absurd.emitEvent(e2, { fired: true });
+
+    const waitsAfter = await ctx.pool.query<{ count: string }>(
+      `SELECT COUNT(*)::text AS count FROM absurd.w_${ctx.queueName}`,
+    );
+    expect(Number(waitsAfter.rows[0].count)).toBe(0);
+  });
+
+  test("timeout fires if no event emitted", async () => {
+    const e1 = randomName("timeout_e1");
+    const e2 = randomName("timeout_e2");
+    const baseTime = new Date("2024-05-01T12:00:00Z");
+    const timeoutSeconds = 300;
+
+    await ctx.setFakeNow(baseTime);
+
+    absurd.registerTask({ name: "await-any-timeout" }, async (_params, ctx) => {
+      try {
+        return await ctx.awaitAnyEvent([e1, e2], { timeout: timeoutSeconds });
+      } catch (err) {
+        if (err instanceof TimeoutError) {
+          return { timedOut: true };
+        }
+        throw err;
+      }
+    });
+
+    const { taskID } = await absurd.spawn("await-any-timeout", undefined);
+    await absurd.workBatch("worker1", 120, 1);
+
+    await ctx.setFakeNow(
+      new Date(baseTime.getTime() + (timeoutSeconds + 1) * 1000),
+    );
+    await absurd.workBatch("worker1", 120, 1);
+
+    expect(await ctx.getTask(taskID)).toMatchObject({
+      state: "completed",
+      completed_payload: { timedOut: true },
+    });
+  });
+
+  test("result is stable on replay regardless of later events", async () => {
+    const e1 = randomName("replay_e1");
+    const e2 = randomName("replay_e2");
+
+    absurd.registerTask({ name: "await-any-replay" }, async (_params, ctx) => {
+      const result = await ctx.awaitAnyEvent([e1, e2], { timeout: 60 });
+      // second step to force a retry/replay scenario
+      return await ctx.step("confirm", async () => result);
+    });
+
+    const { taskID } = await absurd.spawn("await-any-replay", undefined);
+    await absurd.workBatch("worker1", 60, 1);
+
+    await absurd.emitEvent(e1, { winner: true });
+    // emit e2 as well — should be ignored
+    await absurd.emitEvent(e2, { winner: false });
+
+    await absurd.workBatch("worker1", 60, 1);
+
+    expect(await ctx.getTask(taskID)).toMatchObject({
+      state: "completed",
+      completed_payload: {
+        event_name: e1,
+        payload: { winner: true },
+        remaining: [e2],
+      },
     });
   });
 });
