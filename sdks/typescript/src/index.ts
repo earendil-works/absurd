@@ -36,6 +36,20 @@ export interface SpawnOptions {
   idempotencyKey?: string;
 }
 
+export type QueueStorageMode = "unpartitioned" | "partitioned";
+
+export type QueueDetachMode = "none" | "empty";
+
+export interface CreateQueueOptions {
+  storageMode?: QueueStorageMode;
+  partitionLookahead?: string;
+  partitionLookback?: string;
+  cleanupTtlSeconds?: number;
+  cleanupLimit?: number;
+  detachMode?: QueueDetachMode;
+  detachMinAge?: string;
+}
+
 export interface RetryTaskOptions {
   queue?: string;
   maxAttempts?: number;
@@ -692,11 +706,64 @@ export class Absurd {
 
   /**
    * Creates a queue (defaults to this client's queue).
-   * @param queueName Queue name to create.
+   *
+   * Backward-compatible forms:
+   * - createQueue("name")
+   * - createQueue("name", { storageMode: "partitioned" })
    */
-  async createQueue(queueName?: string): Promise<void> {
+  async createQueue(
+    queueName?: string,
+    options: CreateQueueOptions = {},
+  ): Promise<void> {
     const queue = validateQueueName(queueName ?? this.queueName);
-    await this.con.query(`SELECT absurd.create_queue($1)`, [queue]);
+
+    let storageMode: QueueStorageMode = options.storageMode ?? "unpartitioned";
+
+    if (storageMode !== "unpartitioned" && storageMode !== "partitioned") {
+      throw new Error(`Invalid queue storage mode: ${String(storageMode)}`);
+    }
+
+    if (storageMode === "unpartitioned") {
+      await this.con.query(`SELECT absurd.create_queue($1)`, [queue]);
+    } else {
+      await this.con.query(`SELECT absurd.create_queue($1, $2)`, [
+        queue,
+        storageMode,
+      ]);
+    }
+
+    const policy: Record<string, unknown> = {};
+
+    if (options.partitionLookahead !== undefined) {
+      policy.partition_lookahead = options.partitionLookahead;
+    }
+
+    if (options.partitionLookback !== undefined) {
+      policy.partition_lookback = options.partitionLookback;
+    }
+
+    if (options.cleanupTtlSeconds !== undefined) {
+      policy.cleanup_ttl_seconds = options.cleanupTtlSeconds;
+    }
+
+    if (options.cleanupLimit !== undefined) {
+      policy.cleanup_limit = options.cleanupLimit;
+    }
+
+    if (options.detachMode !== undefined) {
+      policy.detach_mode = options.detachMode;
+    }
+
+    if (options.detachMinAge !== undefined) {
+      policy.detach_min_age = options.detachMinAge;
+    }
+
+    if (Object.keys(policy).length > 0) {
+      await this.con.query(`SELECT absurd.set_queue_policy($1, $2::jsonb)`, [
+        queue,
+        JSON.stringify(policy),
+      ]);
+    }
   }
 
   /**

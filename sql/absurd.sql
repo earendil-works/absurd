@@ -57,7 +57,19 @@ create table if not exists absurd.queues (
   queue_name text primary key,
   created_at timestamptz not null default absurd.current_time(),
   storage_mode text not null default 'unpartitioned'
-    check (storage_mode in ('unpartitioned', 'partitioned'))
+    check (storage_mode in ('unpartitioned', 'partitioned')),
+  partition_lookahead interval not null default interval '28 days'
+    check (partition_lookahead >= interval '0 seconds'),
+  partition_lookback interval not null default interval '1 day'
+    check (partition_lookback >= interval '0 seconds'),
+  cleanup_ttl_seconds integer not null default (30 * 86400)
+    check (cleanup_ttl_seconds >= 0),
+  cleanup_limit integer not null default 1000
+    check (cleanup_limit >= 1),
+  detach_mode text not null default 'none'
+    check (detach_mode in ('none', 'empty')),
+  detach_min_age interval not null default interval '30 days'
+    check (detach_min_age >= interval '0 seconds')
 );
 
 -- Returns the Absurd schema release version baked into this SQL file.
@@ -408,6 +420,174 @@ create function absurd.list_queues ()
   language sql
 as $$
   select queue_name from absurd.queues order by queue_name;
+$$;
+
+-- Returns queue maintenance policy metadata.
+create function absurd.get_queue_policy (
+  p_queue_name text
+)
+  returns table (
+    queue_name text,
+    storage_mode text,
+    partition_lookahead interval,
+    partition_lookback interval,
+    cleanup_ttl_seconds integer,
+    cleanup_limit integer,
+    detach_mode text,
+    detach_min_age interval
+  )
+  language sql
+as $$
+  select
+    q.queue_name,
+    q.storage_mode,
+    q.partition_lookahead,
+    q.partition_lookback,
+    q.cleanup_ttl_seconds,
+    q.cleanup_limit,
+    q.detach_mode,
+    q.detach_min_age
+  from absurd.queues q
+  where q.queue_name = p_queue_name;
+$$;
+
+-- Updates queue maintenance policy metadata.
+--
+-- p_policy accepts optional keys:
+-- * partition_lookahead (interval text)
+-- * partition_lookback (interval text)
+-- * cleanup_ttl_seconds (integer >= 0)
+-- * cleanup_limit (integer >= 1)
+-- * detach_mode ('none' | 'empty')
+-- * detach_min_age (interval text)
+create function absurd.set_queue_policy (
+  p_queue_name text,
+  p_policy jsonb
+)
+  returns void
+  language plpgsql
+as $$
+declare
+  v_policy jsonb := coalesce(p_policy, '{}'::jsonb);
+  v_unknown_key text;
+  v_exists boolean := false;
+
+  v_partition_lookahead interval;
+  v_partition_lookback interval;
+  v_cleanup_ttl_seconds integer;
+  v_cleanup_limit integer;
+  v_detach_mode text;
+  v_detach_min_age interval;
+begin
+  p_queue_name := absurd.validate_queue_name(p_queue_name);
+
+  if jsonb_typeof(v_policy) <> 'object' then
+    raise exception 'Queue policy must be a JSON object';
+  end if;
+
+  select k.key
+    into v_unknown_key
+    from jsonb_object_keys(v_policy) as k(key)
+   where k.key not in (
+      'partition_lookahead',
+      'partition_lookback',
+      'cleanup_ttl_seconds',
+      'cleanup_limit',
+      'detach_mode',
+      'detach_min_age'
+   )
+   limit 1;
+
+  if v_unknown_key is not null then
+    raise exception 'Unsupported queue policy key "%"', v_unknown_key;
+  end if;
+
+  select exists (
+    select 1
+    from absurd.queues
+    where queue_name = p_queue_name
+  )
+  into v_exists;
+
+  if not v_exists then
+    raise exception 'Queue "%" does not exist', p_queue_name;
+  end if;
+
+  select
+    partition_lookahead,
+    partition_lookback,
+    cleanup_ttl_seconds,
+    cleanup_limit,
+    detach_mode,
+    detach_min_age
+  into
+    v_partition_lookahead,
+    v_partition_lookback,
+    v_cleanup_ttl_seconds,
+    v_cleanup_limit,
+    v_detach_mode,
+    v_detach_min_age
+  from absurd.queues
+  where queue_name = p_queue_name
+  for update;
+
+  if v_policy ? 'partition_lookahead' then
+    v_partition_lookahead := (v_policy->>'partition_lookahead')::interval;
+  end if;
+
+  if v_policy ? 'partition_lookback' then
+    v_partition_lookback := (v_policy->>'partition_lookback')::interval;
+  end if;
+
+  if v_policy ? 'cleanup_ttl_seconds' then
+    v_cleanup_ttl_seconds := (v_policy->>'cleanup_ttl_seconds')::integer;
+  end if;
+
+  if v_policy ? 'cleanup_limit' then
+    v_cleanup_limit := (v_policy->>'cleanup_limit')::integer;
+  end if;
+
+  if v_policy ? 'detach_mode' then
+    v_detach_mode := lower(trim(coalesce(v_policy->>'detach_mode', '')));
+  end if;
+
+  if v_policy ? 'detach_min_age' then
+    v_detach_min_age := (v_policy->>'detach_min_age')::interval;
+  end if;
+
+  if v_partition_lookahead < interval '0 seconds' then
+    raise exception 'partition_lookahead must be non-negative';
+  end if;
+
+  if v_partition_lookback < interval '0 seconds' then
+    raise exception 'partition_lookback must be non-negative';
+  end if;
+
+  if v_cleanup_ttl_seconds < 0 then
+    raise exception 'cleanup_ttl_seconds must be non-negative';
+  end if;
+
+  if v_cleanup_limit < 1 then
+    raise exception 'cleanup_limit must be at least 1';
+  end if;
+
+  if v_detach_mode not in ('none', 'empty') then
+    raise exception 'Unsupported detach mode "%"', v_detach_mode;
+  end if;
+
+  if v_detach_min_age < interval '0 seconds' then
+    raise exception 'detach_min_age must be non-negative';
+  end if;
+
+  update absurd.queues
+     set partition_lookahead = v_partition_lookahead,
+         partition_lookback = v_partition_lookback,
+         cleanup_ttl_seconds = v_cleanup_ttl_seconds,
+         cleanup_limit = v_cleanup_limit,
+         detach_mode = v_detach_mode,
+         detach_min_age = v_detach_min_age
+   where queue_name = p_queue_name;
+end;
 $$;
 
 -- Returns the current state and terminal payload (if any) for a task.
@@ -1727,6 +1907,58 @@ begin
 end;
 $$;
 
+-- Runs one cleanup batch for all queues (or one specific queue), using
+-- per-queue policy stored in absurd.queues.
+create function absurd.cleanup_all_queues (
+  p_queue_name text default null
+)
+  returns table (
+    queue_name text,
+    tasks_deleted integer,
+    events_deleted integer
+  )
+  language plpgsql
+as $$
+declare
+  v_queue record;
+begin
+  if p_queue_name is not null then
+    p_queue_name := absurd.validate_queue_name(p_queue_name);
+
+    if not exists (
+      select 1
+      from absurd.queues q
+      where q.queue_name = p_queue_name
+    ) then
+      raise exception 'Queue "%" does not exist', p_queue_name;
+    end if;
+  end if;
+
+  for v_queue in
+    select
+      q.queue_name,
+      q.cleanup_ttl_seconds,
+      q.cleanup_limit
+    from absurd.queues q
+    where p_queue_name is null or q.queue_name = p_queue_name
+    order by q.queue_name
+  loop
+    queue_name := v_queue.queue_name;
+    tasks_deleted := absurd.cleanup_tasks(
+      v_queue.queue_name,
+      v_queue.cleanup_ttl_seconds,
+      v_queue.cleanup_limit
+    );
+    events_deleted := absurd.cleanup_events(
+      v_queue.queue_name,
+      v_queue.cleanup_ttl_seconds,
+      v_queue.cleanup_limit
+    );
+    return next;
+  end loop;
+end;
+$$;
+
 -- Cleans up old completed, failed, or cancelled tasks and their related data.
 -- Deletes tasks whose terminal timestamp (completed_at, failed_at, or cancelled_at)
 -- is older than the specified TTL in seconds.
@@ -2041,23 +2273,17 @@ $$;
 
 -- Ensures weekly UUIDv7 partitions exist for partitioned queues.
 --
--- By default this creates partitions for:
--- * the week containing now()
--- * the previous week if now() is within 1 day of a week boundary
---
--- p_until can be provided to pre-create partitions up to a future timestamp.
+-- Window selection is queue-policy driven:
+-- * start = week_bucket_utc(now() - partition_lookback)
+-- * end   = week_bucket_utc(now() + partition_lookahead)
 create function absurd.ensure_partitions (
-  p_queue_name text default null,
-  p_until timestamptz default null,
-  p_clock_skew interval default interval '1 day'
+  p_queue_name text default null
 )
   returns void
   language plpgsql
 as $$
 declare
   v_now timestamptz := absurd.current_time();
-  v_until timestamptz := coalesce(p_until, absurd.current_time());
-  v_skew interval := coalesce(p_clock_skew, interval '1 day');
   v_window_start timestamptz;
   v_window_end timestamptz;
   v_week_start timestamptz;
@@ -2067,36 +2293,31 @@ declare
   v_uuid_to uuid;
   v_queue record;
 begin
-  if v_skew < interval '0 seconds' then
-    raise exception 'clock skew tolerance must be non-negative';
-  end if;
-
   if p_queue_name is not null then
     p_queue_name := absurd.validate_queue_name(p_queue_name);
 
     if not exists (
       select 1
-      from absurd.queues
-      where queue_name = p_queue_name
+      from absurd.queues q
+      where q.queue_name = p_queue_name
     ) then
       raise exception 'Queue "%" does not exist', p_queue_name;
     end if;
   end if;
 
-  if v_until < v_now then
-    v_until := v_now;
-  end if;
-
-  v_window_start := absurd.week_bucket_utc(v_now - v_skew);
-  v_window_end := absurd.week_bucket_utc(v_until);
-
   for v_queue in
-    select queue_name
+    select
+      queue_name,
+      partition_lookahead,
+      partition_lookback
     from absurd.queues
     where storage_mode = 'partitioned'
       and (p_queue_name is null or queue_name = p_queue_name)
     order by queue_name
   loop
+    v_window_start := absurd.week_bucket_utc(v_now - v_queue.partition_lookback);
+    v_window_end := absurd.week_bucket_utc(v_now + v_queue.partition_lookahead);
+
     execute format(
       'create table if not exists absurd.%I partition of absurd.%I default',
       't_' || v_queue.queue_name || '_d',
@@ -2160,6 +2381,579 @@ begin
 
       v_week_start := v_week_end;
     end loop;
+  end loop;
+end;
+$$;
+
+-- Lists detach/drop commands for eligible partition tables.
+--
+-- This does not execute detach directly because
+-- DETACH PARTITION ... CONCURRENTLY must run as top-level SQL.
+-- Use this output from an external scheduler/executor.
+create function absurd.list_detach_candidates (
+  p_queue_name text default null
+)
+  returns table (
+    queue_name text,
+    parent_table text,
+    partition_table text,
+    candidate_hash text,
+    detach_sql text,
+    drop_sql text
+  )
+  language plpgsql
+as $$
+declare
+  v_now timestamptz := absurd.current_time();
+  v_queue record;
+  v_parent_prefix text;
+  v_parent_table text;
+  v_parent_oid oid;
+  v_part record;
+  v_upper_uuid uuid;
+  v_upper_ts timestamptz;
+  v_has_rows boolean;
+begin
+  if p_queue_name is not null then
+    p_queue_name := absurd.validate_queue_name(p_queue_name);
+
+    if not exists (
+      select 1
+      from absurd.queues q
+      where q.queue_name = p_queue_name
+    ) then
+      raise exception 'Queue "%" does not exist', p_queue_name;
+    end if;
+  end if;
+
+  for v_queue in
+    select
+      q.queue_name,
+      q.detach_mode,
+      q.detach_min_age
+    from absurd.queues q
+    where q.storage_mode = 'partitioned'
+      and q.detach_mode = 'empty'
+      and (p_queue_name is null or q.queue_name = p_queue_name)
+    order by q.queue_name
+  loop
+    foreach v_parent_prefix in array array['t', 'r', 'c', 'w'] loop
+      v_parent_table := v_parent_prefix || '_' || v_queue.queue_name;
+
+      select c.oid
+        into v_parent_oid
+        from pg_class c
+        join pg_namespace n on n.oid = c.relnamespace
+       where n.nspname = 'absurd'
+         and c.relname = v_parent_table;
+
+      if v_parent_oid is null then
+        continue;
+      end if;
+
+      for v_part in
+        select
+          child.relname as partition_name,
+          pg_get_expr(child.relpartbound, child.oid) as part_bound
+        from pg_inherits inh
+        join pg_class child on child.oid = inh.inhrelid
+        where inh.inhparent = v_parent_oid
+      loop
+        if v_part.part_bound = 'DEFAULT' then
+          continue;
+        end if;
+
+        select
+          (regexp_match(v_part.part_bound, 'TO \(''([^'']+)''(::uuid)?\)'))[1]::uuid
+          into v_upper_uuid;
+
+        if v_upper_uuid is null then
+          continue;
+        end if;
+
+        v_upper_ts := absurd.uuidv7_timestamp(v_upper_uuid);
+
+        if v_upper_ts is null then
+          continue;
+        end if;
+
+        if v_upper_ts >= (v_now - v_queue.detach_min_age) then
+          continue;
+        end if;
+
+        execute format(
+          'select exists (select 1 from absurd.%I limit 1)',
+          v_part.partition_name
+        )
+        into v_has_rows;
+
+        if coalesce(v_has_rows, false) then
+          continue;
+        end if;
+
+        queue_name := v_queue.queue_name;
+        parent_table := v_parent_table;
+        partition_table := v_part.partition_name;
+        candidate_hash := substr(md5(v_parent_table || ':' || v_part.partition_name), 1, 12);
+        detach_sql := format(
+          'alter table absurd.%I detach partition absurd.%I concurrently',
+          v_parent_table,
+          v_part.partition_name
+        );
+        drop_sql := format(
+          'drop table if exists absurd.%I',
+          v_part.partition_name
+        );
+
+        return next;
+      end loop;
+    end loop;
+  end loop;
+end;
+$$;
+
+-- Drops a detached partition table if it is no longer attached.
+--
+-- Returns true when the table was dropped. If p_unschedule_job_name is
+-- provided and pg_cron is available, the matching cron job is unscheduled
+-- once the partition is gone.
+create function absurd.drop_detached_partition (
+  p_partition_table text,
+  p_unschedule_job_name text default null
+)
+  returns boolean
+  language plpgsql
+as $$
+declare
+  v_partition_table text := nullif(trim(coalesce(p_partition_table, '')), '');
+  v_partition_oid oid;
+  v_is_attached boolean := false;
+  v_detach_job_name text;
+begin
+  if p_unschedule_job_name like 'absurd_drop_run_%' then
+    v_detach_job_name :=
+      'absurd_detach_run_' || substr(p_unschedule_job_name, length('absurd_drop_run_') + 1);
+  end if;
+
+  if v_partition_table is null then
+    raise exception 'partition table must be provided';
+  end if;
+
+  select c.oid
+    into v_partition_oid
+    from pg_class c
+    join pg_namespace n on n.oid = c.relnamespace
+   where n.nspname = 'absurd'
+     and c.relname = v_partition_table;
+
+  if v_partition_oid is null then
+    if p_unschedule_job_name is not null and to_regclass('cron.job') is not null then
+      perform cron.unschedule(jobid)
+        from cron.job
+       where jobname in (p_unschedule_job_name, coalesce(v_detach_job_name, ''));
+    end if;
+    return false;
+  end if;
+
+  select exists (
+    select 1
+    from pg_inherits
+    where inhrelid = v_partition_oid
+  )
+  into v_is_attached;
+
+  if v_is_attached then
+    return false;
+  end if;
+
+  execute format('drop table if exists absurd.%I', v_partition_table);
+
+  if p_unschedule_job_name is not null and to_regclass('cron.job') is not null then
+    perform cron.unschedule(jobid)
+      from cron.job
+     where jobname in (p_unschedule_job_name, coalesce(v_detach_job_name, ''));
+  end if;
+
+  return true;
+end;
+$$;
+
+-- Ensures per-partition one-off-ish cron jobs exist for detach/drop.
+--
+-- Detach jobs run the raw top-level DETACH ... CONCURRENTLY statement and
+-- unschedule themselves after success. If detach fails due transient locking,
+-- the job keeps retrying on the configured schedule.
+--
+-- Drop jobs poll via absurd.drop_detached_partition() and unschedule
+-- themselves once the partition has been dropped.
+create function absurd.ensure_detach_jobs (
+  p_queue_name text default null,
+  p_scope text default null,
+  p_job_schedule text default '* * * * *'
+)
+  returns table (
+    job_name text,
+    job_id bigint,
+    queue_name text,
+    partition_table text,
+    job_kind text
+  )
+  language plpgsql
+as $$
+declare
+  v_scope text;
+  v_candidate record;
+  v_detach_job_name text;
+  v_drop_job_name text;
+  v_detach_command text;
+  v_drop_command text;
+  v_job_id bigint;
+begin
+  if p_queue_name is not null then
+    p_queue_name := absurd.validate_queue_name(p_queue_name);
+  end if;
+
+  if p_job_schedule is null or length(trim(p_job_schedule)) = 0 then
+    raise exception 'Detach job schedule must be provided';
+  end if;
+
+  if to_regclass('cron.job') is null then
+    raise exception 'pg_cron is not available (missing cron.job)';
+  end if;
+
+  if not exists (
+    select 1
+    from pg_proc p
+    join pg_namespace n on n.oid = p.pronamespace
+    where n.nspname = 'cron'
+      and p.proname = 'schedule'
+  ) then
+    raise exception 'pg_cron is not available (missing cron.schedule)';
+  end if;
+
+  if not exists (
+    select 1
+    from pg_proc p
+    join pg_namespace n on n.oid = p.pronamespace
+    where n.nspname = 'cron'
+      and p.proname = 'unschedule'
+  ) then
+    raise exception 'pg_cron is not available (missing cron.unschedule)';
+  end if;
+
+  v_scope := lower(trim(coalesce(p_scope, '')));
+  if v_scope = '' then
+    v_scope := case
+      when p_queue_name is null then 'all'
+      else substr(md5(p_queue_name), 1, 12)
+    end;
+  end if;
+
+  if v_scope !~ '^[a-z0-9_]+$' then
+    raise exception 'Invalid detach job scope "%"', v_scope;
+  end if;
+
+  for v_candidate in
+    select c.*
+    from absurd.list_detach_candidates(p_queue_name) c
+    order by c.queue_name, c.parent_table, c.partition_table
+  loop
+    v_detach_job_name := format(
+      'absurd_detach_run_%s_%s',
+      v_scope,
+      v_candidate.candidate_hash
+    );
+    v_drop_job_name := format(
+      'absurd_drop_run_%s_%s',
+      v_scope,
+      v_candidate.candidate_hash
+    );
+
+    if not exists (
+      select 1
+      from cron.job
+      where jobname = v_detach_job_name
+         or jobname like ('absurd_detach_run_%_' || v_candidate.candidate_hash)
+    ) then
+      v_detach_command := format(
+        '%s; select cron.unschedule(jobid) from cron.job where jobname = %L;',
+        v_candidate.detach_sql,
+        v_detach_job_name
+      );
+
+      execute 'select cron.schedule($1, $2, $3)'
+        into v_job_id
+        using v_detach_job_name, p_job_schedule, v_detach_command;
+
+      job_name := v_detach_job_name;
+      job_id := v_job_id;
+      queue_name := v_candidate.queue_name;
+      partition_table := v_candidate.partition_table;
+      job_kind := 'detach';
+      return next;
+    end if;
+
+    if not exists (
+      select 1
+      from cron.job
+      where jobname = v_drop_job_name
+         or jobname like ('absurd_drop_run_%_' || v_candidate.candidate_hash)
+    ) then
+      v_drop_command := format(
+        'select absurd.drop_detached_partition(%L, %L);',
+        v_candidate.partition_table,
+        v_drop_job_name
+      );
+
+      execute 'select cron.schedule($1, $2, $3)'
+        into v_job_id
+        using v_drop_job_name, p_job_schedule, v_drop_command;
+
+      job_name := v_drop_job_name;
+      job_id := v_job_id;
+      queue_name := v_candidate.queue_name;
+      partition_table := v_candidate.partition_table;
+      job_kind := 'drop';
+      return next;
+    end if;
+  end loop;
+end;
+$$;
+
+-- Configures pg_cron jobs for partition provisioning, cleanup, and detach planning.
+--
+-- Detach planning schedules per-partition jobs (via absurd.ensure_detach_jobs)
+-- that run raw DETACH ... CONCURRENTLY and follow-up drop checks.
+--
+-- Requires pg_cron to be installed (or compatible cron schema/functions).
+create function absurd.enable_cron (
+  p_queue_name text default null,
+  p_partition_schedule text default '5 * * * *',
+  p_cleanup_schedule text default '17 * * * *',
+  p_detach_schedule text default '29 * * * *'
+)
+  returns table (
+    job_name text,
+    job_id bigint
+  )
+  language plpgsql
+as $$
+declare
+  v_queue_exists boolean := false;
+  v_queue_literal text;
+  v_partition_job_name text;
+  v_cleanup_job_name text;
+  v_detach_plan_job_name text;
+  v_partition_command text;
+  v_cleanup_command text;
+  v_detach_plan_command text;
+  v_partitions_job_id bigint;
+  v_cleanup_job_id bigint;
+  v_detach_plan_job_id bigint;
+  v_existing_job_id bigint;
+  v_job_suffix text;
+begin
+  if p_queue_name is not null then
+    p_queue_name := absurd.validate_queue_name(p_queue_name);
+
+    select exists (
+      select 1
+      from absurd.queues
+      where queue_name = p_queue_name
+    )
+    into v_queue_exists;
+
+    if not v_queue_exists then
+      raise exception 'Queue "%" does not exist', p_queue_name;
+    end if;
+  end if;
+
+  if p_partition_schedule is null or length(trim(p_partition_schedule)) = 0 then
+    raise exception 'Partition schedule must be provided';
+  end if;
+
+  if p_cleanup_schedule is null or length(trim(p_cleanup_schedule)) = 0 then
+    raise exception 'Cleanup schedule must be provided';
+  end if;
+
+  if p_detach_schedule is null or length(trim(p_detach_schedule)) = 0 then
+    raise exception 'Detach schedule must be provided';
+  end if;
+
+  if to_regclass('cron.job') is null then
+    raise exception 'pg_cron is not available (missing cron.job)';
+  end if;
+
+  if not exists (
+    select 1
+    from pg_proc p
+    join pg_namespace n on n.oid = p.pronamespace
+    where n.nspname = 'cron'
+      and p.proname = 'schedule'
+  ) then
+    raise exception 'pg_cron is not available (missing cron.schedule)';
+  end if;
+
+  if not exists (
+    select 1
+    from pg_proc p
+    join pg_namespace n on n.oid = p.pronamespace
+    where n.nspname = 'cron'
+      and p.proname = 'unschedule'
+  ) then
+    raise exception 'pg_cron is not available (missing cron.unschedule)';
+  end if;
+
+  v_queue_literal := case
+    when p_queue_name is null then 'null::text'
+    else quote_literal(p_queue_name)
+  end;
+
+  v_partition_command := format(
+    'select absurd.ensure_partitions(%s);',
+    v_queue_literal
+  );
+
+  v_cleanup_command := format(
+    'select * from absurd.cleanup_all_queues(%s);',
+    v_queue_literal
+  );
+
+  v_job_suffix := case
+    when p_queue_name is null then 'all'
+    else substr(md5(p_queue_name), 1, 12)
+  end;
+
+  v_partition_job_name := 'absurd_partitions_' || v_job_suffix;
+  v_cleanup_job_name := 'absurd_cleanup_' || v_job_suffix;
+  v_detach_plan_job_name := 'absurd_detach_plan_' || v_job_suffix;
+
+  v_detach_plan_command := format(
+    'select * from absurd.ensure_detach_jobs(%s, %L);',
+    v_queue_literal,
+    v_job_suffix
+  );
+
+  for v_existing_job_id in
+    execute 'select jobid from cron.job where jobname = $1'
+    using v_partition_job_name
+  loop
+    execute 'select cron.unschedule($1)' using v_existing_job_id;
+  end loop;
+
+  for v_existing_job_id in
+    execute 'select jobid from cron.job where jobname = $1'
+    using v_cleanup_job_name
+  loop
+    execute 'select cron.unschedule($1)' using v_existing_job_id;
+  end loop;
+
+  for v_existing_job_id in
+    execute 'select jobid from cron.job where jobname = $1'
+    using v_detach_plan_job_name
+  loop
+    execute 'select cron.unschedule($1)' using v_existing_job_id;
+  end loop;
+
+  execute 'select cron.schedule($1, $2, $3)'
+    into v_partitions_job_id
+    using v_partition_job_name, p_partition_schedule, v_partition_command;
+
+  execute 'select cron.schedule($1, $2, $3)'
+    into v_cleanup_job_id
+    using v_cleanup_job_name, p_cleanup_schedule, v_cleanup_command;
+
+  execute 'select cron.schedule($1, $2, $3)'
+    into v_detach_plan_job_id
+    using v_detach_plan_job_name, p_detach_schedule, v_detach_plan_command;
+
+  job_name := v_partition_job_name;
+  job_id := v_partitions_job_id;
+  return next;
+
+  job_name := v_cleanup_job_name;
+  job_id := v_cleanup_job_id;
+  return next;
+
+  job_name := v_detach_plan_job_name;
+  job_id := v_detach_plan_job_id;
+  return next;
+end;
+$$;
+
+-- Removes pg_cron jobs previously installed by absurd.enable_cron.
+--
+-- If p_queue_name is null, this removes the global ('all') maintenance jobs
+-- and global-scope detach/drop run jobs.
+-- If p_queue_name is provided, this removes jobs for that specific queue scope,
+-- including detach/drop run jobs.
+create function absurd.disable_cron (
+  p_queue_name text default null
+)
+  returns table (
+    job_name text,
+    job_id bigint
+  )
+  language plpgsql
+as $$
+declare
+  v_job_suffix text;
+  v_partition_job_name text;
+  v_cleanup_job_name text;
+  v_detach_plan_job_name text;
+  v_detach_run_pattern text;
+  v_drop_run_pattern text;
+  v_existing_job record;
+begin
+  if p_queue_name is not null then
+    p_queue_name := absurd.validate_queue_name(p_queue_name);
+  end if;
+
+  if to_regclass('cron.job') is null then
+    raise exception 'pg_cron is not available (missing cron.job)';
+  end if;
+
+  if not exists (
+    select 1
+    from pg_proc p
+    join pg_namespace n on n.oid = p.pronamespace
+    where n.nspname = 'cron'
+      and p.proname = 'unschedule'
+  ) then
+    raise exception 'pg_cron is not available (missing cron.unschedule)';
+  end if;
+
+  v_job_suffix := case
+    when p_queue_name is null then 'all'
+    else substr(md5(p_queue_name), 1, 12)
+  end;
+
+  v_partition_job_name := 'absurd_partitions_' || v_job_suffix;
+  v_cleanup_job_name := 'absurd_cleanup_' || v_job_suffix;
+  v_detach_plan_job_name := 'absurd_detach_plan_' || v_job_suffix;
+  v_detach_run_pattern := 'absurd_detach_run_' || v_job_suffix || '_%';
+  v_drop_run_pattern := 'absurd_drop_run_' || v_job_suffix || '_%';
+
+  for v_existing_job in
+    execute 'select jobid, jobname
+               from cron.job
+              where jobname = $1
+                 or jobname = $2
+                 or jobname = $3
+                 or jobname like $4
+                 or jobname like $5
+              order by jobname, jobid'
+    using v_partition_job_name,
+          v_cleanup_job_name,
+          v_detach_plan_job_name,
+          v_detach_run_pattern,
+          v_drop_run_pattern
+  loop
+    execute 'select cron.unschedule($1)' using v_existing_job.jobid;
+
+    job_name := v_existing_job.jobname;
+    job_id := v_existing_job.jobid;
+    return next;
   end loop;
 end;
 $$;

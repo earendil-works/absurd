@@ -63,6 +63,93 @@ describe("Basic SDK Operations", () => {
         rows: [],
       });
     });
+
+    test("create queue supports partitioned storage mode option", async () => {
+      const queueName = randomName("partitioned_queue");
+      await absurd.createQueue(queueName, {
+        storageMode: "partitioned",
+      });
+
+      const parents = await ctx.pool.query<{
+        relname: string;
+        relkind: string;
+      }>(
+        `
+          SELECT c.relname, c.relkind
+          FROM pg_class c
+          JOIN pg_namespace n ON n.oid = c.relnamespace
+          WHERE n.nspname = 'absurd'
+            AND c.relname IN ($1, $2, $3, $4, $5, $6)
+          ORDER BY c.relname
+        `,
+        [
+          `t_${queueName}`,
+          `r_${queueName}`,
+          `c_${queueName}`,
+          `w_${queueName}`,
+          `e_${queueName}`,
+          `i_${queueName}`,
+        ],
+      );
+
+      const relkinds = new Map(
+        parents.rows.map((row) => [row.relname, row.relkind]),
+      );
+      expect(relkinds.get(`t_${queueName}`)).toBe("p");
+      expect(relkinds.get(`r_${queueName}`)).toBe("p");
+      expect(relkinds.get(`c_${queueName}`)).toBe("p");
+      expect(relkinds.get(`w_${queueName}`)).toBe("p");
+      expect(relkinds.get(`e_${queueName}`)).toBe("r");
+      expect(relkinds.get(`i_${queueName}`)).toBe("r");
+
+      await absurd.dropQueue(queueName);
+    });
+
+    test("create queue supports policy options", async () => {
+      const queueName = randomName("policy_queue");
+      await absurd.createQueue(queueName, {
+        storageMode: "partitioned",
+        partitionLookahead: "35 days",
+        partitionLookback: "2 days",
+        cleanupTtlSeconds: 12345,
+        cleanupLimit: 77,
+        detachMode: "empty",
+        detachMinAge: "45 days",
+      });
+
+      const policy = await ctx.pool.query<{
+        partition_lookahead: string;
+        partition_lookback: string;
+        cleanup_ttl_seconds: number;
+        cleanup_limit: number;
+        detach_mode: string;
+        detach_min_age: string;
+      }>(
+        `
+          SELECT
+            partition_lookahead::text,
+            partition_lookback::text,
+            cleanup_ttl_seconds,
+            cleanup_limit,
+            detach_mode,
+            detach_min_age::text
+          FROM absurd.get_queue_policy($1)
+        `,
+        [queueName],
+      );
+
+      expect(policy.rows).toHaveLength(1);
+      expect(policy.rows[0]).toEqual({
+        partition_lookahead: "35 days",
+        partition_lookback: "2 days",
+        cleanup_ttl_seconds: 12345,
+        cleanup_limit: 77,
+        detach_mode: "empty",
+        detach_min_age: "45 days",
+      });
+
+      await absurd.dropQueue(queueName);
+    });
   });
 
   describe("Task spawning", () => {

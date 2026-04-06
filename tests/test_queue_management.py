@@ -74,11 +74,28 @@ def test_queue_storage_mode_defaults_to_unpartitioned(client):
     client.create_queue(queue)
 
     row = client.conn.execute(
-        "select storage_mode from absurd.queues where queue_name = %s",
+        """
+        select
+          storage_mode,
+          partition_lookahead,
+          partition_lookback,
+          cleanup_ttl_seconds,
+          cleanup_limit,
+          detach_mode,
+          detach_min_age
+        from absurd.queues
+        where queue_name = %s
+        """,
         (queue,),
     ).fetchone()
     assert row is not None
     assert row[0] == "unpartitioned"
+    assert row[1] == timedelta(days=28)
+    assert row[2] == timedelta(days=1)
+    assert row[3] == 30 * 86400
+    assert row[4] == 1000
+    assert row[5] == "none"
+    assert row[6] == timedelta(days=30)
 
     has_idempotency_table = client.conn.execute(
         """
@@ -172,7 +189,7 @@ def test_partitioned_queue_creates_partitioned_parents_and_week_partitions(clien
 def test_ensure_partitions_can_precreate_future_weeks(client):
     queue = "mode-partition-future"
     base = datetime(2024, 4, 1, 12, 0, tzinfo=timezone.utc)
-    future = base + timedelta(days=21)
+    future = base + timedelta(days=56)
     client.set_fake_now(base)
     client.create_queue(queue, storage_mode="partitioned")
 
@@ -186,7 +203,13 @@ def test_ensure_partitions_can_precreate_future_weeks(client):
     # Not created by initial queue setup yet.
     assert _get_relkind(client.conn, f"t_{queue}_{future_tag}") is None
 
-    client.conn.execute("select absurd.ensure_partitions(%s, %s)", (queue, future))
+    client.conn.execute(
+        """
+        select absurd.set_queue_policy(%s, %s::jsonb)
+        """,
+        (queue, '{"partition_lookahead": "60 days"}'),
+    )
+    client.conn.execute("select absurd.ensure_partitions(%s)", (queue,))
 
     for prefix in ["t", "r", "c", "w"]:
         assert _get_relkind(client.conn, f"{prefix}_{queue}_{future_tag}") == "r"
@@ -212,6 +235,68 @@ def test_partitioned_queue_creation_uses_skew_lookback_window(client):
     for prefix in ["t", "r", "c", "w"]:
         assert _get_relkind(client.conn, f"{prefix}_{queue}_{current_tag}") == "r"
         assert _get_relkind(client.conn, f"{prefix}_{queue}_{previous_tag}") == "r"
+
+
+def test_queue_policy_can_be_updated(client):
+    queue = "mode-policy"
+    client.create_queue(queue, storage_mode="partitioned")
+
+    client.conn.execute(
+        """
+        select absurd.set_queue_policy(
+          %s,
+          %s::jsonb
+        )
+        """,
+        (
+            queue,
+            '{"partition_lookahead":"35 days","partition_lookback":"2 days","cleanup_ttl_seconds":12345,"cleanup_limit":77,"detach_mode":"empty","detach_min_age":"45 days"}',
+        ),
+    )
+
+    row = client.conn.execute(
+        """
+        select
+          partition_lookahead,
+          partition_lookback,
+          cleanup_ttl_seconds,
+          cleanup_limit,
+          detach_mode,
+          detach_min_age
+        from absurd.get_queue_policy(%s)
+        """,
+        (queue,),
+    ).fetchone()
+
+    assert row is not None
+    assert row[0] == timedelta(days=35)
+    assert row[1] == timedelta(days=2)
+    assert row[2] == 12345
+    assert row[3] == 77
+    assert row[4] == "empty"
+    assert row[5] == timedelta(days=45)
+
+
+def test_set_queue_policy_rejects_unknown_keys(client):
+    queue = "mode-policy-unknown"
+    client.create_queue(queue)
+
+    with pytest.raises(Exception):
+        client.conn.execute(
+            "select absurd.set_queue_policy(%s, %s::jsonb)",
+            (queue, '{"not_a_policy": true}'),
+        )
+
+
+def test_set_queue_policy_rejects_invalid_values(client):
+    queue = "mode-policy-invalid"
+    client.create_queue(queue)
+
+    with pytest.raises(Exception):
+        client.conn.execute(
+            "select absurd.set_queue_policy(%s, %s::jsonb)",
+            (queue, '{"cleanup_limit": 0}'),
+        )
 
 
 def test_create_queue_rejects_existing_partitioned_queue_in_default_mode(client):

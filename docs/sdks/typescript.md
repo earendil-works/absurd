@@ -279,9 +279,18 @@ const result = await app.retryTask(taskID, {
 ## Queue Management
 
 ```typescript
-await app.createQueue('emails');
+await app.createQueue('emails'); // default: unpartitioned
+await app.createQueue('emails-part', { storageMode: 'partitioned' });
+await app.createQueue('retained', {
+  cleanupTtlSeconds: 90 * 86400,
+  cleanupLimit: 2000,
+  partitionLookahead: '42 days',
+  partitionLookback: '2 days',
+  detachMode: 'empty',
+  detachMinAge: '30 days',
+});
 await app.dropQueue('emails');
-const queues = await app.listQueues(); // ['default', 'emails']
+const queues = await app.listQueues();
 ```
 
 ## Starting a Worker

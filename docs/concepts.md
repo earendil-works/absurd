@@ -108,6 +108,15 @@ Postgres tables:
 
 Partitioned queues additionally have an `i_` table for idempotency key mapping.
 
+Each queue also carries a maintenance policy (stored in `absurd.queues`) for:
+
+- partition window provisioning (`partition_lookahead`, `partition_lookback`)
+- cleanup retention (`cleanup_ttl_seconds`, `cleanup_limit`)
+- optional detach planning (`detach_mode`, `detach_min_age`)
+
+`absurd.ensure_partitions()` and `absurd.cleanup_all_queues()` use this stored
+policy, which keeps runtime maintenance behavior consistent and inspectable.
+
 Queues let you scale workers independently and isolate different workloads.
 
 ## Workers
