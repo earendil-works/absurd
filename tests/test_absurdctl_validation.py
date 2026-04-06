@@ -42,6 +42,8 @@ RemoteMigrationDiscoveryError = MODULE["RemoteMigrationDiscoveryError"]
         "-bad",
         "bad space",
         "bad'quote",
+        "   ",
+        "\t",
     ],
 )
 def test_validate_queue_name_accepts_supported_names(queue_name):
@@ -52,7 +54,6 @@ def test_validate_queue_name_accepts_supported_names(queue_name):
     "queue_name",
     [
         "",
-        "   ",
         "a" * 58,
     ],
 )

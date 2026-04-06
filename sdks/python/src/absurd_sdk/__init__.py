@@ -285,7 +285,7 @@ _CHECKPOINT_NOT_FOUND = object()
 
 
 def _validate_queue_name(queue_name: str) -> str:
-    if queue_name is None or len(queue_name.strip()) == 0:
+    if queue_name is None or queue_name == "":
         raise ValueError("Queue name must be provided")
 
     if len(queue_name.encode("utf-8")) > _MAX_QUEUE_NAME_LENGTH:

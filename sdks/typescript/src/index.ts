@@ -1330,7 +1330,7 @@ export class Absurd {
 const MAX_QUEUE_NAME_LENGTH = 57;
 
 function validateQueueName(queueName: string): string {
-  if (!queueName || queueName.trim().length === 0) {
+  if (!queueName) {
     throw new Error("Queue name must be provided");
   }
   if (Buffer.byteLength(queueName, "utf8") > MAX_QUEUE_NAME_LENGTH) {

@@ -57,7 +57,7 @@ def queue_relation(prefix, queue_name):
 
 def validate_queue_name(value):
     """Validate queue names used in dynamic table/index names."""
-    if value is None or len(value.strip()) == 0:
+    if value is None or value == "":
         print("Error: Queue name must be provided.", file=sys.stderr)
         sys.exit(1)
 
@@ -2147,7 +2147,7 @@ def cmd_list_tasks(args):
         print("No queues found in the database", file=sys.stderr)
         sys.exit(0)
 
-    queues = [q for q in queues_result.strip().split("\n") if q]
+    queues = [q for q in queues_result.splitlines() if q != ""]
 
     # Filter to specific queue if requested
     if options.queue:
@@ -2408,7 +2408,7 @@ def cmd_dump_task(args):
         print("No queues found in the database", file=sys.stderr)
         sys.exit(1)
 
-    queues = [q for q in queues_result.strip().split("\n") if q]
+    queues = [q for q in queues_result.splitlines() if q != ""]
 
     # Find which queue contains the task/run
     target_queue = None

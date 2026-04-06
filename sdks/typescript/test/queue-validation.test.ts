@@ -6,7 +6,7 @@ describe("Queue name validation", () => {
     const fakeCon = { query: async () => ({ rows: [] }) } as any;
 
     assert.throws(
-      () => new Absurd({ db: fakeCon, queueName: "   " }),
+      () => new Absurd({ db: fakeCon, queueName: "" }),
       /Queue name must be provided/,
     );
   });
@@ -22,7 +22,8 @@ describe("Queue name validation", () => {
     const absurd = new Absurd({ db: fakeCon, queueName: "default" });
 
     await absurd.createQueue("Queue Name-1");
-    expect(called).toBe(1);
+    await absurd.createQueue("   ");
+    expect(called).toBe(2);
   });
 
   test("rejects overlong queue names", async () => {
@@ -46,7 +47,7 @@ describe("Queue name validation", () => {
     const absurd = new Absurd({ db: fakeCon, queueName: "default" });
 
     await expect(
-      absurd.spawn("task", { value: 1 }, { queue: "\t" }),
+      absurd.spawn("task", { value: 1 }, { queue: "" }),
     ).rejects.toThrowError("Queue name must be provided");
     expect(called).toBe(0);
   });

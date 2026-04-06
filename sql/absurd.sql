@@ -92,7 +92,7 @@ create function absurd.validate_queue_name (p_queue_name text)
   language plpgsql
 as $$
 begin
-  if p_queue_name is null or length(trim(p_queue_name)) = 0 then
+  if p_queue_name is null or p_queue_name = '' then
     raise exception 'Queue name must be provided';
   end if;
 
@@ -2582,18 +2582,16 @@ begin
 end;
 $$;
 
--- Ensures per-partition one-off-ish cron jobs exist for detach/drop.
+-- Schedules per-partition one-off-ish cron jobs for detach/drop.
 --
 -- Detach jobs run the raw top-level DETACH ... CONCURRENTLY statement and
 -- unschedule themselves after success. If detach fails due transient locking,
--- the job keeps retrying on the configured schedule.
+-- the job keeps retrying every minute.
 --
 -- Drop jobs poll via absurd.drop_detached_partition() and unschedule
 -- themselves once the partition has been dropped.
-create function absurd.ensure_detach_jobs (
-  p_queue_name text default null,
-  p_scope text default null,
-  p_job_schedule text default '* * * * *'
+create function absurd.schedule_detach_jobs (
+  p_queue_name text default null
 )
   returns table (
     job_name text,
@@ -2616,10 +2614,6 @@ declare
 begin
   if p_queue_name is not null then
     p_queue_name := absurd.validate_queue_name(p_queue_name);
-  end if;
-
-  if p_job_schedule is null or length(trim(p_job_schedule)) = 0 then
-    raise exception 'Detach job schedule must be provided';
   end if;
 
   if to_regclass('cron.job') is null then
@@ -2646,17 +2640,10 @@ begin
     raise exception 'pg_cron is not available (missing cron.unschedule)';
   end if;
 
-  v_scope := lower(trim(coalesce(p_scope, '')));
-  if v_scope = '' then
-    v_scope := case
-      when p_queue_name is null then 'all'
-      else substr(md5(p_queue_name), 1, 12)
-    end;
-  end if;
-
-  if v_scope !~ '^[a-z0-9_]+$' then
-    raise exception 'Invalid detach job scope "%"', v_scope;
-  end if;
+  v_scope := case
+    when p_queue_name is null then 'all'
+    else substr(md5(p_queue_name), 1, 12)
+  end;
 
   for v_candidate in
     select c.*
@@ -2694,7 +2681,7 @@ begin
 
       execute 'select cron.schedule($1, $2, $3)'
         into v_job_id
-        using v_detach_job_name, p_job_schedule, v_detach_command;
+        using v_detach_job_name, '* * * * *', v_detach_command;
 
       job_name := v_detach_job_name;
       job_id := v_job_id;
@@ -2718,7 +2705,7 @@ begin
 
       execute 'select cron.schedule($1, $2, $3)'
         into v_job_id
-        using v_drop_job_name, p_job_schedule, v_drop_command;
+        using v_drop_job_name, '* * * * *', v_drop_command;
 
       job_name := v_drop_job_name;
       job_id := v_job_id;
@@ -2733,7 +2720,7 @@ $$;
 
 -- Configures pg_cron jobs for partition provisioning, cleanup, and detach planning.
 --
--- Detach planning schedules per-partition jobs (via absurd.ensure_detach_jobs)
+-- Detach planning schedules per-partition jobs (via absurd.schedule_detach_jobs)
 -- that run raw DETACH ... CONCURRENTLY and follow-up drop checks.
 --
 -- Requires pg_cron to be installed (or compatible cron schema/functions).
@@ -2840,9 +2827,8 @@ begin
   v_detach_plan_job_name := 'absurd_detach_plan_' || v_job_suffix;
 
   v_detach_plan_command := format(
-    'select * from absurd.ensure_detach_jobs(%s, %L);',
-    v_queue_literal,
-    v_job_suffix
+    'select * from absurd.schedule_detach_jobs(%s);',
+    v_queue_literal
   );
 
   for v_existing_job_id in

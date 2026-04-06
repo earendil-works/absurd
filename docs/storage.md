@@ -198,7 +198,7 @@ absurdctl cron --disable --queue jobs
 
 1. **partition provisioning** (`absurd.ensure_partitions(...)`)
 2. **cleanup** (`absurd.cleanup_all_queues(...)`)
-3. **detach planning** (`absurd.ensure_detach_jobs(...)`)
+3. **detach planning** (`absurd.schedule_detach_jobs(...)`)
 
 Detach planning then creates per-partition detach/drop jobs as needed.
 

@@ -134,7 +134,7 @@ def test_enable_cron_schedules_partition_cleanup_and_detach_planner_jobs(client)
     assert cleanup_job[1] == "7 * * * *"
     assert "absurd.cleanup_all_queues('cron-partitioned')" in cleanup_job[2]
     assert detach_plan_job[1] == "29 * * * *"
-    assert "absurd.ensure_detach_jobs('cron-partitioned'" in detach_plan_job[2]
+    assert "absurd.schedule_detach_jobs('cron-partitioned')" in detach_plan_job[2]
     assert partition_job[1] == "*/15 * * * *"
     assert "absurd.ensure_partitions('cron-partitioned')" in partition_job[2]
 
@@ -160,7 +160,7 @@ def test_enable_cron_schedules_partition_cleanup_and_detach_planner_jobs(client)
     assert job_count[0] == 3
 
 
-def test_ensure_detach_jobs_schedules_detach_and_drop_jobs(client):
+def test_schedule_detach_jobs_schedules_detach_and_drop_jobs(client):
     queue = "cron-detach-jobs"
     base = datetime(2024, 4, 1, 12, 0, tzinfo=timezone.utc)
     client.set_fake_now(base)
@@ -173,14 +173,18 @@ def test_ensure_detach_jobs_schedules_detach_and_drop_jobs(client):
     _install_mock_cron(client.conn)
 
     client.set_fake_now(base + timedelta(days=90))
+    scope = client.conn.execute(
+        "select substr(md5(%s), 1, 12)",
+        (queue,),
+    ).fetchone()[0]
 
     scheduled = client.conn.execute(
         """
         select job_name, job_kind, partition_table
-        from absurd.ensure_detach_jobs(%s, %s, %s)
+        from absurd.schedule_detach_jobs(%s)
         order by job_name
         """,
-        (queue, "qscope", "*/2 * * * *"),
+        (queue,),
     ).fetchall()
 
     assert scheduled
@@ -191,20 +195,23 @@ def test_ensure_detach_jobs_schedules_detach_and_drop_jobs(client):
         """
         select jobname, schedule, command
         from cron.job
-        where jobname like 'absurd_detach_run_qscope_%'
-           or jobname like 'absurd_drop_run_qscope_%'
+        where jobname like %s
+           or jobname like %s
         order by jobname
-        """
+        """,
+        (f"absurd_detach_run_{scope}_%", f"absurd_drop_run_{scope}_%"),
     ).fetchall()
 
     assert jobs
     for _, schedule, _ in jobs:
-        assert schedule == "*/2 * * * *"
+        assert schedule == "* * * * *"
 
     detach_jobs = [
-        job for job in jobs if job[0].startswith("absurd_detach_run_qscope_")
+        job for job in jobs if job[0].startswith(f"absurd_detach_run_{scope}_")
     ]
-    drop_jobs = [job for job in jobs if job[0].startswith("absurd_drop_run_qscope_")]
+    drop_jobs = [
+        job for job in jobs if job[0].startswith(f"absurd_drop_run_{scope}_")
+    ]
     assert detach_jobs
     assert drop_jobs
     assert "detach partition" in detach_jobs[0][2].lower()
@@ -214,8 +221,8 @@ def test_ensure_detach_jobs_schedules_detach_and_drop_jobs(client):
 
     # Idempotent: second pass should create no new jobs.
     scheduled_again = client.conn.execute(
-        "select * from absurd.ensure_detach_jobs(%s, %s, %s)",
-        (queue, "qscope", "*/2 * * * *"),
+        "select * from absurd.schedule_detach_jobs(%s)",
+        (queue,),
     ).fetchall()
     assert scheduled_again == []
 
@@ -241,14 +248,10 @@ def test_disable_cron_unschedules_queue_jobs(client):
     )
 
     # Seed per-partition detach/drop jobs for this queue scope.
-    scope = client.conn.execute(
-        "select substr(md5(%s), 1, 12)",
-        (queue,),
-    ).fetchone()[0]
     client.set_fake_now(base + timedelta(days=90))
     client.conn.execute(
-        "select * from absurd.ensure_detach_jobs(%s, %s, %s)",
-        (queue, scope, "*/5 * * * *"),
+        "select * from absurd.schedule_detach_jobs(%s)",
+        (queue,),
     )
 
     removed = client.conn.execute(
