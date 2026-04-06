@@ -1,7 +1,8 @@
 import os
 import shlex
 import subprocess
-from datetime import datetime, timezone
+import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import psycopg
@@ -25,12 +26,15 @@ TEST_ROOT = Path(__file__).resolve().parent
 PROJECT_ROOT = TEST_ROOT.parent
 ABSURD_SQL = PROJECT_ROOT / "sql" / "absurd.sql"
 PGCRON_DOCKER_DIR = TEST_ROOT / "docker" / "pg16-pgcron"
-PGCRON_IMAGE = "absurd-test-postgres16-pgcron:16-1.6.7"
+PGCRON_IMAGE = "absurd-test-postgres16-pgcron:16-1.6.7-faketime6"
+PGCRON_FAKETIME_FILE = "/tmp/absurd-faketime.ts"
 
 
 class PgCronContainerControl:
     def __init__(self, container):
         self.container = container
+        self._anchor_time = None
+        self._anchor_monotonic = None
 
     def _exec_root(self, command):
         wrapped = self.container.get_wrapped_container()
@@ -42,28 +46,59 @@ class PgCronContainerControl:
             )
         return output
 
-    def set_system_time(self, when):
+    def _normalize_time(self, when):
         if isinstance(when, datetime):
             if when.tzinfo is None:
                 when = when.replace(tzinfo=timezone.utc)
-            when = when.astimezone(timezone.utc)
-            value = when.strftime("%Y-%m-%d %H:%M:%S")
-        else:
-            value = str(when)
+            return when.astimezone(timezone.utc)
 
-        self._exec_root(f"date -u -s {shlex.quote(value)}")
+        text = str(when).strip()
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        parsed = datetime.fromisoformat(text)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+
+    def set_system_time(self, when):
+        normalized = self._normalize_time(when).replace(microsecond=0)
+        real_epoch = int(self._exec_root("date -u +%s"))
+        target_epoch = int(normalized.timestamp())
+        offset_seconds = target_epoch - real_epoch
+        # Use a relative offset so fake time continues to tick forward.
+        value = f"{offset_seconds:+d}"
+        self._exec_root(
+            f"printf '%s\\n' {shlex.quote(value)} > {shlex.quote(PGCRON_FAKETIME_FILE)}"
+        )
+        self._anchor_time = normalized
+        self._anchor_monotonic = time.monotonic()
 
     def advance_system_time(self, *, seconds=0, minutes=0, hours=0, days=0):
         total_seconds = int(seconds + minutes * 60 + hours * 3600 + days * 86400)
         if total_seconds == 0:
             return
 
-        current_epoch = int(self._exec_root("date -u +%s"))
-        self._exec_root(f"date -u -s @{current_epoch + total_seconds}")
+        current = self.get_system_time()
+        self.set_system_time(current + timedelta(seconds=total_seconds))
 
     def get_system_time(self):
-        value = self._exec_root("date -u +'%Y-%m-%dT%H:%M:%SZ'")
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if self._anchor_time is not None and self._anchor_monotonic is not None:
+            elapsed = max(0.0, time.monotonic() - self._anchor_monotonic)
+            return self._anchor_time + timedelta(seconds=elapsed)
+
+        value = self._exec_root(f"cat {shlex.quote(PGCRON_FAKETIME_FILE)}")
+        value = value.strip()
+        if value.startswith("@"):
+            return datetime.strptime(value[1:], "%Y-%m-%d %H:%M:%S").replace(
+                tzinfo=timezone.utc
+            )
+
+        try:
+            return datetime.now(timezone.utc) + timedelta(seconds=int(value))
+        except ValueError:
+            return datetime.strptime(value, "%Y-%m-%d %H:%M:%S").replace(
+                tzinfo=timezone.utc
+            )
 
 
 def _docker_image_exists(image):
@@ -144,8 +179,8 @@ def pgcron_postgres_container():
             "-c",
             "cron.max_running_jobs=32",
         ],
-        cap_add=["SYS_TIME"],
     )
+
     container.start()
     control = PgCronContainerControl(container)
     try:

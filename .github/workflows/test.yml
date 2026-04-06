@@ -33,18 +33,18 @@ jobs:
         id: cache-pgcron-image
         uses: actions/cache@v4
         with:
-          path: /tmp/absurd-test-postgres16-pgcron-16-1.6.7.tar
+          path: /tmp/absurd-test-postgres16-pgcron-16-1.6.7-faketime6.tar
           key: ${{ runner.os }}-pgcron-image-${{ hashFiles('tests/docker/pg16-pgcron/Dockerfile') }}
 
       - name: Load cached pg_cron test image
         if: steps.cache-pgcron-image.outputs.cache-hit == 'true'
-        run: docker load --input /tmp/absurd-test-postgres16-pgcron-16-1.6.7.tar
+        run: docker load --input /tmp/absurd-test-postgres16-pgcron-16-1.6.7-faketime6.tar
 
       - name: Build and cache pg_cron test image
         if: steps.cache-pgcron-image.outputs.cache-hit != 'true'
         run: |
-          docker build -t absurd-test-postgres16-pgcron:16-1.6.7 tests/docker/pg16-pgcron
-          docker save absurd-test-postgres16-pgcron:16-1.6.7 --output /tmp/absurd-test-postgres16-pgcron-16-1.6.7.tar
+          docker build -t absurd-test-postgres16-pgcron:16-1.6.7-faketime6 tests/docker/pg16-pgcron
+          docker save absurd-test-postgres16-pgcron:16-1.6.7-faketime6 --output /tmp/absurd-test-postgres16-pgcron-16-1.6.7-faketime6.tar
 
       - name: Run tests
         run: make test
