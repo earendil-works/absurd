@@ -394,13 +394,6 @@ create function absurd.drop_queue (p_queue_name text)
 as $$
 declare
   v_existing_queue text;
-  v_job_suffix text;
-  v_partition_job_name text;
-  v_cleanup_job_name text;
-  v_detach_plan_job_name text;
-  v_detach_run_pattern text;
-  v_drop_run_pattern text;
-  v_existing_job_id bigint;
 begin
   select queue_name into v_existing_queue
   from absurd.queues
@@ -410,41 +403,8 @@ begin
     return;
   end if;
 
-  -- If pg_cron is available, remove queue-scoped maintenance jobs so they
-  -- don't keep failing after the queue is dropped.
-  if to_regclass('cron.job') is not null
-     and exists (
-       select 1
-       from pg_proc p
-       join pg_namespace n on n.oid = p.pronamespace
-       where n.nspname = 'cron'
-         and p.proname = 'unschedule'
-     )
-  then
-    v_job_suffix := substr(md5(p_queue_name), 1, 12);
-    v_partition_job_name := 'absurd_partitions_' || v_job_suffix;
-    v_cleanup_job_name := 'absurd_cleanup_' || v_job_suffix;
-    v_detach_plan_job_name := 'absurd_detach_plan_' || v_job_suffix;
-    v_detach_run_pattern := 'absurd_detach_run_' || v_job_suffix || '_%';
-    v_drop_run_pattern := 'absurd_drop_run_' || v_job_suffix || '_%';
-
-    for v_existing_job_id in
-      execute 'select jobid
-                 from cron.job
-                where jobname = $1
-                   or jobname = $2
-                   or jobname = $3
-                   or jobname like $4
-                   or jobname like $5'
-      using v_partition_job_name,
-            v_cleanup_job_name,
-            v_detach_plan_job_name,
-            v_detach_run_pattern,
-            v_drop_run_pattern
-    loop
-      execute 'select cron.unschedule($1)' using v_existing_job_id;
-    end loop;
-  end if;
+  -- Remove queue-scoped maintenance jobs.
+  perform absurd.disable_cron(p_queue_name);
 
   execute format('drop table if exists absurd.%I cascade', 'i_' || p_queue_name);
   execute format('drop table if exists absurd.%I cascade', 'w_' || p_queue_name);
