@@ -18,10 +18,7 @@ def test_pep440_version_from_describe_accepts_exact_tags():
 
 def test_pep440_version_from_describe_converts_git_describe_output():
     assert pep440_version_from_describe("0.2.0-0-g11fbcf8") == "0.2.0"
-    assert (
-        pep440_version_from_describe("0.2.0-25-g11fbcf8")
-        == "0.2.0.dev25+g11fbcf8"
-    )
+    assert pep440_version_from_describe("0.2.0-25-g11fbcf8") == "0.2.0.dev25+g11fbcf8"
     assert (
         pep440_version_from_describe("v0.2.0-1-gdeadbee-dirty")
         == "0.2.0.dev1+gdeadbee.dirty"

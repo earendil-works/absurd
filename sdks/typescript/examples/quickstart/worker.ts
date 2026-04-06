@@ -31,7 +31,9 @@ app.registerTask<ProvisionUserParams>(
       "demo-transient-outage",
     );
     if (!outage.done) {
-      console.log(`[${ctx.taskID}] simulating a temporary email provider outage`);
+      console.log(
+        `[${ctx.taskID}] simulating a temporary email provider outage`,
+      );
       await ctx.completeStep(outage, { simulated: true });
       throw new Error("temporary email provider outage");
     }
@@ -46,12 +48,9 @@ app.registerTask<ProvisionUserParams>(
     });
 
     console.log(`[${ctx.taskID}] waiting for user-activated:${user.user_id}`);
-    const activation = (await ctx.awaitEvent(
-      `user-activated:${user.user_id}`,
-      {
-        timeout: 3600,
-      },
-    )) as ActivationEvent;
+    const activation = (await ctx.awaitEvent(`user-activated:${user.user_id}`, {
+      timeout: 3600,
+    })) as ActivationEvent;
 
     return {
       user_id: user.user_id,

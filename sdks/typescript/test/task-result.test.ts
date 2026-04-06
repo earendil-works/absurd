@@ -160,13 +160,16 @@ describe("Task result APIs", () => {
       child: "ok",
     }));
 
-    absurd.registerTask({ name: "same-queue-parent" }, async (_params, taskCtx) => {
-      const child = await absurd.spawn("same-queue-child", {});
-      await taskCtx.awaitTaskResult(child.taskID, {
-        timeout: 120,
-      });
-      return { ok: true };
-    });
+    absurd.registerTask(
+      { name: "same-queue-parent" },
+      async (_params, taskCtx) => {
+        const child = await absurd.spawn("same-queue-child", {});
+        await taskCtx.awaitTaskResult(child.taskID, {
+          timeout: 120,
+        });
+        return { ok: true };
+      },
+    );
 
     const worker = await absurd.startWorker({
       concurrency: 1,
