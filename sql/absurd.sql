@@ -403,8 +403,16 @@ begin
     return;
   end if;
 
-  -- Remove queue-scoped maintenance jobs.
-  perform absurd.disable_cron(p_queue_name);
+  -- Remove queue-scoped maintenance jobs only when pg_cron is available.
+  if to_regclass('cron.job') is not null and exists (
+    select 1
+    from pg_proc p
+    join pg_namespace n on n.oid = p.pronamespace
+    where n.nspname = 'cron'
+      and p.proname = 'unschedule'
+  ) then
+    perform absurd.disable_cron(p_queue_name);
+  end if;
 
   execute format('drop table if exists absurd.%I cascade', 'i_' || p_queue_name);
   execute format('drop table if exists absurd.%I cascade', 'w_' || p_queue_name);
