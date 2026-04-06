@@ -703,25 +703,25 @@ begin
 
       if v_row_count = 0 then
         execute format(
-          'select task_id
-             from absurd.%I
-            where idempotency_key = $1',
-          'i_' || p_queue_name
-        )
-        into v_existing_task_id
-        using v_idempotency_key;
-
-        execute format(
-          'select last_attempt_run, attempts
-             from absurd.%I
-            where task_id = $1',
+          'select i.task_id, t.last_attempt_run, t.attempts
+             from absurd.%I i
+             join absurd.%I t on t.task_id = i.task_id
+            where i.idempotency_key = $1
+              for key share of i',
+          'i_' || p_queue_name,
           't_' || p_queue_name
         )
-        into v_existing_run_id, v_existing_attempt
-        using v_existing_task_id;
+        into v_existing_task_id, v_existing_run_id, v_existing_attempt
+        using v_idempotency_key;
 
-        if v_existing_task_id is null or v_existing_run_id is null then
-          raise exception 'Idempotency key "%" is inconsistent in queue "%"', v_idempotency_key, p_queue_name;
+        if v_existing_task_id is null then
+          raise exception 'Idempotency key "%" in queue "%" was concurrently cleaned up', v_idempotency_key, p_queue_name
+            using errcode = '40001',
+                  hint = 'Retry spawn_task with the same idempotency key.';
+        end if;
+
+        if v_existing_run_id is null then
+          raise exception 'Idempotency key "%" in queue "%" resolved to task "%" without a run', v_idempotency_key, p_queue_name, v_existing_task_id;
         end if;
 
         return query select v_existing_task_id, v_existing_run_id, v_existing_attempt, false;
