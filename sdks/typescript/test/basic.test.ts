@@ -117,36 +117,27 @@ describe("Basic SDK Operations", () => {
         detachMinAge: "45 days",
       });
 
-      const policy = await ctx.pool.query<{
-        partition_lookahead: string;
-        partition_lookback: string;
-        cleanup_ttl_seconds: number;
-        cleanup_limit: number;
-        detach_mode: string;
-        detach_min_age: string;
-      }>(
-        `
-          SELECT
-            partition_lookahead::text,
-            partition_lookback::text,
-            cleanup_ttl_seconds,
-            cleanup_limit,
-            detach_mode,
-            detach_min_age::text
-          FROM absurd.get_queue_policy($1)
-        `,
-        [queueName],
-      );
-
-      expect(policy.rows).toHaveLength(1);
-      expect(policy.rows[0]).toEqual({
-        partition_lookahead: "35 days",
-        partition_lookback: "2 days",
-        cleanup_ttl_seconds: 12345,
-        cleanup_limit: 77,
-        detach_mode: "empty",
-        detach_min_age: "45 days",
+      const policy = await absurd.getQueuePolicy(queueName);
+      expect(policy).toEqual({
+        queueName,
+        storageMode: "partitioned",
+        partitionLookahead: "35 days",
+        partitionLookback: "2 days",
+        cleanupTtlSeconds: 12345,
+        cleanupLimit: 77,
+        detachMode: "empty",
+        detachMinAge: "45 days",
       });
+
+      await absurd.setQueuePolicy(queueName, {
+        cleanupTtlSeconds: 4321,
+        cleanupLimit: 12,
+      });
+
+      const updated = await absurd.getQueuePolicy(queueName);
+      expect(updated).not.toBeNull();
+      expect(updated?.cleanupTtlSeconds).toBe(4321);
+      expect(updated?.cleanupLimit).toBe(12);
 
       await absurd.dropQueue(queueName);
     });

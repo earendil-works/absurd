@@ -40,14 +40,28 @@ export type QueueStorageMode = "unpartitioned" | "partitioned";
 
 export type QueueDetachMode = "none" | "empty";
 
-export interface CreateQueueOptions {
-  storageMode?: QueueStorageMode;
+export interface QueuePolicyOptions {
   partitionLookahead?: string;
   partitionLookback?: string;
   cleanupTtlSeconds?: number;
   cleanupLimit?: number;
   detachMode?: QueueDetachMode;
   detachMinAge?: string;
+}
+
+export interface CreateQueueOptions extends QueuePolicyOptions {
+  storageMode?: QueueStorageMode;
+}
+
+export interface QueuePolicy {
+  queueName: string;
+  storageMode: QueueStorageMode;
+  partitionLookahead: string;
+  partitionLookback: string;
+  cleanupTtlSeconds: number;
+  cleanupLimit: number;
+  detachMode: QueueDetachMode;
+  detachMinAge: string;
 }
 
 export interface RetryTaskOptions {
@@ -732,6 +746,12 @@ export class Absurd {
       ]);
     }
 
+    await this.setQueuePolicy(queue, options);
+  }
+
+  private buildQueuePolicyPayload(
+    options: QueuePolicyOptions,
+  ): Record<string, unknown> {
     const policy: Record<string, unknown> = {};
 
     if (options.partitionLookahead !== undefined) {
@@ -758,12 +778,74 @@ export class Absurd {
       policy.detach_min_age = options.detachMinAge;
     }
 
-    if (Object.keys(policy).length > 0) {
-      await this.con.query(`SELECT absurd.set_queue_policy($1, $2::jsonb)`, [
-        queue,
-        JSON.stringify(policy),
-      ]);
+    return policy;
+  }
+
+  /**
+   * Updates queue maintenance policy fields.
+   */
+  async setQueuePolicy(
+    queueName?: string,
+    options: QueuePolicyOptions = {},
+  ): Promise<void> {
+    const queue = validateQueueName(queueName ?? this.queueName);
+    const policy = this.buildQueuePolicyPayload(options);
+    if (Object.keys(policy).length === 0) {
+      return;
     }
+
+    await this.con.query(`SELECT absurd.set_queue_policy($1, $2::jsonb)`, [
+      queue,
+      JSON.stringify(policy),
+    ]);
+  }
+
+  /**
+   * Fetches queue maintenance policy fields.
+   */
+  async getQueuePolicy(queueName?: string): Promise<QueuePolicy | null> {
+    const queue = validateQueueName(queueName ?? this.queueName);
+    const result = await this.con.query<{
+      queue_name: string;
+      storage_mode: string;
+      partition_lookahead: string;
+      partition_lookback: string;
+      cleanup_ttl_seconds: number;
+      cleanup_limit: number;
+      detach_mode: string;
+      detach_min_age: string;
+    }>(
+      `
+        SELECT
+          queue_name,
+          storage_mode,
+          partition_lookahead::text,
+          partition_lookback::text,
+          cleanup_ttl_seconds,
+          cleanup_limit,
+          detach_mode,
+          detach_min_age::text
+        FROM absurd.get_queue_policy($1)
+      `,
+      [queue],
+    );
+
+    if (result.rows.length === 0) {
+      return null;
+    }
+
+    const row = result.rows[0];
+
+    return {
+      queueName: row.queue_name,
+      storageMode: row.storage_mode as QueueStorageMode,
+      partitionLookahead: row.partition_lookahead,
+      partitionLookback: row.partition_lookback,
+      cleanupTtlSeconds: row.cleanup_ttl_seconds,
+      cleanupLimit: row.cleanup_limit,
+      detachMode: row.detach_mode as QueueDetachMode,
+      detachMinAge: row.detach_min_age,
+    };
   }
 
   /**

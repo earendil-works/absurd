@@ -289,6 +289,8 @@ await app.createQueue('retained', {
   detachMode: 'empty',
   detachMinAge: '30 days',
 });
+await app.setQueuePolicy('retained', { cleanupTtlSeconds: 60 * 86400 });
+const policy = await app.getQueuePolicy('retained');
 await app.dropQueue('emails');
 const queues = await app.listQueues();
 ```
