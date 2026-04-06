@@ -13,7 +13,9 @@ def _wait_until(predicate, *, timeout=30.0, interval=0.25, message="condition no
     raise AssertionError(message)
 
 
-def test_pgcron_time_jump_executes_detach_and_drop_jobs(pgcron_client, pgcron_postgres_container):
+def test_pgcron_time_jump_executes_detach_and_drop_jobs(
+    pgcron_client, pgcron_postgres_container
+):
     queue = "cron-live-detach"
     base = datetime(2024, 4, 1, 12, 0, tzinfo=timezone.utc)
 
@@ -97,15 +99,17 @@ def test_pgcron_time_jump_executes_detach_and_drop_jobs(pgcron_client, pgcron_po
 
     _wait_until(
         lambda: (
-            (row := pgcron_client.conn.execute(
-                """
+            (
+                row := pgcron_client.conn.execute(
+                    """
                 select status
                 from cron.job_run_details
                 where command ilike 'alter table absurd.% detach partition absurd.% concurrently%'
                 order by runid desc
                 limit 1
                 """,
-            ).fetchone())
+                ).fetchone()
+            )
             is not None
             and row[0] != "running"
         ),
@@ -166,11 +170,13 @@ def test_drop_queue_removes_queue_scoped_pgcron_jobs(pgcron_client):
     ).fetchone()[0]
 
     _wait_until(
-        lambda: pgcron_client.conn.execute(
-            "select count(*) from cron.job where jobname like %s",
-            (f"absurd%{scope}%",),
-        ).fetchone()[0]
-        >= 3,
+        lambda: (
+            pgcron_client.conn.execute(
+                "select count(*) from cron.job where jobname like %s",
+                (f"absurd%{scope}%",),
+            ).fetchone()[0]
+            >= 3
+        ),
         timeout=10.0,
         message="expected queue-scoped cron jobs were not created",
     )
@@ -221,8 +227,10 @@ def test_pgcron_cleanup_all_queues_cleans_old_rows_only(
     )
 
     _wait_until(
-        lambda: pgcron_client.count_tasks(queue) == 1
-        and pgcron_client.count_events(queue) == 1,
+        lambda: (
+            pgcron_client.count_tasks(queue) == 1
+            and pgcron_client.count_events(queue) == 1
+        ),
         timeout=20.0,
         message="cleanup cron job did not remove expected old rows",
     )
@@ -380,8 +388,8 @@ def test_ensure_partitions_and_default_partition_fallback_with_real_time(
         (spawned.run_id,),
     ).fetchone()[0]
 
-    assert task_partition.replace('"', '') == f"absurd.t_{queue}_d"
-    assert run_partition.replace('"', '') == f"absurd.r_{queue}_d"
+    assert task_partition.replace('"', "") == f"absurd.t_{queue}_d"
+    assert run_partition.replace('"', "") == f"absurd.r_{queue}_d"
 
 
 def test_tasks_in_default_partition_are_claimable_and_completable(
@@ -418,8 +426,8 @@ def test_tasks_in_default_partition_are_claimable_and_completable(
         (spawned.run_id,),
     ).fetchone()[0]
 
-    assert task_partition.replace('"', '') == f"absurd.t_{queue}_d"
-    assert run_partition.replace('"', '') == f"absurd.r_{queue}_d"
+    assert task_partition.replace('"', "") == f"absurd.t_{queue}_d"
+    assert run_partition.replace('"', "") == f"absurd.r_{queue}_d"
 
     claim = pgcron_client.claim_tasks(queue, worker="default-worker")
     assert claim

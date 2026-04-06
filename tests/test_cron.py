@@ -209,9 +209,7 @@ def test_schedule_detach_jobs_schedules_detach_and_drop_jobs(client):
     detach_jobs = [
         job for job in jobs if job[0].startswith(f"absurd_detach_run_{scope}_")
     ]
-    drop_jobs = [
-        job for job in jobs if job[0].startswith(f"absurd_drop_run_{scope}_")
-    ]
+    drop_jobs = [job for job in jobs if job[0].startswith(f"absurd_drop_run_{scope}_")]
     assert detach_jobs
     assert drop_jobs
     assert "detach partition" in detach_jobs[0][2].lower()

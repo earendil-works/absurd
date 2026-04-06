@@ -37,7 +37,9 @@ class PgCronContainerControl:
         result = wrapped.exec_run(["sh", "-lc", command], user="root")
         output = result.output.decode("utf-8", errors="replace").strip()
         if result.exit_code != 0:
-            raise RuntimeError(f"container command failed ({result.exit_code}): {command}\n{output}")
+            raise RuntimeError(
+                f"container command failed ({result.exit_code}): {command}\n{output}"
+            )
         return output
 
     def set_system_time(self, when):
