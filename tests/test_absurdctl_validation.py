@@ -251,7 +251,7 @@ def test_queue_policy_set_uses_parameterized_json_payload(monkeypatch):
                 "partitioned",
                 "28 days",
                 "1 day",
-                "604800",
+                "7 days",
                 "100",
                 "none",
                 "30 days",
@@ -266,9 +266,7 @@ def test_queue_policy_set_uses_parameterized_json_payload(monkeypatch):
         lambda *_: None,
     )
 
-    cmd_queue_policy(
-        ["jobs", "--cleanup-ttl-seconds", "604800", "--cleanup-limit", "100"]
-    )
+    cmd_queue_policy(["jobs", "--cleanup-ttl", "7 days", "--cleanup-limit", "100"])
 
     assert (
         captured["query"]
@@ -277,7 +275,7 @@ def test_queue_policy_set_uses_parameterized_json_payload(monkeypatch):
     assert captured["variables"]["queue_name"] == "jobs"
     assert (
         captured["variables"]["policy_json"]
-        == '{"cleanup_ttl_seconds": 604800, "cleanup_limit": 100}'
+        == '{"cleanup_ttl": "7 days", "cleanup_limit": 100}'
     )
 
 

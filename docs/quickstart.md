@@ -22,6 +22,7 @@ The exact examples in this guide live in the repository:
 ## Prerequisites
 
 - **PostgreSQL** (14 or later)
+- **`pg_cron` extension** *(optional, only needed if you want Absurd-managed cron automation for partition provisioning/cleanup/detach)*
 - **Node.js** with native TypeScript type stripping for the TypeScript SDK
 - **Python** (3.11+) with **`uv`** for the Python SDK
 - **Go** (1.25+) for the Go SDK

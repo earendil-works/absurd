@@ -1022,7 +1022,7 @@ def _fetch_queue_policy(config, queue_name):
           storage_mode,
           partition_lookahead::text,
           partition_lookback::text,
-          cleanup_ttl_seconds,
+          cleanup_ttl::text,
           cleanup_limit,
           detach_mode,
           detach_min_age::text
@@ -1042,7 +1042,7 @@ def _fetch_queue_policy(config, queue_name):
         "storage_mode": parts[1],
         "partition_lookahead": parts[2],
         "partition_lookback": parts[3],
-        "cleanup_ttl_seconds": parts[4],
+        "cleanup_ttl": parts[4],
         "cleanup_limit": parts[5],
         "detach_mode": parts[6],
         "detach_min_age": parts[7],
@@ -1054,7 +1054,7 @@ def _print_queue_policy(policy):
     print(f"  storage_mode: {policy['storage_mode']}")
     print(f"  partition_lookahead: {policy['partition_lookahead']}")
     print(f"  partition_lookback: {policy['partition_lookback']}")
-    print(f"  cleanup_ttl_seconds: {policy['cleanup_ttl_seconds']}")
+    print(f"  cleanup_ttl: {policy['cleanup_ttl']}")
     print(f"  cleanup_limit: {policy['cleanup_limit']}")
     print(f"  detach_mode: {policy['detach_mode']}")
     print(f"  detach_min_age: {policy['detach_min_age']}")
@@ -1077,11 +1077,10 @@ def cmd_queue_policy(args):
         help="Policy partition lookback interval (for example: '1 day')",
     )
     parser.add_option(
-        "--cleanup-ttl-seconds",
-        dest="cleanup_ttl_seconds",
-        type="int",
-        metavar="SECONDS",
-        help="Cleanup retention in seconds",
+        "--cleanup-ttl",
+        dest="cleanup_ttl",
+        metavar="INTERVAL",
+        help="Cleanup retention interval (for example: '30 days')",
     )
     parser.add_option(
         "--cleanup-limit",
@@ -1107,7 +1106,7 @@ def cmd_queue_policy(args):
 
     examples = [
         "absurdctl queue-policy myqueue",
-        "absurdctl queue-policy myqueue --cleanup-ttl-seconds 86400 --cleanup-limit 2000",
+        "absurdctl queue-policy myqueue --cleanup-ttl '30 days' --cleanup-limit 2000",
         "absurdctl queue-policy myqueue --partition-lookahead '42 days' --partition-lookback '2 days'",
         "absurdctl queue-policy myqueue --detach-mode empty --detach-min-age '30 days'",
     ]
@@ -1128,11 +1127,8 @@ def cmd_queue_policy(args):
         policy_payload["partition_lookahead"] = options.partition_lookahead
     if options.partition_lookback is not None:
         policy_payload["partition_lookback"] = options.partition_lookback
-    if options.cleanup_ttl_seconds is not None:
-        if options.cleanup_ttl_seconds < 0:
-            print("Error: --cleanup-ttl-seconds must be non-negative", file=sys.stderr)
-            sys.exit(1)
-        policy_payload["cleanup_ttl_seconds"] = options.cleanup_ttl_seconds
+    if options.cleanup_ttl is not None:
+        policy_payload["cleanup_ttl"] = options.cleanup_ttl
     if options.cleanup_limit is not None:
         if options.cleanup_limit < 1:
             print("Error: --cleanup-limit must be at least 1", file=sys.stderr)
@@ -2898,7 +2894,7 @@ Examples:
   absurdctl schema-version
   absurdctl cleanup myqueue 30
   absurdctl create-queue myqueue --storage-mode partitioned
-  absurdctl queue-policy myqueue --cleanup-ttl-seconds 604800
+  absurdctl queue-policy myqueue --cleanup-ttl '7 days'
   absurdctl cron --enable --queue myqueue
   absurdctl list-detach-candidates --queue myqueue
   absurdctl detach-candidate --queue myqueue 1a2b3c4d5e6f --drop

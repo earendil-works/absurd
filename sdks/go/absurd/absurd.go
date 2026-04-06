@@ -120,7 +120,7 @@ const (
 type QueuePolicyOptions struct {
 	PartitionLookahead string
 	PartitionLookback  string
-	CleanupTTLSeconds  *int
+	CleanupTTL         string
 	CleanupLimit       *int
 	DetachMode         QueueDetachMode
 	DetachMinAge       string
@@ -138,7 +138,7 @@ type QueuePolicy struct {
 	StorageMode        QueueStorageMode
 	PartitionLookahead string
 	PartitionLookback  string
-	CleanupTTLSeconds  int
+	CleanupTTL         string
 	CleanupLimit       int
 	DetachMode         QueueDetachMode
 	DetachMinAge       string
@@ -554,7 +554,7 @@ func (c *Client) GetQueuePolicy(ctx context.Context, queueName string) (*QueuePo
       storage_mode,
       partition_lookahead::text,
       partition_lookback::text,
-      cleanup_ttl_seconds,
+      cleanup_ttl::text,
       cleanup_limit,
       detach_mode,
       detach_min_age::text
@@ -568,7 +568,7 @@ func (c *Client) GetQueuePolicy(ctx context.Context, queueName string) (*QueuePo
 		&storageMode,
 		&policy.PartitionLookahead,
 		&policy.PartitionLookback,
-		&policy.CleanupTTLSeconds,
+		&policy.CleanupTTL,
 		&policy.CleanupLimit,
 		&detachMode,
 		&policy.DetachMinAge,
@@ -931,8 +931,8 @@ func queuePolicyPayload(options QueuePolicyOptions) (map[string]any, error) {
 	if options.PartitionLookback != "" {
 		payload["partition_lookback"] = options.PartitionLookback
 	}
-	if options.CleanupTTLSeconds != nil {
-		payload["cleanup_ttl_seconds"] = *options.CleanupTTLSeconds
+	if options.CleanupTTL != "" {
+		payload["cleanup_ttl"] = options.CleanupTTL
 	}
 	if options.CleanupLimit != nil {
 		payload["cleanup_limit"] = *options.CleanupLimit

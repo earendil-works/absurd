@@ -72,7 +72,7 @@ def test_cleanup_all_queues_runs_batch_for_all_queues(client):
         client.emit_event(queue, f"event:{spawned.task_id}", {"queue": queue})
         client.conn.execute(
             "select absurd.set_queue_policy(%s, %s::jsonb)",
-            (queue, '{"cleanup_ttl_seconds": 3600, "cleanup_limit": 10}'),
+            (queue, '{"cleanup_ttl": "3600 seconds", "cleanup_limit": 10}'),
         )
 
     client.set_fake_now(base + timedelta(days=2))

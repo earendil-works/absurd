@@ -344,7 +344,7 @@ app.create_queue("emails-part", storage_mode="partitioned")
 app.create_queue(
     "retained",
     storage_mode="partitioned",
-    cleanup_ttl_seconds=90 * 86400,
+    cleanup_ttl="90 days",
     cleanup_limit=2000,
     partition_lookahead="42 days",
     partition_lookback="2 days",
@@ -353,7 +353,7 @@ app.create_queue(
 )
 
 # Update/read policy later
-app.set_queue_policy("retained", cleanup_ttl_seconds=60 * 86400)
+app.set_queue_policy("retained", cleanup_ttl="60 days")
 policy = app.get_queue_policy("retained")
 
 app.drop_queue("emails")

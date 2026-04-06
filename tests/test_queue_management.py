@@ -79,7 +79,7 @@ def test_queue_storage_mode_defaults_to_unpartitioned(client):
           storage_mode,
           partition_lookahead,
           partition_lookback,
-          cleanup_ttl_seconds,
+          cleanup_ttl,
           cleanup_limit,
           detach_mode,
           detach_min_age
@@ -92,7 +92,7 @@ def test_queue_storage_mode_defaults_to_unpartitioned(client):
     assert row[0] == "unpartitioned"
     assert row[1] == timedelta(days=28)
     assert row[2] == timedelta(days=1)
-    assert row[3] == 30 * 86400
+    assert row[3] == timedelta(days=30)
     assert row[4] == 1000
     assert row[5] == "none"
     assert row[6] == timedelta(days=30)
@@ -250,7 +250,7 @@ def test_queue_policy_can_be_updated(client):
         """,
         (
             queue,
-            '{"partition_lookahead":"35 days","partition_lookback":"2 days","cleanup_ttl_seconds":12345,"cleanup_limit":77,"detach_mode":"empty","detach_min_age":"45 days"}',
+            '{"partition_lookahead":"35 days","partition_lookback":"2 days","cleanup_ttl":"12345 seconds","cleanup_limit":77,"detach_mode":"empty","detach_min_age":"45 days"}',
         ),
     )
 
@@ -259,7 +259,7 @@ def test_queue_policy_can_be_updated(client):
         select
           partition_lookahead,
           partition_lookback,
-          cleanup_ttl_seconds,
+          cleanup_ttl,
           cleanup_limit,
           detach_mode,
           detach_min_age
@@ -271,7 +271,7 @@ def test_queue_policy_can_be_updated(client):
     assert row is not None
     assert row[0] == timedelta(days=35)
     assert row[1] == timedelta(days=2)
-    assert row[2] == 12345
+    assert row[2] == timedelta(seconds=12345)
     assert row[3] == 77
     assert row[4] == "empty"
     assert row[5] == timedelta(days=45)

@@ -96,14 +96,14 @@ func TestQueuePolicyMethods(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 
-	ttl := 12345
+	ttl := "12345 seconds"
 	limit := 77
 	if err := client.CreateQueue(context.Background(), queue, absurd.CreateQueueOptions{
 		StorageMode: absurd.QueueStoragePartitioned,
 		QueuePolicyOptions: absurd.QueuePolicyOptions{
 			PartitionLookahead: "35 days",
 			PartitionLookback:  "2 days",
-			CleanupTTLSeconds:  &ttl,
+			CleanupTTL:         ttl,
 			CleanupLimit:       &limit,
 			DetachMode:         absurd.QueueDetachEmpty,
 			DetachMinAge:       "45 days",
@@ -125,18 +125,20 @@ func TestQueuePolicyMethods(t *testing.T) {
 	if policy.PartitionLookahead != "35 days" || policy.PartitionLookback != "2 days" {
 		t.Fatalf("unexpected partition window: %#v", policy)
 	}
-	if policy.CleanupTTLSeconds != 12345 || policy.CleanupLimit != 77 {
+	if policy.CleanupTTL != "3:25:45" && policy.CleanupTTL != "03:25:45" {
+		t.Fatalf("unexpected cleanup ttl: %#v", policy)
+	}
+	if policy.CleanupLimit != 77 {
 		t.Fatalf("unexpected cleanup policy: %#v", policy)
 	}
 	if policy.DetachMode != absurd.QueueDetachEmpty || policy.DetachMinAge != "45 days" {
 		t.Fatalf("unexpected detach policy: %#v", policy)
 	}
 
-	updatedTTL := 4321
 	updatedLimit := 12
 	if err := client.SetQueuePolicy(context.Background(), queue, absurd.QueuePolicyOptions{
-		CleanupTTLSeconds: &updatedTTL,
-		CleanupLimit:      &updatedLimit,
+		CleanupTTL:   "4321 seconds",
+		CleanupLimit: &updatedLimit,
 	}); err != nil {
 		t.Fatalf("SetQueuePolicy: %v", err)
 	}
@@ -148,7 +150,10 @@ func TestQueuePolicyMethods(t *testing.T) {
 	if updated == nil {
 		t.Fatal("expected updated queue policy")
 	}
-	if updated.CleanupTTLSeconds != updatedTTL || updated.CleanupLimit != updatedLimit {
+	if updated.CleanupTTL != "1:12:01" && updated.CleanupTTL != "01:12:01" {
+		t.Fatalf("unexpected updated cleanup ttl: %#v", updated)
+	}
+	if updated.CleanupLimit != updatedLimit {
 		t.Fatalf("unexpected updated cleanup policy: %#v", updated)
 	}
 }

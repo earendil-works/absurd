@@ -166,7 +166,7 @@ View or update per-queue maintenance policy.
 absurdctl queue-policy jobs
 
 # Update cleanup behavior
-absurdctl queue-policy jobs --cleanup-ttl-seconds 604800 --cleanup-limit 2000
+absurdctl queue-policy jobs --cleanup-ttl '7 days' --cleanup-limit 2000
 
 # Update partition window and detach behavior
 absurdctl queue-policy jobs \
@@ -182,7 +182,7 @@ Options:
 |------|-------------|
 | `--partition-lookahead INTERVAL` | Partition lookahead window |
 | `--partition-lookback INTERVAL` | Partition lookback window |
-| `--cleanup-ttl-seconds SECONDS` | Cleanup retention TTL in seconds |
+| `--cleanup-ttl INTERVAL` | Cleanup retention interval |
 | `--cleanup-limit N` | Cleanup batch size |
 | `--detach-mode MODE` | Detach mode: `none` or `empty` |
 | `--detach-min-age INTERVAL` | Minimum partition age before detach planning |

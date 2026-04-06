@@ -118,7 +118,7 @@ class QueuePolicyOptions(TypedDict, total=False):
 
     partition_lookahead: str
     partition_lookback: str
-    cleanup_ttl_seconds: int
+    cleanup_ttl: str
     cleanup_limit: int
     detach_mode: QueueDetachMode
     detach_min_age: str
@@ -137,7 +137,7 @@ class QueuePolicy(TypedDict):
     storage_mode: QueueStorageMode
     partition_lookahead: timedelta
     partition_lookback: timedelta
-    cleanup_ttl_seconds: int
+    cleanup_ttl: timedelta
     cleanup_limit: int
     detach_mode: QueueDetachMode
     detach_min_age: timedelta
@@ -540,7 +540,7 @@ def _normalize_spawn_options(
 def _normalize_queue_policy_options(
     partition_lookahead: Optional[str] = None,
     partition_lookback: Optional[str] = None,
-    cleanup_ttl_seconds: Optional[int] = None,
+    cleanup_ttl: Optional[str] = None,
     cleanup_limit: Optional[int] = None,
     detach_mode: Optional[QueueDetachMode] = None,
     detach_min_age: Optional[str] = None,
@@ -551,8 +551,8 @@ def _normalize_queue_policy_options(
         normalized["partition_lookahead"] = partition_lookahead
     if partition_lookback is not None:
         normalized["partition_lookback"] = partition_lookback
-    if cleanup_ttl_seconds is not None:
-        normalized["cleanup_ttl_seconds"] = cleanup_ttl_seconds
+    if cleanup_ttl is not None:
+        normalized["cleanup_ttl"] = cleanup_ttl
     if cleanup_limit is not None:
         normalized["cleanup_limit"] = cleanup_limit
     if detach_mode is not None:
@@ -1327,7 +1327,7 @@ class Absurd(_AbsurdBase):
         storage_mode: QueueStorageMode = "unpartitioned",
         partition_lookahead: Optional[str] = None,
         partition_lookback: Optional[str] = None,
-        cleanup_ttl_seconds: Optional[int] = None,
+        cleanup_ttl: Optional[str] = None,
         cleanup_limit: Optional[int] = None,
         detach_mode: Optional[QueueDetachMode] = None,
         detach_min_age: Optional[str] = None,
@@ -1350,7 +1350,7 @@ class Absurd(_AbsurdBase):
             queue_name=queue,
             partition_lookahead=partition_lookahead,
             partition_lookback=partition_lookback,
-            cleanup_ttl_seconds=cleanup_ttl_seconds,
+            cleanup_ttl=cleanup_ttl,
             cleanup_limit=cleanup_limit,
             detach_mode=detach_mode,
             detach_min_age=detach_min_age,
@@ -1362,7 +1362,7 @@ class Absurd(_AbsurdBase):
         *,
         partition_lookahead: Optional[str] = None,
         partition_lookback: Optional[str] = None,
-        cleanup_ttl_seconds: Optional[int] = None,
+        cleanup_ttl: Optional[str] = None,
         cleanup_limit: Optional[int] = None,
         detach_mode: Optional[QueueDetachMode] = None,
         detach_min_age: Optional[str] = None,
@@ -1375,7 +1375,7 @@ class Absurd(_AbsurdBase):
         policy = _normalize_queue_policy_options(
             partition_lookahead=partition_lookahead,
             partition_lookback=partition_lookback,
-            cleanup_ttl_seconds=cleanup_ttl_seconds,
+            cleanup_ttl=cleanup_ttl,
             cleanup_limit=cleanup_limit,
             detach_mode=detach_mode,
             detach_min_age=detach_min_age,
@@ -1403,7 +1403,7 @@ class Absurd(_AbsurdBase):
               storage_mode,
               partition_lookahead,
               partition_lookback,
-              cleanup_ttl_seconds,
+              cleanup_ttl,
               cleanup_limit,
               detach_mode,
               detach_min_age
@@ -1727,7 +1727,7 @@ class AsyncAbsurd(_AbsurdBase):
         storage_mode: QueueStorageMode = "unpartitioned",
         partition_lookahead: Optional[str] = None,
         partition_lookback: Optional[str] = None,
-        cleanup_ttl_seconds: Optional[int] = None,
+        cleanup_ttl: Optional[str] = None,
         cleanup_limit: Optional[int] = None,
         detach_mode: Optional[QueueDetachMode] = None,
         detach_min_age: Optional[str] = None,
@@ -1752,7 +1752,7 @@ class AsyncAbsurd(_AbsurdBase):
             queue_name=queue,
             partition_lookahead=partition_lookahead,
             partition_lookback=partition_lookback,
-            cleanup_ttl_seconds=cleanup_ttl_seconds,
+            cleanup_ttl=cleanup_ttl,
             cleanup_limit=cleanup_limit,
             detach_mode=detach_mode,
             detach_min_age=detach_min_age,
@@ -1764,7 +1764,7 @@ class AsyncAbsurd(_AbsurdBase):
         *,
         partition_lookahead: Optional[str] = None,
         partition_lookback: Optional[str] = None,
-        cleanup_ttl_seconds: Optional[int] = None,
+        cleanup_ttl: Optional[str] = None,
         cleanup_limit: Optional[int] = None,
         detach_mode: Optional[QueueDetachMode] = None,
         detach_min_age: Optional[str] = None,
@@ -1779,7 +1779,7 @@ class AsyncAbsurd(_AbsurdBase):
         policy = _normalize_queue_policy_options(
             partition_lookahead=partition_lookahead,
             partition_lookback=partition_lookback,
-            cleanup_ttl_seconds=cleanup_ttl_seconds,
+            cleanup_ttl=cleanup_ttl,
             cleanup_limit=cleanup_limit,
             detach_mode=detach_mode,
             detach_min_age=detach_min_age,
@@ -1809,7 +1809,7 @@ class AsyncAbsurd(_AbsurdBase):
               storage_mode,
               partition_lookahead,
               partition_lookback,
-              cleanup_ttl_seconds,
+              cleanup_ttl,
               cleanup_limit,
               detach_mode,
               detach_min_age

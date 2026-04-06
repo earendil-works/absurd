@@ -62,8 +62,8 @@ create table if not exists absurd.queues (
     check (partition_lookahead >= interval '0 seconds'),
   partition_lookback interval not null default interval '1 day'
     check (partition_lookback >= interval '0 seconds'),
-  cleanup_ttl_seconds integer not null default (30 * 86400)
-    check (cleanup_ttl_seconds >= 0),
+  cleanup_ttl interval not null default interval '30 days'
+    check (cleanup_ttl >= interval '0 seconds'),
   cleanup_limit integer not null default 1000
     check (cleanup_limit >= 1),
   detach_mode text not null default 'none'
@@ -431,7 +431,7 @@ create function absurd.get_queue_policy (
     storage_mode text,
     partition_lookahead interval,
     partition_lookback interval,
-    cleanup_ttl_seconds integer,
+    cleanup_ttl interval,
     cleanup_limit integer,
     detach_mode text,
     detach_min_age interval
@@ -443,7 +443,7 @@ as $$
     q.storage_mode,
     q.partition_lookahead,
     q.partition_lookback,
-    q.cleanup_ttl_seconds,
+    q.cleanup_ttl,
     q.cleanup_limit,
     q.detach_mode,
     q.detach_min_age
@@ -456,7 +456,7 @@ $$;
 -- p_policy accepts optional keys:
 -- * partition_lookahead (interval text)
 -- * partition_lookback (interval text)
--- * cleanup_ttl_seconds (integer >= 0)
+-- * cleanup_ttl (interval text, >= 0)
 -- * cleanup_limit (integer >= 1)
 -- * detach_mode ('none' | 'empty')
 -- * detach_min_age (interval text)
@@ -474,7 +474,7 @@ declare
 
   v_partition_lookahead interval;
   v_partition_lookback interval;
-  v_cleanup_ttl_seconds integer;
+  v_cleanup_ttl interval;
   v_cleanup_limit integer;
   v_detach_mode text;
   v_detach_min_age interval;
@@ -491,7 +491,7 @@ begin
    where k.key not in (
       'partition_lookahead',
       'partition_lookback',
-      'cleanup_ttl_seconds',
+      'cleanup_ttl',
       'cleanup_limit',
       'detach_mode',
       'detach_min_age'
@@ -516,14 +516,14 @@ begin
   select
     partition_lookahead,
     partition_lookback,
-    cleanup_ttl_seconds,
+    cleanup_ttl,
     cleanup_limit,
     detach_mode,
     detach_min_age
   into
     v_partition_lookahead,
     v_partition_lookback,
-    v_cleanup_ttl_seconds,
+    v_cleanup_ttl,
     v_cleanup_limit,
     v_detach_mode,
     v_detach_min_age
@@ -539,8 +539,8 @@ begin
     v_partition_lookback := (v_policy->>'partition_lookback')::interval;
   end if;
 
-  if v_policy ? 'cleanup_ttl_seconds' then
-    v_cleanup_ttl_seconds := (v_policy->>'cleanup_ttl_seconds')::integer;
+  if v_policy ? 'cleanup_ttl' then
+    v_cleanup_ttl := (v_policy->>'cleanup_ttl')::interval;
   end if;
 
   if v_policy ? 'cleanup_limit' then
@@ -563,8 +563,8 @@ begin
     raise exception 'partition_lookback must be non-negative';
   end if;
 
-  if v_cleanup_ttl_seconds < 0 then
-    raise exception 'cleanup_ttl_seconds must be non-negative';
+  if v_cleanup_ttl < interval '0 seconds' then
+    raise exception 'cleanup_ttl must be non-negative';
   end if;
 
   if v_cleanup_limit < 1 then
@@ -582,7 +582,7 @@ begin
   update absurd.queues
      set partition_lookahead = v_partition_lookahead,
          partition_lookback = v_partition_lookback,
-         cleanup_ttl_seconds = v_cleanup_ttl_seconds,
+         cleanup_ttl = v_cleanup_ttl,
          cleanup_limit = v_cleanup_limit,
          detach_mode = v_detach_mode,
          detach_min_age = v_detach_min_age
@@ -1921,6 +1921,7 @@ create function absurd.cleanup_all_queues (
 as $$
 declare
   v_queue record;
+  v_cleanup_ttl_seconds integer;
 begin
   if p_queue_name is not null then
     p_queue_name := absurd.validate_queue_name(p_queue_name);
@@ -1937,21 +1938,26 @@ begin
   for v_queue in
     select
       q.queue_name,
-      q.cleanup_ttl_seconds,
+      q.cleanup_ttl,
       q.cleanup_limit
     from absurd.queues q
     where p_queue_name is null or q.queue_name = p_queue_name
     order by q.queue_name
   loop
+    v_cleanup_ttl_seconds := greatest(
+      floor(extract(epoch from v_queue.cleanup_ttl))::integer,
+      0
+    );
+
     queue_name := v_queue.queue_name;
     tasks_deleted := absurd.cleanup_tasks(
       v_queue.queue_name,
-      v_queue.cleanup_ttl_seconds,
+      v_cleanup_ttl_seconds,
       v_queue.cleanup_limit
     );
     events_deleted := absurd.cleanup_events(
       v_queue.queue_name,
-      v_queue.cleanup_ttl_seconds,
+      v_cleanup_ttl_seconds,
       v_queue.cleanup_limit
     );
     return next;

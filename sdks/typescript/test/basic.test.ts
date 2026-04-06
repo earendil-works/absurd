@@ -111,32 +111,31 @@ describe("Basic SDK Operations", () => {
         storageMode: "partitioned",
         partitionLookahead: "35 days",
         partitionLookback: "2 days",
-        cleanupTtlSeconds: 12345,
+        cleanupTtl: "12345 seconds",
         cleanupLimit: 77,
         detachMode: "empty",
         detachMinAge: "45 days",
       });
 
       const policy = await absurd.getQueuePolicy(queueName);
-      expect(policy).toEqual({
-        queueName,
-        storageMode: "partitioned",
-        partitionLookahead: "35 days",
-        partitionLookback: "2 days",
-        cleanupTtlSeconds: 12345,
-        cleanupLimit: 77,
-        detachMode: "empty",
-        detachMinAge: "45 days",
-      });
+      expect(policy).not.toBeNull();
+      expect(policy?.queueName).toBe(queueName);
+      expect(policy?.storageMode).toBe("partitioned");
+      expect(policy?.partitionLookahead).toBe("35 days");
+      expect(policy?.partitionLookback).toBe("2 days");
+      expect(policy?.cleanupTtl?.endsWith("3:25:45")).toBe(true);
+      expect(policy?.cleanupLimit).toBe(77);
+      expect(policy?.detachMode).toBe("empty");
+      expect(policy?.detachMinAge).toBe("45 days");
 
       await absurd.setQueuePolicy(queueName, {
-        cleanupTtlSeconds: 4321,
+        cleanupTtl: "4321 seconds",
         cleanupLimit: 12,
       });
 
       const updated = await absurd.getQueuePolicy(queueName);
       expect(updated).not.toBeNull();
-      expect(updated?.cleanupTtlSeconds).toBe(4321);
+      expect(updated?.cleanupTtl?.endsWith("1:12:01")).toBe(true);
       expect(updated?.cleanupLimit).toBe(12);
 
       await absurd.dropQueue(queueName);

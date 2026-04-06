@@ -43,7 +43,7 @@ export type QueueDetachMode = "none" | "empty";
 export interface QueuePolicyOptions {
   partitionLookahead?: string;
   partitionLookback?: string;
-  cleanupTtlSeconds?: number;
+  cleanupTtl?: string;
   cleanupLimit?: number;
   detachMode?: QueueDetachMode;
   detachMinAge?: string;
@@ -58,7 +58,7 @@ export interface QueuePolicy {
   storageMode: QueueStorageMode;
   partitionLookahead: string;
   partitionLookback: string;
-  cleanupTtlSeconds: number;
+  cleanupTtl: string;
   cleanupLimit: number;
   detachMode: QueueDetachMode;
   detachMinAge: string;
@@ -762,8 +762,8 @@ export class Absurd {
       policy.partition_lookback = options.partitionLookback;
     }
 
-    if (options.cleanupTtlSeconds !== undefined) {
-      policy.cleanup_ttl_seconds = options.cleanupTtlSeconds;
+    if (options.cleanupTtl !== undefined) {
+      policy.cleanup_ttl = options.cleanupTtl;
     }
 
     if (options.cleanupLimit !== undefined) {
@@ -810,7 +810,7 @@ export class Absurd {
       storage_mode: string;
       partition_lookahead: string;
       partition_lookback: string;
-      cleanup_ttl_seconds: number;
+      cleanup_ttl: string;
       cleanup_limit: number;
       detach_mode: string;
       detach_min_age: string;
@@ -821,7 +821,7 @@ export class Absurd {
           storage_mode,
           partition_lookahead::text,
           partition_lookback::text,
-          cleanup_ttl_seconds,
+          cleanup_ttl::text as cleanup_ttl,
           cleanup_limit,
           detach_mode,
           detach_min_age::text
@@ -841,7 +841,7 @@ export class Absurd {
       storageMode: row.storage_mode as QueueStorageMode,
       partitionLookahead: row.partition_lookahead,
       partitionLookback: row.partition_lookback,
-      cleanupTtlSeconds: row.cleanup_ttl_seconds,
+      cleanupTtl: row.cleanup_ttl,
       cleanupLimit: row.cleanup_limit,
       detachMode: row.detach_mode as QueueDetachMode,
       detachMinAge: row.detach_min_age,

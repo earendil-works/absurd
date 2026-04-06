@@ -286,7 +286,7 @@ await app.createQueue('emails-part', { storageMode: 'partitioned' });
 // Configure policy at creation time.
 await app.createQueue('retained', {
   storageMode: 'partitioned',
-  cleanupTtlSeconds: 90 * 86400,
+  cleanupTtl: '90 days',
   cleanupLimit: 2000,
   partitionLookahead: '42 days',
   partitionLookback: '2 days',
@@ -295,7 +295,7 @@ await app.createQueue('retained', {
 });
 
 // Update/read policy later.
-await app.setQueuePolicy('retained', { cleanupTtlSeconds: 60 * 86400 });
+await app.setQueuePolicy('retained', { cleanupTtl: '60 days' });
 const policy = await app.getQueuePolicy('retained'); // QueuePolicy | null
 
 await app.dropQueue('emails');

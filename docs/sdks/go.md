@@ -568,12 +568,12 @@ if err := app.CreateQueue(ctx, "emails-part", absurd.CreateQueueOptions{
 }
 
 // Configure policy at creation time.
-ttl := 90 * 86400
+ttl := "90 days"
 limit := 2000
 if err := app.CreateQueue(ctx, "retained", absurd.CreateQueueOptions{
     StorageMode: absurd.QueueStoragePartitioned,
     QueuePolicyOptions: absurd.QueuePolicyOptions{
-        CleanupTTLSeconds:  &ttl,
+        CleanupTTL:         ttl,
         CleanupLimit:       &limit,
         PartitionLookahead: "42 days",
         PartitionLookback:  "2 days",
@@ -585,9 +585,9 @@ if err := app.CreateQueue(ctx, "retained", absurd.CreateQueueOptions{
 }
 
 // Update/read policy later.
-newTTL := 60 * 86400
+newTTL := "60 days"
 if err := app.SetQueuePolicy(ctx, "retained", absurd.QueuePolicyOptions{
-    CleanupTTLSeconds: &newTTL,
+    CleanupTTL: newTTL,
 }); err != nil {
     log.Fatal(err)
 }
