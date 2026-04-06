@@ -147,7 +147,10 @@ select absurd.cleanup_tasks('jobs', 30 * 86400, 1000);
 select absurd.cleanup_events('jobs', 30 * 86400, 1000);
 ```
 
-See also: **[Cleanup and Retention](./cleanup.md)**.
+See also:
+
+- **[Cleanup and Retention](./cleanup.md)** for the policy-driven model
+- **[absurdctl](./tools/absurdctl.md)** for operational commands
 
 ## Detaching Old Empty Partitions
 

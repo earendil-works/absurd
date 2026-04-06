@@ -340,16 +340,22 @@ absurdctl emit-event --queue=orders shipment.packed -P tracking:='"XYZ"'
 
 ### `cleanup`
 
-Delete old completed, failed, or cancelled tasks and events.  Takes a queue name
-and a TTL in days.
+Delete old completed, failed, or cancelled tasks and events for one queue.
+Takes a queue name and a TTL in days.
 
 ```bash
-absurdctl cleanup default 7     # delete data older than 7 days
-absurdctl cleanup emails 30     # 30-day retention
+absurdctl cleanup default 7
+absurdctl cleanup emails 30
 ```
 
-For batching, direct SQL usage, and cron/job examples, see
-**[Cleanup and Retention](./cleanup.md)**.
+Use this primarily for ad-hoc/manual cleanup.  For regular operations, prefer
+queue policy (`absurdctl queue-policy`) plus cron-managed
+`absurd.cleanup_all_queues(...)`.
+
+See:
+
+- **[Cleanup and Retention](../cleanup.md)** for the policy-driven model
+- **[Storage](../storage.md)** for partition lifecycle + cron maintenance
 
 ## Agent Skills
 
