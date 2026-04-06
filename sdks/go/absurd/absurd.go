@@ -423,7 +423,7 @@ func New(options Options) (*Client, error) {
 	if options.DB != nil {
 		db = options.DB
 	} else {
-		driverName := strings.TrimSpace(options.DriverName)
+		driverName := options.DriverName
 		if driverName == "" {
 			driverName = defaultDriverName
 		}
@@ -484,7 +484,7 @@ func (c *Client) MustRegister(task taskRegistration) {
 }
 
 func (c *Client) CreateQueue(ctx context.Context, queueName string, options ...CreateQueueOptions) error {
-	if strings.TrimSpace(queueName) == "" {
+	if queueName == "" {
 		queueName = c.queueName
 	}
 	validated, err := validateQueueName(queueName)
@@ -515,7 +515,7 @@ func (c *Client) CreateQueue(ctx context.Context, queueName string, options ...C
 }
 
 func (c *Client) SetQueuePolicy(ctx context.Context, queueName string, options QueuePolicyOptions) error {
-	if strings.TrimSpace(queueName) == "" {
+	if queueName == "" {
 		queueName = c.queueName
 	}
 	validated, err := validateQueueName(queueName)
@@ -541,7 +541,7 @@ func (c *Client) SetQueuePolicy(ctx context.Context, queueName string, options Q
 }
 
 func (c *Client) GetQueuePolicy(ctx context.Context, queueName string) (*QueuePolicy, error) {
-	if strings.TrimSpace(queueName) == "" {
+	if queueName == "" {
 		queueName = c.queueName
 	}
 	validated, err := validateQueueName(queueName)
@@ -856,7 +856,7 @@ func failTaskRunWithTraceback(ctx context.Context, db *sql.DB, queueName string,
 // Utility functions
 
 func validateQueueName(queueName string) (string, error) {
-	if strings.TrimSpace(queueName) == "" {
+	if queueName == "" {
 		return "", fmt.Errorf("queue name must be provided")
 	}
 	if len([]byte(queueName)) > maxQueueNameLength {

@@ -696,12 +696,6 @@ func TestFailureIncludesTraceback(t *testing.T) {
 	}
 }
 
-func TestQueueNameRejectsWhitespaceOnly(t *testing.T) {
-	_, err := absurd.New(absurd.Options{DB: setupTestDatabase(t), QueueName: "   "})
-	if err == nil || !strings.Contains(err.Error(), "queue name must be provided") {
-		t.Fatalf("expected queue validation error, got %v", err)
-	}
-}
 
 func TestInvalidHeadersFailRun(t *testing.T) {
 	queue := randomQueueName("go_invalid_headers")
