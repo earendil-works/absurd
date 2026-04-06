@@ -344,7 +344,7 @@ def test_detach_candidate_executes_detach_then_drop(monkeypatch):
                 "jobs",
                 "t_jobs",
                 "t_jobs_401",
-                'alter table absurd."t_jobs" detach partition absurd."t_jobs_401" concurrently',
+                'alter table absurd."t_jobs" detach partition absurd."t_jobs_401"',
                 'drop table if exists absurd."t_jobs_401"',
             ]
         ]

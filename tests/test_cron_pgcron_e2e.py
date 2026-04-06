@@ -13,8 +13,18 @@ def _wait_until(predicate, *, timeout=30.0, interval=0.25, message="condition no
     raise AssertionError(message)
 
 
+def _register_queue_cleanup(request, client, queue):
+    def _cleanup():
+        try:
+            client.drop_queue(queue)
+        except Exception:
+            pass
+
+    request.addfinalizer(_cleanup)
+
+
 def test_pgcron_time_jump_executes_detach_and_drop_jobs(
-    pgcron_client, pgcron_postgres_container
+    pgcron_client, pgcron_postgres_container, request
 ):
     queue = "cron-live-detach"
     base = datetime(2024, 4, 1, 12, 0, tzinfo=timezone.utc)
@@ -22,6 +32,7 @@ def test_pgcron_time_jump_executes_detach_and_drop_jobs(
     pgcron_postgres_container.set_system_time(base)
 
     pgcron_client.create_queue(queue, storage_mode="partitioned")
+    _register_queue_cleanup(request, pgcron_client, queue)
     pgcron_client.conn.execute(
         "select absurd.set_queue_policy(%s, %s::jsonb)",
         (queue, '{"detach_mode": "empty", "detach_min_age": "0 days"}'),
@@ -80,7 +91,7 @@ def test_pgcron_time_jump_executes_detach_and_drop_jobs(
             """
             select status, return_message
             from cron.job_run_details
-            where command ilike 'alter table absurd.% detach partition absurd.% concurrently%'
+            where command ilike 'alter table absurd.% detach partition absurd.%'
             order by runid desc
             limit 1
             """,
@@ -102,33 +113,42 @@ def test_pgcron_time_jump_executes_detach_and_drop_jobs(
             (
                 row := pgcron_client.conn.execute(
                     """
-                select status
-                from cron.job_run_details
-                where command ilike 'alter table absurd.% detach partition absurd.% concurrently%'
-                order by runid desc
-                limit 1
-                """,
+                    select status
+                    from cron.job_run_details
+                    where command ilike %s
+                      and command like %s
+                    order by runid desc
+                    limit 1
+                    """,
+                    (
+                        "alter table absurd.% detach partition absurd.%",
+                        f"%{partition_table}%",
+                    ),
                 ).fetchone()
             )
             is not None
             and row[0] != "running"
         ),
         timeout=20.0,
-        message="detach job did not finish",
+        message="target detach job did not finish",
     )
 
-    detach_row = pgcron_client.conn.execute(
+    target_detach_succeeded = pgcron_client.conn.execute(
         """
-        select status, return_message
-        from cron.job_run_details
-        where command ilike 'alter table absurd.% detach partition absurd.% concurrently%'
-        order by runid desc
-        limit 1
+        select exists (
+          select 1
+          from cron.job_run_details
+          where command ilike %s
+            and command like %s
+            and status = 'succeeded'
+        )
         """,
-    ).fetchone()
-    assert detach_row is not None
-    assert detach_row[0] == "failed"
-    assert "cannot be executed from a function" in (detach_row[1] or "")
+        (
+            "alter table absurd.% detach partition absurd.%",
+            f"%{partition_table}%",
+        ),
+    ).fetchone()[0]
+    assert target_detach_succeeded
 
     drop_ran = pgcron_client.conn.execute(
         """
@@ -141,21 +161,28 @@ def test_pgcron_time_jump_executes_detach_and_drop_jobs(
     ).fetchone()[0]
     assert drop_ran
 
-    # Since DETACH ... CONCURRENTLY fails under pg_cron execution context,
-    # the source partition is still present.
-    assert (
-        pgcron_client.conn.execute(
-            "select to_regclass(%s)",
-            (f"absurd.{partition_table}",),
-        ).fetchone()[0]
-        is not None
-    )
+    drop_deadline = time.monotonic() + 45.0
+    while True:
+        dropped = (
+            pgcron_client.conn.execute(
+                "select to_regclass(%s)",
+                (f"absurd.{partition_table}",),
+            ).fetchone()[0]
+            is None
+        )
+        if dropped:
+            break
+        if time.monotonic() >= drop_deadline:
+            raise AssertionError("partition table was not dropped")
+        pgcron_postgres_container.advance_system_time(minutes=2)
+        time.sleep(1.0)
 
 
-def test_drop_queue_removes_queue_scoped_pgcron_jobs(pgcron_client):
+def test_drop_queue_removes_queue_scoped_pgcron_jobs(pgcron_client, request):
     queue = "cron-drop-live"
 
     pgcron_client.create_queue(queue, storage_mode="partitioned")
+    _register_queue_cleanup(request, pgcron_client, queue)
     pgcron_client.conn.execute(
         """
         select *
@@ -193,6 +220,7 @@ def test_drop_queue_removes_queue_scoped_pgcron_jobs(pgcron_client):
 def test_pgcron_cleanup_all_queues_cleans_old_rows_only(
     pgcron_client,
     pgcron_postgres_container,
+    request,
 ):
     queue = "cron-cleanup-live"
     base = datetime(2024, 5, 1, 12, 0, tzinfo=timezone.utc)
@@ -200,6 +228,7 @@ def test_pgcron_cleanup_all_queues_cleans_old_rows_only(
     pgcron_postgres_container.set_system_time(base)
 
     pgcron_client.create_queue(queue, storage_mode="partitioned")
+    _register_queue_cleanup(request, pgcron_client, queue)
     pgcron_client.conn.execute(
         "select absurd.set_queue_policy(%s, %s::jsonb)",
         (queue, '{"cleanup_ttl": "3600 seconds", "cleanup_limit": 100}'),
@@ -254,12 +283,14 @@ def test_pgcron_cleanup_all_queues_cleans_old_rows_only(
 def test_partitioned_idempotency_key_survives_week_boundary_with_real_time(
     pgcron_client,
     pgcron_postgres_container,
+    request,
 ):
     queue = "cron-idempotency-live"
     base = datetime(2024, 5, 1, 9, 0, tzinfo=timezone.utc)
 
     pgcron_postgres_container.set_system_time(base)
     pgcron_client.create_queue(queue, storage_mode="partitioned")
+    _register_queue_cleanup(request, pgcron_client, queue)
 
     first = pgcron_client.spawn_task(
         queue,
@@ -294,6 +325,7 @@ def test_partitioned_idempotency_key_survives_week_boundary_with_real_time(
 def test_partitioned_events_resume_across_week_boundary_with_real_time(
     pgcron_client,
     pgcron_postgres_container,
+    request,
 ):
     queue = "cron-events-live"
     base = datetime(2024, 5, 1, 9, 0, tzinfo=timezone.utc)
@@ -302,6 +334,7 @@ def test_partitioned_events_resume_across_week_boundary_with_real_time(
 
     pgcron_postgres_container.set_system_time(base)
     pgcron_client.create_queue(queue, storage_mode="partitioned")
+    _register_queue_cleanup(request, pgcron_client, queue)
 
     spawned = pgcron_client.spawn_task(queue, "waiter", {"step": 1})
     claim = pgcron_client.claim_tasks(queue)[0]
@@ -338,12 +371,14 @@ def test_partitioned_events_resume_across_week_boundary_with_real_time(
 def test_ensure_partitions_and_default_partition_fallback_with_real_time(
     pgcron_client,
     pgcron_postgres_container,
+    request,
 ):
     queue = "cron-default-live"
     base = datetime(2024, 5, 1, 9, 0, tzinfo=timezone.utc)
 
     pgcron_postgres_container.set_system_time(base)
     pgcron_client.create_queue(queue, storage_mode="partitioned")
+    _register_queue_cleanup(request, pgcron_client, queue)
 
     # C1: ensure_partitions can precreate future week partitions.
     pgcron_client.conn.execute(
@@ -395,12 +430,14 @@ def test_ensure_partitions_and_default_partition_fallback_with_real_time(
 def test_tasks_in_default_partition_are_claimable_and_completable(
     pgcron_client,
     pgcron_postgres_container,
+    request,
 ):
     queue = "cron-default-taskflow"
     base = datetime(2024, 5, 1, 9, 0, tzinfo=timezone.utc)
 
     pgcron_postgres_container.set_system_time(base)
     pgcron_client.create_queue(queue, storage_mode="partitioned")
+    _register_queue_cleanup(request, pgcron_client, queue)
 
     # Keep partition window narrow so a far-future task lands in default.
     pgcron_client.conn.execute(

@@ -2404,8 +2404,7 @@ $$;
 
 -- Lists detach/drop commands for eligible partition tables.
 --
--- This does not execute detach directly because
--- DETACH PARTITION ... CONCURRENTLY must run as top-level SQL.
+-- This does not execute detach directly.
 -- Use this output from an external scheduler/executor.
 create function absurd.list_detach_candidates (
   p_queue_name text default null
@@ -2511,7 +2510,7 @@ begin
         parent_table := v_parent_table;
         partition_table := v_part.partition_name;
         detach_sql := format(
-          'alter table absurd.%I detach partition absurd.%I concurrently',
+          'alter table absurd.%I detach partition absurd.%I',
           v_parent_table,
           v_part.partition_name
         );
@@ -2531,7 +2530,9 @@ $$;
 --
 -- Returns true when the table was dropped. If p_unschedule_job_name is
 -- provided and pg_cron is available, the matching cron job is unscheduled
--- once the partition is gone.
+-- once the partition is gone. The paired detach job (if derivable from
+-- p_unschedule_job_name) is unscheduled as soon as the partition is observed
+-- detached so DETACH does not keep retrying.
 create function absurd.drop_detached_partition (
   p_partition_table text,
   p_unschedule_job_name text default null
@@ -2581,12 +2582,20 @@ begin
     return false;
   end if;
 
+  -- Once detached, stop retrying detach runs immediately. Keep drop
+  -- scheduled until the table is actually dropped.
+  if v_detach_job_name is not null and to_regclass('cron.job') is not null then
+    perform cron.unschedule(jobid)
+      from cron.job
+     where jobname = v_detach_job_name;
+  end if;
+
   execute format('drop table if exists absurd.%I', v_partition_table);
 
   if p_unschedule_job_name is not null and to_regclass('cron.job') is not null then
     perform cron.unschedule(jobid)
       from cron.job
-     where jobname in (p_unschedule_job_name, coalesce(v_detach_job_name, ''));
+     where jobname = p_unschedule_job_name;
   end if;
 
   return true;
@@ -2595,12 +2604,11 @@ $$;
 
 -- Schedules per-partition one-off-ish cron jobs for detach/drop.
 --
--- Detach jobs run the raw top-level DETACH ... CONCURRENTLY statement and
--- unschedule themselves after success. If detach fails due transient locking,
--- the job keeps retrying every minute.
+-- Detach jobs run the raw DETACH PARTITION statement.
 --
--- Drop jobs poll via absurd.drop_detached_partition() and unschedule
--- themselves once the partition has been dropped.
+-- Drop jobs poll via absurd.drop_detached_partition(); once a partition is
+-- detached, that function unschedules the paired detach job immediately and
+-- keeps retrying drop until the table is gone.
 create function absurd.schedule_detach_jobs (
   p_queue_name text default null
 )
@@ -2684,11 +2692,7 @@ begin
       where jobname = v_detach_job_name
          or jobname like ('absurd_detach_run_%_' || v_candidate_key)
     ) then
-      v_detach_command := format(
-        '%s; select cron.unschedule(jobid) from cron.job where jobname = %L;',
-        v_candidate.detach_sql,
-        v_detach_job_name
-      );
+      v_detach_command := v_candidate.detach_sql;
 
       execute 'select cron.schedule($1, $2, $3)'
         into v_job_id
@@ -2732,7 +2736,7 @@ $$;
 -- Configures pg_cron jobs for partition provisioning, cleanup, and detach planning.
 --
 -- Detach planning schedules per-partition jobs (via absurd.schedule_detach_jobs)
--- that run raw DETACH ... CONCURRENTLY and follow-up drop checks.
+-- that run raw DETACH statements and follow-up drop checks.
 --
 -- Requires pg_cron to be installed (or compatible cron schema/functions).
 create function absurd.enable_cron (

@@ -213,8 +213,8 @@ def test_schedule_detach_jobs_schedules_detach_and_drop_jobs(client):
     assert detach_jobs
     assert drop_jobs
     assert "detach partition" in detach_jobs[0][2].lower()
-    assert "concurrently" in detach_jobs[0][2].lower()
-    assert "cron.unschedule" in detach_jobs[0][2].lower()
+    assert "concurrently" not in detach_jobs[0][2].lower()
+    assert "cron.unschedule" not in detach_jobs[0][2].lower()
     assert "absurd.drop_detached_partition" in drop_jobs[0][2]
 
     # Idempotent: second pass should create no new jobs.

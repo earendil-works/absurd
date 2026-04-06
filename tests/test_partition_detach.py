@@ -37,7 +37,7 @@ def test_list_detach_candidates_respects_detach_policy(client):
         assert row[0] == queue
         assert row[2].endswith("_d") is False
         assert "detach partition" in row[3].lower()
-        assert "concurrently" in row[3].lower()
+        assert "concurrently" not in row[3].lower()
         assert row[4].lower().startswith("drop table if exists absurd.")
 
 
