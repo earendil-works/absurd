@@ -125,7 +125,7 @@ def postgres_container():
         container.stop()
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="function")
 def pgcron_postgres_container():
     _ensure_pgcron_image()
 
@@ -163,7 +163,7 @@ def db_dsn(postgres_container):
     return dsn
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="function")
 def pgcron_db_dsn(pgcron_postgres_container):
     dsn = _normalize_dsn(pgcron_postgres_container.container.get_connection_url())
     script = ABSURD_SQL.read_text()

@@ -13,18 +13,8 @@ def _wait_until(predicate, *, timeout=30.0, interval=0.25, message="condition no
     raise AssertionError(message)
 
 
-def _register_queue_cleanup(request, client, queue):
-    def _cleanup():
-        try:
-            client.drop_queue(queue)
-        except Exception:
-            pass
-
-    request.addfinalizer(_cleanup)
-
-
 def test_pgcron_time_jump_executes_detach_and_drop_jobs(
-    pgcron_client, pgcron_postgres_container, request
+    pgcron_client, pgcron_postgres_container
 ):
     queue = "cron-live-detach"
     base = datetime(2024, 4, 1, 12, 0, tzinfo=timezone.utc)
@@ -32,7 +22,6 @@ def test_pgcron_time_jump_executes_detach_and_drop_jobs(
     pgcron_postgres_container.set_system_time(base)
 
     pgcron_client.create_queue(queue, storage_mode="partitioned")
-    _register_queue_cleanup(request, pgcron_client, queue)
     pgcron_client.conn.execute(
         "select absurd.set_queue_policy(%s, %s::jsonb)",
         (queue, '{"detach_mode": "empty", "detach_min_age": "0 days"}'),
@@ -178,11 +167,10 @@ def test_pgcron_time_jump_executes_detach_and_drop_jobs(
         time.sleep(1.0)
 
 
-def test_drop_queue_removes_queue_scoped_pgcron_jobs(pgcron_client, request):
+def test_drop_queue_removes_queue_scoped_pgcron_jobs(pgcron_client):
     queue = "cron-drop-live"
 
     pgcron_client.create_queue(queue, storage_mode="partitioned")
-    _register_queue_cleanup(request, pgcron_client, queue)
     pgcron_client.conn.execute(
         """
         select *
@@ -220,7 +208,6 @@ def test_drop_queue_removes_queue_scoped_pgcron_jobs(pgcron_client, request):
 def test_pgcron_cleanup_all_queues_cleans_old_rows_only(
     pgcron_client,
     pgcron_postgres_container,
-    request,
 ):
     queue = "cron-cleanup-live"
     base = datetime(2024, 5, 1, 12, 0, tzinfo=timezone.utc)
@@ -228,7 +215,6 @@ def test_pgcron_cleanup_all_queues_cleans_old_rows_only(
     pgcron_postgres_container.set_system_time(base)
 
     pgcron_client.create_queue(queue, storage_mode="partitioned")
-    _register_queue_cleanup(request, pgcron_client, queue)
     pgcron_client.conn.execute(
         "select absurd.set_queue_policy(%s, %s::jsonb)",
         (queue, '{"cleanup_ttl": "3600 seconds", "cleanup_limit": 100}'),
@@ -283,14 +269,12 @@ def test_pgcron_cleanup_all_queues_cleans_old_rows_only(
 def test_partitioned_idempotency_key_survives_week_boundary_with_real_time(
     pgcron_client,
     pgcron_postgres_container,
-    request,
 ):
     queue = "cron-idempotency-live"
     base = datetime(2024, 5, 1, 9, 0, tzinfo=timezone.utc)
 
     pgcron_postgres_container.set_system_time(base)
     pgcron_client.create_queue(queue, storage_mode="partitioned")
-    _register_queue_cleanup(request, pgcron_client, queue)
 
     first = pgcron_client.spawn_task(
         queue,
@@ -325,7 +309,6 @@ def test_partitioned_idempotency_key_survives_week_boundary_with_real_time(
 def test_partitioned_events_resume_across_week_boundary_with_real_time(
     pgcron_client,
     pgcron_postgres_container,
-    request,
 ):
     queue = "cron-events-live"
     base = datetime(2024, 5, 1, 9, 0, tzinfo=timezone.utc)
@@ -334,7 +317,6 @@ def test_partitioned_events_resume_across_week_boundary_with_real_time(
 
     pgcron_postgres_container.set_system_time(base)
     pgcron_client.create_queue(queue, storage_mode="partitioned")
-    _register_queue_cleanup(request, pgcron_client, queue)
 
     spawned = pgcron_client.spawn_task(queue, "waiter", {"step": 1})
     claim = pgcron_client.claim_tasks(queue)[0]
@@ -371,14 +353,12 @@ def test_partitioned_events_resume_across_week_boundary_with_real_time(
 def test_ensure_partitions_and_default_partition_fallback_with_real_time(
     pgcron_client,
     pgcron_postgres_container,
-    request,
 ):
     queue = "cron-default-live"
     base = datetime(2024, 5, 1, 9, 0, tzinfo=timezone.utc)
 
     pgcron_postgres_container.set_system_time(base)
     pgcron_client.create_queue(queue, storage_mode="partitioned")
-    _register_queue_cleanup(request, pgcron_client, queue)
 
     # C1: ensure_partitions can precreate future week partitions.
     pgcron_client.conn.execute(
@@ -430,14 +410,12 @@ def test_ensure_partitions_and_default_partition_fallback_with_real_time(
 def test_tasks_in_default_partition_are_claimable_and_completable(
     pgcron_client,
     pgcron_postgres_container,
-    request,
 ):
     queue = "cron-default-taskflow"
     base = datetime(2024, 5, 1, 9, 0, tzinfo=timezone.utc)
 
     pgcron_postgres_container.set_system_time(base)
     pgcron_client.create_queue(queue, storage_mode="partitioned")
-    _register_queue_cleanup(request, pgcron_client, queue)
 
     # Keep partition window narrow so a far-future task lands in default.
     pgcron_client.conn.execute(
