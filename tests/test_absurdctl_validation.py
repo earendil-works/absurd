@@ -15,6 +15,11 @@ cmd_emit_event = MODULE["cmd_emit_event"]
 cmd_retry_task = MODULE["cmd_retry_task"]
 cmd_migrate = MODULE["cmd_migrate"]
 cmd_schema_version = MODULE["cmd_schema_version"]
+cmd_create_queue = MODULE["cmd_create_queue"]
+cmd_queue_policy = MODULE["cmd_queue_policy"]
+cmd_cron = MODULE["cmd_cron"]
+cmd_list_detach_candidates = MODULE["cmd_list_detach_candidates"]
+cmd_detach_candidate = MODULE["cmd_detach_candidate"]
 config_from_options = MODULE["config_from_options"]
 run_psql = MODULE["run_psql"]
 parse_migration_filename = MODULE["parse_migration_filename"]
@@ -175,6 +180,200 @@ def test_retry_task_allows_spawn_new_with_max_attempts(monkeypatch):
         captured["variables"]["options_json"]
         == '{"spawn_new": true, "max_attempts": 5}'
     )
+
+
+def test_create_queue_with_partitioned_storage_mode_uses_two_arg_function(monkeypatch):
+    captured = {}
+
+    def fake_run_psql(config, query=None, **kwargs):
+        captured["query"] = query
+        captured["variables"] = kwargs.get("variables")
+        return ""
+
+    monkeypatch.setitem(cmd_create_queue.__globals__, "run_psql", fake_run_psql)
+
+    cmd_create_queue(["--storage-mode", "partitioned", "jobs"])
+
+    assert (
+        captured["query"]
+        == "SELECT absurd.create_queue(:'queue_name', :'storage_mode');"
+    )
+    assert captured["variables"] == {
+        "queue_name": "jobs",
+        "storage_mode": "partitioned",
+    }
+
+
+def test_queue_policy_get_uses_policy_function(monkeypatch):
+    captured = {}
+
+    def fake_run_psql_csv(config, query=None, **kwargs):
+        captured["query"] = query
+        captured["variables"] = kwargs.get("variables")
+        return [
+            [
+                "jobs",
+                "partitioned",
+                "28 days",
+                "1 day",
+                "2592000",
+                "1000",
+                "none",
+                "30 days",
+            ]
+        ]
+
+    monkeypatch.setitem(cmd_queue_policy.__globals__, "run_psql_csv", fake_run_psql_csv)
+    monkeypatch.setitem(
+        cmd_queue_policy.__globals__,
+        "ensure_queue_exists",
+        lambda *_: None,
+    )
+
+    cmd_queue_policy(["jobs"])
+
+    assert "FROM absurd.get_queue_policy(:'queue_name')" in captured["query"]
+    assert captured["variables"]["queue_name"] == "jobs"
+
+
+def test_queue_policy_set_uses_parameterized_json_payload(monkeypatch):
+    captured = {}
+
+    def fake_run_psql(config, query=None, **kwargs):
+        captured["query"] = query
+        captured["variables"] = kwargs.get("variables")
+        return ""
+
+    def fake_run_psql_csv(config, query=None, **kwargs):
+        return [
+            [
+                "jobs",
+                "partitioned",
+                "28 days",
+                "1 day",
+                "604800",
+                "100",
+                "none",
+                "30 days",
+            ]
+        ]
+
+    monkeypatch.setitem(cmd_queue_policy.__globals__, "run_psql", fake_run_psql)
+    monkeypatch.setitem(cmd_queue_policy.__globals__, "run_psql_csv", fake_run_psql_csv)
+    monkeypatch.setitem(
+        cmd_queue_policy.__globals__,
+        "ensure_queue_exists",
+        lambda *_: None,
+    )
+
+    cmd_queue_policy(
+        ["jobs", "--cleanup-ttl-seconds", "604800", "--cleanup-limit", "100"]
+    )
+
+    assert (
+        captured["query"]
+        == "SELECT absurd.set_queue_policy(:'queue_name', :'policy_json'::jsonb);"
+    )
+    assert captured["variables"]["queue_name"] == "jobs"
+    assert (
+        captured["variables"]["policy_json"]
+        == '{"cleanup_ttl_seconds": 604800, "cleanup_limit": 100}'
+    )
+
+
+def test_cron_enable_uses_enable_cron_function(monkeypatch):
+    captured = {}
+
+    def fake_run_psql_csv(config, query=None, **kwargs):
+        captured["query"] = query
+        captured["variables"] = kwargs.get("variables")
+        return [["absurd_cleanup_deadbeef0000", "1"]]
+
+    monkeypatch.setitem(cmd_cron.__globals__, "run_psql_csv", fake_run_psql_csv)
+
+    cmd_cron(["--enable", "--queue", "jobs"])
+
+    assert "FROM absurd.enable_cron(" in captured["query"]
+    assert captured["variables"]["queue_name"] == "jobs"
+
+
+def test_cron_disable_uses_disable_cron_function(monkeypatch):
+    captured = {}
+
+    def fake_run_psql_csv(config, query=None, **kwargs):
+        captured["query"] = query
+        captured["variables"] = kwargs.get("variables")
+        return []
+
+    monkeypatch.setitem(cmd_cron.__globals__, "run_psql_csv", fake_run_psql_csv)
+
+    cmd_cron(["--disable", "--queue", "jobs"])
+
+    assert "FROM absurd.disable_cron(:'queue_name')" in captured["query"]
+    assert captured["variables"]["queue_name"] == "jobs"
+
+
+def test_list_detach_candidates_queries_function(monkeypatch):
+    captured = {}
+
+    def fake_run_psql_csv(config, query=None, **kwargs):
+        captured["query"] = query
+        captured["variables"] = kwargs.get("variables")
+        return []
+
+    monkeypatch.setitem(
+        cmd_list_detach_candidates.__globals__,
+        "run_psql_csv",
+        fake_run_psql_csv,
+    )
+
+    cmd_list_detach_candidates(["--queue", "jobs"])
+
+    assert "FROM absurd.list_detach_candidates(:'queue_name')" in captured["query"]
+    assert captured["variables"]["queue_name"] == "jobs"
+
+
+def test_detach_candidate_executes_detach_then_drop(monkeypatch):
+    csv_calls = {}
+    psql_calls = []
+
+    def fake_run_psql_csv(config, query=None, **kwargs):
+        csv_calls["query"] = query
+        csv_calls["variables"] = kwargs.get("variables")
+        return [
+            [
+                "jobs",
+                "t_jobs",
+                "t_jobs_401",
+                "1a2b3c4d5e6f",
+                'alter table absurd."t_jobs" detach partition absurd."t_jobs_401" concurrently',
+                'drop table if exists absurd."t_jobs_401"',
+            ]
+        ]
+
+    def fake_run_psql(config, query=None, **kwargs):
+        psql_calls.append((query, kwargs))
+        if "drop_detached_partition" in (query or ""):
+            return "t"
+        return ""
+
+    monkeypatch.setitem(
+        cmd_detach_candidate.__globals__, "run_psql_csv", fake_run_psql_csv
+    )
+    monkeypatch.setitem(cmd_detach_candidate.__globals__, "run_psql", fake_run_psql)
+
+    cmd_detach_candidate(["--queue", "jobs", "1a2b3c4d5e6f", "--drop"])
+
+    assert "FROM absurd.list_detach_candidates(:'queue_name')" in csv_calls["query"]
+    assert csv_calls["variables"]["queue_name"] == "jobs"
+    assert csv_calls["variables"]["candidate_hash"] == "1a2b3c4d5e6f"
+
+    assert len(psql_calls) == 2
+    assert "detach partition" in psql_calls[0][0]
+    assert (
+        psql_calls[1][0] == "SELECT absurd.drop_detached_partition(:'partition_table');"
+    )
+    assert psql_calls[1][1]["variables"]["partition_table"] == "t_jobs_401"
 
 
 def test_run_psql_sends_query_via_stdin_for_variable_expansion(monkeypatch):

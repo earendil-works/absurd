@@ -148,7 +148,44 @@ Create a new queue.  This creates the per-queue tables (`t_`, `r_`, `c_`, `e_`, 
 ```bash
 absurdctl create-queue default
 absurdctl create-queue emails -d mydb
+absurdctl create-queue jobs --storage-mode partitioned
 ```
+
+Options:
+
+| Flag | Description |
+|------|-------------|
+| `--storage-mode` | Queue storage mode: `unpartitioned` (default) or `partitioned` |
+
+### `queue-policy`
+
+View or update per-queue maintenance policy.
+
+```bash
+# Show current policy
+absurdctl queue-policy jobs
+
+# Update cleanup behavior
+absurdctl queue-policy jobs --cleanup-ttl-seconds 604800 --cleanup-limit 2000
+
+# Update partition window and detach behavior
+absurdctl queue-policy jobs \
+  --partition-lookahead '42 days' \
+  --partition-lookback '2 days' \
+  --detach-mode empty \
+  --detach-min-age '30 days'
+```
+
+Options:
+
+| Flag | Description |
+|------|-------------|
+| `--partition-lookahead INTERVAL` | Partition lookahead window |
+| `--partition-lookback INTERVAL` | Partition lookback window |
+| `--cleanup-ttl-seconds SECONDS` | Cleanup retention TTL in seconds |
+| `--cleanup-limit N` | Cleanup batch size |
+| `--detach-mode MODE` | Detach mode: `none` or `empty` |
+| `--detach-min-age INTERVAL` | Minimum partition age before detach planning |
 
 ### `drop-queue`
 
@@ -165,6 +202,63 @@ List all existing queues.
 ```bash
 absurdctl list-queues
 ```
+
+## Cron Maintenance
+
+### `cron`
+
+Enable or disable Absurd-managed `pg_cron` jobs for partition provisioning,
+cleanup, and detach planning.
+
+```bash
+# Enable global/all-queue jobs
+absurdctl cron --enable
+
+# Enable queue-scoped jobs with custom cadence
+absurdctl cron --enable --queue jobs \
+  --partition-schedule '*/15 * * * *' \
+  --cleanup-schedule '7 * * * *' \
+  --detach-schedule '29 * * * *'
+
+# Disable jobs
+absurdctl cron --disable --queue jobs
+absurdctl cron --disable
+```
+
+Options:
+
+| Flag | Description |
+|------|-------------|
+| `--enable` | Enable cron jobs |
+| `--disable` | Disable cron jobs |
+| `--queue NAME` | Optional queue scope (omit for global/all scope) |
+| `--partition-schedule CRON` | Schedule for `ensure_partitions` |
+| `--cleanup-schedule CRON` | Schedule for `cleanup_all_queues` |
+| `--detach-schedule CRON` | Schedule for detach job planning |
+
+## Partition Detach Operations
+
+### `list-detach-candidates`
+
+List eligible partition detach candidates computed from queue policy.
+
+```bash
+absurdctl list-detach-candidates
+absurdctl list-detach-candidates --queue jobs
+absurdctl list-detach-candidates --queue jobs --show-sql
+```
+
+### `detach-candidate`
+
+Execute one candidate's `DETACH PARTITION ... CONCURRENTLY` manually.
+
+```bash
+absurdctl detach-candidate --queue jobs 1a2b3c4d5e6f
+absurdctl detach-candidate --queue jobs 1a2b3c4d5e6f --drop
+```
+
+Use `--drop` to attempt an immediate follow-up drop via
+`absurd.drop_detached_partition(...)`.
 
 ## Task Operations
 
