@@ -1,0 +1,29 @@
+name: Repro Clock Mutation
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/repro-clock-mutation.yml"
+      - "scripts/repro-clock-mutation.sh"
+
+jobs:
+  repro:
+    name: repro (${{ matrix.mode }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        mode:
+          - without-sys-time
+          - with-sys-time
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Run minimal clock mutation repro
+        run: |
+          chmod +x scripts/repro-clock-mutation.sh
+          MUTATIONS=20 SLEEP_BETWEEN=2 bash scripts/repro-clock-mutation.sh ${{ matrix.mode }}
