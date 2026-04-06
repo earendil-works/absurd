@@ -1683,3 +1683,97 @@ begin
   return encode(b, 'hex')::uuid;
 end;
 $$;
+
+-- Extracts the embedded timestamp from a UUIDv7 value.
+-- Returns NULL for non-v7 UUIDs.
+create function absurd.uuidv7_timestamp (p_id uuid)
+  returns timestamptz
+  language sql
+  immutable
+  strict
+as $$
+  with bytes as (
+    select uuid_send(p_id) as b
+  ),
+  decoded as (
+    select
+      (get_byte(b, 6) >> 4) as version,
+      ((get_byte(b, 0)::bigint << 40) |
+       (get_byte(b, 1)::bigint << 32) |
+       (get_byte(b, 2)::bigint << 24) |
+       (get_byte(b, 3)::bigint << 16) |
+       (get_byte(b, 4)::bigint << 8)  |
+        get_byte(b, 5)::bigint) as ts_ms
+    from bytes
+  )
+  select case
+           when version = 7 then 'epoch'::timestamptz + (ts_ms * interval '1 millisecond')
+           else null
+         end
+  from decoded;
+$$;
+
+-- Returns the lowest UUIDv7 value representable for the given timestamp.
+-- This is useful for time-window partition bounds over UUIDv7 keys.
+create function absurd.uuidv7_floor (p_ts timestamptz)
+  returns uuid
+  language plpgsql
+  immutable
+  strict
+as $$
+declare
+  ts_ms bigint := floor(extract(epoch from p_ts) * 1000)::bigint;
+  b bytea;
+  i int;
+begin
+  if ts_ms < 0 or ts_ms > 281474976710655 then
+    raise exception 'Timestamp "%" is outside UUIDv7 supported range', p_ts;
+  end if;
+
+  b := repeat(E'\\000', 16)::bytea;
+  for i in 0..5 loop
+    b := set_byte(b, i, ((ts_ms >> ((5 - i) * 8)) & 255)::int);
+  end loop;
+
+  -- Set UUIDv7 version and RFC4122 variant; keep all randomness bits at 0.
+  b := set_byte(b, 6, (7 << 4));
+  b := set_byte(b, 8, 128);
+
+  return encode(b, 'hex')::uuid;
+end;
+$$;
+
+-- Buckets a timestamp to ISO week start (Monday 00:00) in UTC.
+create function absurd.week_bucket_utc (p_ts timestamptz)
+  returns timestamptz
+  language sql
+  immutable
+  strict
+as $$
+  select date_trunc('week', p_ts at time zone 'UTC') at time zone 'UTC';
+$$;
+
+-- Returns a compact weekly partition tag in YWW format, where:
+-- * Y = last digit of the ISO year in UTC
+-- * WW = zero-padded ISO week number in UTC (01..53)
+--
+-- ISO weeks do not have week 0; days at year boundaries can belong
+-- to week 52/53 of the previous ISO year.
+--
+-- Examples:
+-- * 2024-01-01 UTC -> 401
+-- * 2021-01-01 UTC -> 053 (ISO week 53 of ISO year 2020)
+create function absurd.partition_week_tag (p_ts timestamptz)
+  returns text
+  language sql
+  immutable
+  strict
+as $$
+  with bucket as (
+    select absurd.week_bucket_utc(p_ts) at time zone 'UTC' as ts
+  )
+  select
+    ((extract(isoyear from ts)::int % 10)::text) ||
+    lpad((extract(week from ts)::int)::text, 2, '0')
+  from bucket;
+$$;
