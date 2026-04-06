@@ -18,6 +18,7 @@ jobs:
         mode:
           - without-sys-time
           - with-sys-time
+          - with-libfaketime
 
     steps:
       - name: Checkout code

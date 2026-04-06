@@ -7,10 +7,19 @@ SLEEP_BETWEEN="${SLEEP_BETWEEN:-2}"
 BASE_EPOCH="${BASE_EPOCH:-1711972800}" # 2024-04-01T12:00:00Z
 IMAGE="${IMAGE:-postgres:16-alpine}"
 
-if [[ "$MODE" != "with-sys-time" && "$MODE" != "without-sys-time" ]]; then
+if [[ "$MODE" != "with-sys-time" && "$MODE" != "without-sys-time" && "$MODE" != "with-libfaketime" ]]; then
   echo "unknown mode: $MODE" >&2
   exit 2
 fi
+
+epoch_to_utc() {
+  local ts="$1"
+  if date -u -d "@$ts" +"%Y-%m-%d %H:%M:%S" >/dev/null 2>&1; then
+    date -u -d "@$ts" +"%Y-%m-%d %H:%M:%S"
+  else
+    date -u -r "$ts" +"%Y-%m-%d %H:%M:%S"
+  fi
+}
 
 name="clock-repro-${MODE}-${GITHUB_RUN_ID:-local}-${RANDOM}"
 
@@ -32,6 +41,12 @@ echo "mode=$MODE container=$CID image=$IMAGE"
 docker exec "$CID" sh -lc "date -u +'%Y-%m-%dT%H:%M:%SZ'" | sed 's/^/[container-time] /'
 date -u +'%Y-%m-%dT%H:%M:%SZ' | sed 's/^/[host-time] /'
 
+if [[ "$MODE" == "with-libfaketime" ]]; then
+  echo "[setup] installing libfaketime in container"
+  docker exec "$CID" sh -lc "apk add --no-cache libfaketime >/dev/null"
+  docker exec "$CID" sh -lc "printf '%s\n' '2026-01-01 00:00:00' > /tmp/faketime.ts"
+fi
+
 for i in $(seq 1 "$MUTATIONS"); do
   ts=$((BASE_EPOCH + (i - 1) * 7200))
 
@@ -49,6 +64,14 @@ for i in $(seq 1 "$MUTATIONS"); do
       exit 1
     fi
     echo "[mutate $i] ok: $out"
+  elif [[ "$MODE" == "with-libfaketime" ]]; then
+    ts_human="$(epoch_to_utc "$ts")"
+    docker exec "$CID" sh -lc "printf '%s\n' '$ts_human' > /tmp/faketime.ts"
+
+    fake_out="$(docker exec "$CID" sh -lc "LD_PRELOAD=/usr/lib/faketime/libfaketime.so.1 FAKETIME_TIMESTAMP_FILE=/tmp/faketime.ts FAKETIME_NO_CACHE=1 FAKETIME_DONT_FAKE_MONOTONIC=1 date -u +'%Y-%m-%dT%H:%M:%SZ'")"
+    real_out="$(docker exec "$CID" sh -lc "date -u +'%Y-%m-%dT%H:%M:%SZ'")"
+
+    echo "[faketime $i] configured=$ts_human fake=$fake_out real=$real_out"
   else
     out="$(docker exec "$CID" sh -lc "date -u +'%Y-%m-%dT%H:%M:%SZ'" 2>&1)"
     echo "[baseline $i] container time: $out"
