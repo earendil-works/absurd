@@ -317,3 +317,49 @@ def test_disable_cron_without_queue_only_removes_global_jobs(client):
     assert remaining[0][0].startswith("absurd_cleanup_")
     assert remaining[1][0].startswith("absurd_detach_plan_")
     assert remaining[2][0].startswith("absurd_partitions_")
+
+
+def test_drop_queue_unschedules_queue_scoped_cron_jobs(client):
+    queue = "cron-drop-queue"
+    client.create_queue(queue, storage_mode="partitioned")
+    _install_mock_cron(client.conn)
+
+    client.conn.execute(
+        """
+        select *
+        from absurd.enable_cron(%s, %s, %s)
+        """,
+        (queue, "*/20 * * * *", "11 * * * *"),
+    )
+
+    scope = client.conn.execute(
+        "select substr(md5(%s), 1, 12)",
+        (queue,),
+    ).fetchone()[0]
+
+    # Seed queue-scoped detach/drop run jobs too.
+    client.conn.execute(
+        """
+        insert into cron.job (jobname, schedule, command)
+        values
+          (%s, '* * * * *', 'select 1'),
+          (%s, '* * * * *', 'select 1')
+        """,
+        (
+            f"absurd_detach_run_{scope}_demo",
+            f"absurd_drop_run_{scope}_demo",
+        ),
+    )
+
+    client.drop_queue(queue)
+
+    remaining = client.conn.execute(
+        """
+        select jobname
+        from cron.job
+        where jobname like %s
+        order by jobname
+        """,
+        (f"absurd%{scope}%",),
+    ).fetchall()
+    assert remaining == []
