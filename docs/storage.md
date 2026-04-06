@@ -164,8 +164,8 @@ Why this is split: `DETACH ... CONCURRENTLY` must run as top-level SQL.
 
 ```bash
 absurdctl list-detach-candidates --queue jobs
-absurdctl detach-candidate --queue jobs <candidate_hash>
-absurdctl detach-candidate --queue jobs <candidate_hash> --drop
+absurdctl detach-candidate --queue jobs <partition_table>
+absurdctl detach-candidate --queue jobs <partition_table> --drop
 ```
 
 ## Automating with `pg_cron`

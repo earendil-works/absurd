@@ -2403,7 +2403,6 @@ create function absurd.list_detach_candidates (
     queue_name text,
     parent_table text,
     partition_table text,
-    candidate_hash text,
     detach_sql text,
     drop_sql text
   )
@@ -2500,7 +2499,6 @@ begin
         queue_name := v_queue.queue_name;
         parent_table := v_parent_table;
         partition_table := v_part.partition_name;
-        candidate_hash := substr(md5(v_parent_table || ':' || v_part.partition_name), 1, 12);
         detach_sql := format(
           'alter table absurd.%I detach partition absurd.%I concurrently',
           v_parent_table,
@@ -2609,6 +2607,7 @@ as $$
 declare
   v_scope text;
   v_candidate record;
+  v_candidate_key text;
   v_detach_job_name text;
   v_drop_job_name text;
   v_detach_command text;
@@ -2664,22 +2663,28 @@ begin
     from absurd.list_detach_candidates(p_queue_name) c
     order by c.queue_name, c.parent_table, c.partition_table
   loop
+    v_candidate_key := substr(
+      md5(v_candidate.parent_table || ':' || v_candidate.partition_table),
+      1,
+      12
+    );
+
     v_detach_job_name := format(
       'absurd_detach_run_%s_%s',
       v_scope,
-      v_candidate.candidate_hash
+      v_candidate_key
     );
     v_drop_job_name := format(
       'absurd_drop_run_%s_%s',
       v_scope,
-      v_candidate.candidate_hash
+      v_candidate_key
     );
 
     if not exists (
       select 1
       from cron.job
       where jobname = v_detach_job_name
-         or jobname like ('absurd_detach_run_%_' || v_candidate.candidate_hash)
+         or jobname like ('absurd_detach_run_%_' || v_candidate_key)
     ) then
       v_detach_command := format(
         '%s; select cron.unschedule(jobid) from cron.job where jobname = %L;',
@@ -2703,7 +2708,7 @@ begin
       select 1
       from cron.job
       where jobname = v_drop_job_name
-         or jobname like ('absurd_drop_run_%_' || v_candidate.candidate_hash)
+         or jobname like ('absurd_drop_run_%_' || v_candidate_key)
     ) then
       v_drop_command := format(
         'select absurd.drop_detached_partition(%L, %L);',

@@ -71,6 +71,37 @@ def validate_queue_name(value):
     return value
 
 
+def normalize_partition_table_name(value):
+    """Normalize a partition table reference to an absurd-schema table name."""
+    if value is None:
+        print("Error: Partition table must be provided.", file=sys.stderr)
+        sys.exit(1)
+
+    partition_table = value.strip()
+    if not partition_table:
+        print("Error: Partition table must be provided.", file=sys.stderr)
+        sys.exit(1)
+
+    if partition_table.lower().startswith("absurd."):
+        partition_table = partition_table.split(".", 1)[1]
+
+    if partition_table.startswith('"') and partition_table.endswith('"'):
+        partition_table = partition_table[1:-1].replace('""', '"')
+
+    if not partition_table:
+        print("Error: Partition table must be provided.", file=sys.stderr)
+        sys.exit(1)
+
+    if "." in partition_table:
+        print(
+            "Error: PARTITION_TABLE must be an unqualified table name in schema absurd.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    return partition_table
+
+
 class RemoteMigrationDiscoveryError(Exception):
     pass
 
@@ -1359,7 +1390,6 @@ def cmd_list_detach_candidates(args):
               queue_name,
               parent_table,
               partition_table,
-              candidate_hash,
               detach_sql,
               drop_sql
             FROM absurd.list_detach_candidates(:'queue_name')
@@ -1371,7 +1401,6 @@ def cmd_list_detach_candidates(args):
               queue_name,
               parent_table,
               partition_table,
-              candidate_hash,
               detach_sql,
               drop_sql
             FROM absurd.list_detach_candidates(null::text)
@@ -1384,34 +1413,33 @@ def cmd_list_detach_candidates(args):
         return
 
     if not options.show_sql:
-        print("candidate_hash\tqueue\tparent\tpartition")
+        print("partition\tqueue\tparent")
         for row in rows:
-            if len(row) >= 4:
-                print(f"{row[3]}\t{row[0]}\t{row[1]}\t{row[2]}")
+            if len(row) >= 3:
+                print(f"{row[2]}\t{row[0]}\t{row[1]}")
         return
 
     for row in rows:
-        if len(row) < 6:
+        if len(row) < 5:
             continue
-        print(f"candidate_hash: {row[3]}")
         print(f"  queue: {row[0]}")
         print(f"  parent: {row[1]}")
         print(f"  partition: {row[2]}")
-        print(f"  detach_sql: {row[4]}")
-        print(f"  drop_sql: {row[5]}")
+        print(f"  detach_sql: {row[3]}")
+        print(f"  drop_sql: {row[4]}")
         print()
 
 
 def cmd_detach_candidate(args):
     """Detach a specific candidate partition manually."""
-    usage = "usage: %prog detach-candidate [options] CANDIDATE_HASH"
+    usage = "usage: %prog detach-candidate [options] PARTITION_TABLE"
     parser = build_command_parser(usage)
     parser.add_option(
         "-q",
         "--queue",
         dest="queue",
         metavar="NAME",
-        help="Queue scope (recommended when candidate hash is ambiguous)",
+        help="Queue scope (optional)",
     )
     parser.add_option(
         "--drop",
@@ -1422,24 +1450,21 @@ def cmd_detach_candidate(args):
     )
 
     examples = [
-        "absurdctl detach-candidate 1a2b3c4d5e6f",
-        "absurdctl detach-candidate --queue myqueue 1a2b3c4d5e6f --drop",
+        "absurdctl detach-candidate t_myqueue_2414",
+        "absurdctl detach-candidate --queue myqueue t_myqueue_2414 --drop",
     ]
 
     options, args = parse_args_with_help(parser, args, examples)
 
     if len(args) != 1:
-        print("Error: Missing required argument CANDIDATE_HASH", file=sys.stderr)
+        print("Error: Missing required argument PARTITION_TABLE", file=sys.stderr)
         parser.print_help()
         sys.exit(1)
 
-    candidate_hash = args[0].strip().lower()
-    if not re.fullmatch(r"[0-9a-f]{12}", candidate_hash):
-        print("Error: CANDIDATE_HASH must be a 12-character lowercase hex digest", file=sys.stderr)
-        sys.exit(1)
+    partition_table = normalize_partition_table_name(args[0])
 
     config = config_from_options(options)
-    variables = {"candidate_hash": candidate_hash}
+    variables = {"partition_table": partition_table}
     if options.queue is not None:
         options.queue = validate_queue_name(options.queue)
         variables["queue_name"] = options.queue
@@ -1448,11 +1473,10 @@ def cmd_detach_candidate(args):
               queue_name,
               parent_table,
               partition_table,
-              candidate_hash,
               detach_sql,
               drop_sql
             FROM absurd.list_detach_candidates(:'queue_name')
-            WHERE candidate_hash = :'candidate_hash'
+            WHERE partition_table = :'partition_table'
             ORDER BY queue_name, parent_table, partition_table
         """
     else:
@@ -1461,22 +1485,21 @@ def cmd_detach_candidate(args):
               queue_name,
               parent_table,
               partition_table,
-              candidate_hash,
               detach_sql,
               drop_sql
             FROM absurd.list_detach_candidates(null::text)
-            WHERE candidate_hash = :'candidate_hash'
+            WHERE partition_table = :'partition_table'
             ORDER BY queue_name, parent_table, partition_table
         """
 
     rows = run_psql_csv(config, query, variables=variables)
     if not rows:
-        print(f"No detach candidate found for hash {candidate_hash}", file=sys.stderr)
+        print(f"No detach candidate found for partition {partition_table}", file=sys.stderr)
         sys.exit(1)
 
     if len(rows) > 1:
         print(
-            "Error: Candidate hash is ambiguous across queues; rerun with --queue",
+            "Error: Partition table is ambiguous across queues; rerun with --queue",
             file=sys.stderr,
         )
         for row in rows:
@@ -1485,9 +1508,9 @@ def cmd_detach_candidate(args):
         sys.exit(1)
 
     row = rows[0]
-    queue_name, parent_table, partition_table, _, detach_sql, _drop_sql = row
+    queue_name, parent_table, partition_table, detach_sql, _drop_sql = row
 
-    print(f"Detaching candidate {candidate_hash}:")
+    print(f"Detaching partition {partition_table}:")
     print(f"  queue: {queue_name}")
     print(f"  parent: {parent_table}")
     print(f"  partition: {partition_table}")
@@ -2897,7 +2920,7 @@ Examples:
   absurdctl queue-policy myqueue --cleanup-ttl '7 days'
   absurdctl cron --enable --queue myqueue
   absurdctl list-detach-candidates --queue myqueue
-  absurdctl detach-candidate --queue myqueue 1a2b3c4d5e6f --drop
+  absurdctl detach-candidate --queue myqueue t_myqueue_2414 --drop
   absurdctl drop-queue myqueue --yes
   absurdctl list-queues
   absurdctl spawn-task my-task -P foo=bar -P count:=42

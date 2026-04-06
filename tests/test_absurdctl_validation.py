@@ -343,7 +343,6 @@ def test_detach_candidate_executes_detach_then_drop(monkeypatch):
                 "jobs",
                 "t_jobs",
                 "t_jobs_401",
-                "1a2b3c4d5e6f",
                 'alter table absurd."t_jobs" detach partition absurd."t_jobs_401" concurrently',
                 'drop table if exists absurd."t_jobs_401"',
             ]
@@ -360,11 +359,11 @@ def test_detach_candidate_executes_detach_then_drop(monkeypatch):
     )
     monkeypatch.setitem(cmd_detach_candidate.__globals__, "run_psql", fake_run_psql)
 
-    cmd_detach_candidate(["--queue", "jobs", "1a2b3c4d5e6f", "--drop"])
+    cmd_detach_candidate(["--queue", "jobs", "t_jobs_401", "--drop"])
 
     assert "FROM absurd.list_detach_candidates(:'queue_name')" in csv_calls["query"]
     assert csv_calls["variables"]["queue_name"] == "jobs"
-    assert csv_calls["variables"]["candidate_hash"] == "1a2b3c4d5e6f"
+    assert csv_calls["variables"]["partition_table"] == "t_jobs_401"
 
     assert len(psql_calls) == 2
     assert "detach partition" in psql_calls[0][0]

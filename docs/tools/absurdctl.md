@@ -253,8 +253,8 @@ absurdctl list-detach-candidates --queue jobs --show-sql
 Execute one candidate's `DETACH PARTITION ... CONCURRENTLY` manually.
 
 ```bash
-absurdctl detach-candidate --queue jobs 1a2b3c4d5e6f
-absurdctl detach-candidate --queue jobs 1a2b3c4d5e6f --drop
+absurdctl detach-candidate --queue jobs t_jobs_2414
+absurdctl detach-candidate --queue jobs t_jobs_2414 --drop
 ```
 
 Use `--drop` to attempt an immediate follow-up drop via
