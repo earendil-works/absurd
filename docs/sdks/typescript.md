@@ -279,9 +279,13 @@ const result = await app.retryTask(taskID, {
 ## Queue Management
 
 ```typescript
+// queueName is optional and defaults to this client's queueName.
 await app.createQueue('emails'); // default: unpartitioned
 await app.createQueue('emails-part', { storageMode: 'partitioned' });
+
+// Configure policy at creation time.
 await app.createQueue('retained', {
+  storageMode: 'partitioned',
   cleanupTtlSeconds: 90 * 86400,
   cleanupLimit: 2000,
   partitionLookahead: '42 days',
@@ -289,8 +293,11 @@ await app.createQueue('retained', {
   detachMode: 'empty',
   detachMinAge: '30 days',
 });
+
+// Update/read policy later.
 await app.setQueuePolicy('retained', { cleanupTtlSeconds: 60 * 86400 });
-const policy = await app.getQueuePolicy('retained');
+const policy = await app.getQueuePolicy('retained'); // QueuePolicy | null
+
 await app.dropQueue('emails');
 const queues = await app.listQueues();
 ```

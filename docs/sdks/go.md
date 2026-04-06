@@ -555,9 +555,44 @@ result, err := app.RetryTask(
 ## Queue Management
 
 ```go
+// Default storage mode is unpartitioned.
 if err := app.CreateQueue(ctx, "emails"); err != nil {
     log.Fatal(err)
 }
+
+// Create a partitioned queue.
+if err := app.CreateQueue(ctx, "emails-part", absurd.CreateQueueOptions{
+    StorageMode: absurd.QueueStoragePartitioned,
+}); err != nil {
+    log.Fatal(err)
+}
+
+// Configure policy at creation time.
+ttl := 90 * 86400
+limit := 2000
+if err := app.CreateQueue(ctx, "retained", absurd.CreateQueueOptions{
+    StorageMode: absurd.QueueStoragePartitioned,
+    QueuePolicyOptions: absurd.QueuePolicyOptions{
+        CleanupTTLSeconds:  &ttl,
+        CleanupLimit:       &limit,
+        PartitionLookahead: "42 days",
+        PartitionLookback:  "2 days",
+        DetachMode:         absurd.QueueDetachEmpty,
+        DetachMinAge:       "30 days",
+    },
+}); err != nil {
+    log.Fatal(err)
+}
+
+// Update/read policy later.
+newTTL := 60 * 86400
+if err := app.SetQueuePolicy(ctx, "retained", absurd.QueuePolicyOptions{
+    CleanupTTLSeconds: &newTTL,
+}); err != nil {
+    log.Fatal(err)
+}
+policy, err := app.GetQueuePolicy(ctx, "retained")
+
 if err := app.DropQueue(ctx, "emails"); err != nil {
     log.Fatal(err)
 }
