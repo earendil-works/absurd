@@ -938,9 +938,6 @@ func queuePolicyPayload(options QueuePolicyOptions) (map[string]any, error) {
 		payload["cleanup_limit"] = *options.CleanupLimit
 	}
 	if options.DetachMode != "" {
-		if options.DetachMode != QueueDetachNone && options.DetachMode != QueueDetachEmpty {
-			return nil, fmt.Errorf("invalid detach mode: %s", options.DetachMode)
-		}
 		payload["detach_mode"] = string(options.DetachMode)
 	}
 	if options.DetachMinAge != "" {

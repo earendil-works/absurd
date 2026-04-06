@@ -556,8 +556,6 @@ def _normalize_queue_policy_options(
     if cleanup_limit is not None:
         normalized["cleanup_limit"] = cleanup_limit
     if detach_mode is not None:
-        if detach_mode not in ("none", "empty"):
-            raise ValueError("detach_mode must be 'none' or 'empty'")
         normalized["detach_mode"] = detach_mode
     if detach_min_age is not None:
         normalized["detach_min_age"] = detach_min_age
