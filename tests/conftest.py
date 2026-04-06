@@ -1,4 +1,6 @@
 import os
+import shlex
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -22,6 +24,67 @@ if "DOCKER_HOST" not in os.environ:
 TEST_ROOT = Path(__file__).resolve().parent
 PROJECT_ROOT = TEST_ROOT.parent
 ABSURD_SQL = PROJECT_ROOT / "sql" / "absurd.sql"
+PGCRON_DOCKER_DIR = TEST_ROOT / "docker" / "pg16-pgcron"
+PGCRON_IMAGE = "absurd-test-postgres16-pgcron:16-1.6.7"
+
+
+class PgCronContainerControl:
+    def __init__(self, container):
+        self.container = container
+
+    def _exec_root(self, command):
+        wrapped = self.container.get_wrapped_container()
+        result = wrapped.exec_run(["sh", "-lc", command], user="root")
+        output = result.output.decode("utf-8", errors="replace").strip()
+        if result.exit_code != 0:
+            raise RuntimeError(f"container command failed ({result.exit_code}): {command}\n{output}")
+        return output
+
+    def set_system_time(self, when):
+        if isinstance(when, datetime):
+            if when.tzinfo is None:
+                when = when.replace(tzinfo=timezone.utc)
+            when = when.astimezone(timezone.utc)
+            value = when.strftime("%Y-%m-%d %H:%M:%S")
+        else:
+            value = str(when)
+
+        self._exec_root(f"date -u -s {shlex.quote(value)}")
+
+    def advance_system_time(self, *, seconds=0, minutes=0, hours=0, days=0):
+        total_seconds = int(seconds + minutes * 60 + hours * 3600 + days * 86400)
+        if total_seconds == 0:
+            return
+
+        current_epoch = int(self._exec_root("date -u +%s"))
+        self._exec_root(f"date -u -s @{current_epoch + total_seconds}")
+
+    def get_system_time(self):
+        value = self._exec_root("date -u +'%Y-%m-%dT%H:%M:%SZ'")
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+def _docker_image_exists(image):
+    result = subprocess.run(
+        ["docker", "image", "inspect", image],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    return result.returncode == 0
+
+
+def _ensure_pgcron_image():
+    if _docker_image_exists(PGCRON_IMAGE):
+        return
+
+    if not (PGCRON_DOCKER_DIR / "Dockerfile").exists():
+        raise RuntimeError(f"missing Dockerfile: {PGCRON_DOCKER_DIR / 'Dockerfile'}")
+
+    subprocess.run(
+        ["docker", "build", "-t", PGCRON_IMAGE, str(PGCRON_DOCKER_DIR)],
+        check=True,
+    )
 
 
 def _normalize_dsn(url):
@@ -61,10 +124,49 @@ def postgres_container():
 
 
 @pytest.fixture(scope="session")
+def pgcron_postgres_container():
+    _ensure_pgcron_image()
+
+    container = PostgresContainer(
+        PGCRON_IMAGE,
+        command=[
+            "postgres",
+            "-c",
+            "shared_preload_libraries=pg_cron",
+            "-c",
+            "cron.database_name=test",
+            "-c",
+            "cron.use_background_workers=on",
+            "-c",
+            "max_worker_processes=64",
+            "-c",
+            "cron.max_running_jobs=32",
+        ],
+        cap_add=["SYS_TIME"],
+    )
+    container.start()
+    control = PgCronContainerControl(container)
+    try:
+        yield control
+    finally:
+        container.stop()
+
+
+@pytest.fixture(scope="session")
 def db_dsn(postgres_container):
     dsn = _normalize_dsn(postgres_container.get_connection_url())
     script = ABSURD_SQL.read_text()
     with psycopg.connect(dsn, autocommit=True) as conn:
+        conn.execute(script)
+    return dsn
+
+
+@pytest.fixture(scope="session")
+def pgcron_db_dsn(pgcron_postgres_container):
+    dsn = _normalize_dsn(pgcron_postgres_container.container.get_connection_url())
+    script = ABSURD_SQL.read_text()
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        conn.execute("create extension if not exists pg_cron")
         conn.execute(script)
     return dsn
 
@@ -84,8 +186,30 @@ def db_connection(db_dsn):
 
 
 @pytest.fixture
+def pgcron_db_connection(pgcron_db_dsn):
+    with psycopg.connect(pgcron_db_dsn, autocommit=True) as conn:
+        conn.execute("set timezone to 'UTC'")
+        try:
+            yield conn
+        finally:
+            try:
+                conn.execute("set absurd.fake_now = default")
+            except psycopg.errors.InFailedSqlTransaction:
+                pass
+
+
+@pytest.fixture
 def client(db_connection):
     helper = AbsurdTestClient(db_connection)
+    try:
+        yield helper
+    finally:
+        helper.clear_fake_now()
+
+
+@pytest.fixture
+def pgcron_client(pgcron_db_connection):
+    helper = AbsurdTestClient(pgcron_db_connection)
     try:
         yield helper
     finally:
