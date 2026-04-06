@@ -1274,9 +1274,7 @@ function isTerminalTaskState(state: TaskResultState): boolean {
   return state === "completed" || state === "failed" || state === "cancelled";
 }
 
-function normalizeTimeoutSecondsToMs(
-  timeoutSeconds?: number,
-): number | null {
+function normalizeTimeoutSecondsToMs(timeoutSeconds?: number): number | null {
   if (timeoutSeconds === undefined || timeoutSeconds === Infinity) {
     return null;
   }

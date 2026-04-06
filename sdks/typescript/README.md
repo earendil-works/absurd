@@ -67,7 +67,12 @@ app.registerTask({ name: "order-fulfillment" }, async (params, ctx) => {
     return { sentTo: params.email, trackingNumber: shipment.trackingNumber };
   });
 
-  return { orderId: params.orderId, payment, inventory, trackingNumber: shipment.trackingNumber };
+  return {
+    orderId: params.orderId,
+    payment,
+    inventory,
+    trackingNumber: shipment.trackingNumber,
+  };
 });
 
 // Start a worker that pulls tasks from Postgres
