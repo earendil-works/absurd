@@ -120,3 +120,39 @@ def test_pgcron_time_jump_executes_detach_and_drop_jobs(pgcron_client, pgcron_po
         ).fetchone()[0]
         is not None
     )
+
+
+def test_drop_queue_removes_queue_scoped_pgcron_jobs(pgcron_client):
+    queue = "cron-drop-live"
+
+    pgcron_client.create_queue(queue, storage_mode="partitioned")
+    pgcron_client.conn.execute(
+        """
+        select *
+        from absurd.enable_cron(%s, %s, %s, %s)
+        """,
+        (queue, "1 second", "1 second", "1 second"),
+    )
+
+    scope = pgcron_client.conn.execute(
+        "select substr(md5(%s), 1, 12)",
+        (queue,),
+    ).fetchone()[0]
+
+    _wait_until(
+        lambda: pgcron_client.conn.execute(
+            "select count(*) from cron.job where jobname like %s",
+            (f"absurd%{scope}%",),
+        ).fetchone()[0]
+        >= 3,
+        timeout=10.0,
+        message="expected queue-scoped cron jobs were not created",
+    )
+
+    pgcron_client.drop_queue(queue)
+
+    remaining = pgcron_client.conn.execute(
+        "select count(*) from cron.job where jobname like %s",
+        (f"absurd%{scope}%",),
+    ).fetchone()[0]
+    assert remaining == 0
