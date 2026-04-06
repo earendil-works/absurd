@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 
 def test_spawn_with_idempotency_key_creates_task(client):
@@ -158,3 +158,68 @@ def test_idempotency_key_works_across_different_task_names(client):
 
     task = client.get_task(queue, first.task_id)
     assert task["task_name"] == "task-a"
+
+
+def test_idempotency_key_is_released_after_task_cleanup(client):
+    queue = "idempotent-cleanup"
+    client.create_queue(queue)
+
+    base = datetime(2024, 5, 7, 10, 0, tzinfo=timezone.utc)
+    client.set_fake_now(base)
+
+    first = client.spawn_task(
+        queue,
+        "my-task",
+        {"value": 1},
+        {"idempotency_key": "cleanup-key"},
+    )
+
+    claim = client.claim_tasks(queue, worker="worker")[0]
+    client.complete_run(queue, claim["run_id"], {"result": "done"})
+
+    client.set_fake_now(base + timedelta(days=2))
+    deleted = client.cleanup_tasks(queue, ttl_seconds=3600, limit=10)
+    assert deleted == 1
+
+    second = client.spawn_task(
+        queue,
+        "my-task",
+        {"value": 2},
+        {"idempotency_key": "cleanup-key"},
+    )
+
+    assert second.task_id != first.task_id
+    assert second.attempt == 1
+
+
+def test_partitioned_queue_uses_idempotency_registry(client):
+    queue = "idempotent_partitioned"
+    client.create_queue(queue, storage_mode="partitioned")
+
+    base = datetime(2024, 5, 8, 10, 0, tzinfo=timezone.utc)
+    client.set_fake_now(base)
+
+    first = client.spawn_task(
+        queue,
+        "my-task",
+        {"value": 1},
+        {"idempotency_key": "registry-key"},
+    )
+
+    second = client.spawn_task(
+        queue,
+        "my-task",
+        {"value": 2},
+        {"idempotency_key": "registry-key"},
+    )
+
+    assert second.task_id == first.task_id
+    assert second.run_id == first.run_id
+    assert second.attempt == first.attempt
+
+    row = client.conn.execute(
+        "select task_id from absurd.i_idempotent_partitioned where idempotency_key = %s",
+        ("registry-key",),
+    ).fetchone()
+    assert row is not None
+    assert str(row[0]) == str(first.task_id)

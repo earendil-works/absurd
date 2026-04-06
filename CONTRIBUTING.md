@@ -71,12 +71,15 @@ Useful to keep in mind when working on the SQL:
 
 ### Database Tables (per queue)
 
-Each queue creates 5 tables:
+Each queue creates 5 core tables:
 - **t_{queue}** - Tasks (the logical unit of work)
 - **r_{queue}** - Runs (attempts to execute a task)
 - **c_{queue}** - Checkpoints (saved step results)
 - **e_{queue}** - Events (emitted signals)
 - **w_{queue}** - Wait registrations (tasks waiting for events)
+
+Partitioned queues additionally create:
+- **i_{queue}** - Idempotency key registry
 
 ### Notes on Schema
 

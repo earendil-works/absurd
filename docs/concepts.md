@@ -106,6 +106,8 @@ Postgres tables:
 | `e_`   | Events — emitted signals |
 | `w_`   | Wait registrations — tasks waiting for events |
 
+Partitioned queues additionally have an `i_` table for idempotency key mapping.
+
 Queues let you scale workers independently and isolate different workloads.
 
 ## Workers

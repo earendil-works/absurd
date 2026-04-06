@@ -115,8 +115,14 @@ class AbsurdTestClient:
     def __init__(self, conn):
         self.conn = conn
 
-    def create_queue(self, name):
-        self.conn.execute("select absurd.create_queue(%s)", (name,))
+    def create_queue(self, name, storage_mode=None):
+        if storage_mode is None or storage_mode == "unpartitioned":
+            self.conn.execute("select absurd.create_queue(%s)", (name,))
+        else:
+            self.conn.execute(
+                "select absurd.create_queue(%s, %s)",
+                (name, storage_mode),
+            )
 
     def drop_queue(self, name):
         self.conn.execute("select absurd.drop_queue(%s)", (name,))

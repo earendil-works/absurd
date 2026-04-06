@@ -11,6 +11,7 @@
 -- * `c_` for checkpoints (saved states)
 -- * `e_` for emitted events
 -- * `w_` for wait registrations
+-- * `i_` for idempotency keys (partitioned queues only)
 --
 -- `create_queue`, `drop_queue`, and `list_queues` provide the management
 -- surface for provisioning queues safely.
@@ -54,7 +55,9 @@ $$;
 
 create table if not exists absurd.queues (
   queue_name text primary key,
-  created_at timestamptz not null default absurd.current_time()
+  created_at timestamptz not null default absurd.current_time(),
+  storage_mode text not null default 'unpartitioned'
+    check (storage_mode in ('unpartitioned', 'partitioned'))
 );
 
 -- Returns the Absurd schema release version baked into this SQL file.
@@ -93,63 +96,134 @@ create function absurd.ensure_queue_tables (p_queue_name text)
   returns void
   language plpgsql
 as $$
+declare
+  v_storage_mode text := 'unpartitioned';
 begin
   perform absurd.validate_queue_name(p_queue_name);
 
-  execute format(
-    'create table if not exists absurd.%I (
-        task_id uuid primary key,
-        task_name text not null,
-        params jsonb not null,
-        headers jsonb,
-        retry_strategy jsonb,
-        max_attempts integer,
-        cancellation jsonb,
-        enqueue_at timestamptz not null default absurd.current_time(),
-        first_started_at timestamptz,
-        state text not null check (state in (''pending'', ''running'', ''sleeping'', ''completed'', ''failed'', ''cancelled'')),
-        attempts integer not null default 0,
-        last_attempt_run uuid,
-        completed_payload jsonb,
-        cancelled_at timestamptz,
-        idempotency_key text unique
-     ) with (fillfactor=70)',
-    't_' || p_queue_name
-  );
+  select storage_mode into v_storage_mode
+  from absurd.queues
+  where queue_name = p_queue_name;
 
-  execute format(
-    'create table if not exists absurd.%I (
-        run_id uuid primary key,
-        task_id uuid not null,
-        attempt integer not null,
-        state text not null check (state in (''pending'', ''running'', ''sleeping'', ''completed'', ''failed'', ''cancelled'')),
-        claimed_by text,
-        claim_expires_at timestamptz,
-        available_at timestamptz not null,
-        wake_event text,
-        event_payload jsonb,
-        started_at timestamptz,
-        completed_at timestamptz,
-        failed_at timestamptz,
-        result jsonb,
-        failure_reason jsonb,
-        created_at timestamptz not null default absurd.current_time()
-     ) with (fillfactor=70)',
-    'r_' || p_queue_name
-  );
+  v_storage_mode := coalesce(v_storage_mode, 'unpartitioned');
 
-  execute format(
-    'create table if not exists absurd.%I (
-        task_id uuid not null,
-        checkpoint_name text not null,
-        state jsonb,
-        status text not null default ''committed'',
-        owner_run_id uuid,
-        updated_at timestamptz not null default absurd.current_time(),
-        primary key (task_id, checkpoint_name)
-     ) with (fillfactor=70)',
-    'c_' || p_queue_name
-  );
+  if v_storage_mode not in ('unpartitioned', 'partitioned') then
+    raise exception 'Unsupported queue storage mode "%"', v_storage_mode;
+  end if;
+
+  if v_storage_mode = 'partitioned' then
+    execute format(
+      'create table if not exists absurd.%I (
+          task_id uuid primary key,
+          task_name text not null,
+          params jsonb not null,
+          headers jsonb,
+          retry_strategy jsonb,
+          max_attempts integer,
+          cancellation jsonb,
+          enqueue_at timestamptz not null default absurd.current_time(),
+          first_started_at timestamptz,
+          state text not null check (state in (''pending'', ''running'', ''sleeping'', ''completed'', ''failed'', ''cancelled'')),
+          attempts integer not null default 0,
+          last_attempt_run uuid,
+          completed_payload jsonb,
+          cancelled_at timestamptz,
+          idempotency_key text
+       ) partition by range (task_id)',
+      't_' || p_queue_name
+    );
+  else
+    execute format(
+      'create table if not exists absurd.%I (
+          task_id uuid primary key,
+          task_name text not null,
+          params jsonb not null,
+          headers jsonb,
+          retry_strategy jsonb,
+          max_attempts integer,
+          cancellation jsonb,
+          enqueue_at timestamptz not null default absurd.current_time(),
+          first_started_at timestamptz,
+          state text not null check (state in (''pending'', ''running'', ''sleeping'', ''completed'', ''failed'', ''cancelled'')),
+          attempts integer not null default 0,
+          last_attempt_run uuid,
+          completed_payload jsonb,
+          cancelled_at timestamptz,
+          idempotency_key text unique
+       ) with (fillfactor=70)',
+      't_' || p_queue_name
+    );
+  end if;
+
+  if v_storage_mode = 'partitioned' then
+    execute format(
+      'create table if not exists absurd.%I (
+          run_id uuid primary key,
+          task_id uuid not null,
+          attempt integer not null,
+          state text not null check (state in (''pending'', ''running'', ''sleeping'', ''completed'', ''failed'', ''cancelled'')),
+          claimed_by text,
+          claim_expires_at timestamptz,
+          available_at timestamptz not null,
+          wake_event text,
+          event_payload jsonb,
+          started_at timestamptz,
+          completed_at timestamptz,
+          failed_at timestamptz,
+          result jsonb,
+          failure_reason jsonb,
+          created_at timestamptz not null default absurd.current_time()
+       ) partition by range (run_id)',
+      'r_' || p_queue_name
+    );
+
+    execute format(
+      'create table if not exists absurd.%I (
+          task_id uuid not null,
+          checkpoint_name text not null,
+          state jsonb,
+          status text not null default ''committed'',
+          owner_run_id uuid,
+          updated_at timestamptz not null default absurd.current_time(),
+          primary key (task_id, checkpoint_name)
+       ) partition by range (task_id)',
+      'c_' || p_queue_name
+    );
+  else
+    execute format(
+      'create table if not exists absurd.%I (
+          run_id uuid primary key,
+          task_id uuid not null,
+          attempt integer not null,
+          state text not null check (state in (''pending'', ''running'', ''sleeping'', ''completed'', ''failed'', ''cancelled'')),
+          claimed_by text,
+          claim_expires_at timestamptz,
+          available_at timestamptz not null,
+          wake_event text,
+          event_payload jsonb,
+          started_at timestamptz,
+          completed_at timestamptz,
+          failed_at timestamptz,
+          result jsonb,
+          failure_reason jsonb,
+          created_at timestamptz not null default absurd.current_time()
+       ) with (fillfactor=70)',
+      'r_' || p_queue_name
+    );
+
+    execute format(
+      'create table if not exists absurd.%I (
+          task_id uuid not null,
+          checkpoint_name text not null,
+          state jsonb,
+          status text not null default ''committed'',
+          owner_run_id uuid,
+          updated_at timestamptz not null default absurd.current_time(),
+          primary key (task_id, checkpoint_name)
+       ) with (fillfactor=70)',
+      'c_' || p_queue_name
+    );
+  end if;
 
   execute format(
     'create table if not exists absurd.%I (
@@ -160,18 +234,43 @@ begin
     'e_' || p_queue_name
   );
 
-  execute format(
-    'create table if not exists absurd.%I (
-        task_id uuid not null,
-        run_id uuid not null,
-        step_name text not null,
-        event_name text not null,
-        timeout_at timestamptz,
-        created_at timestamptz not null default absurd.current_time(),
-        primary key (run_id, step_name)
-     )',
-    'w_' || p_queue_name
-  );
+  if v_storage_mode = 'partitioned' then
+    execute format(
+      'create table if not exists absurd.%I (
+          task_id uuid not null,
+          run_id uuid not null,
+          step_name text not null,
+          event_name text not null,
+          timeout_at timestamptz,
+          created_at timestamptz not null default absurd.current_time(),
+          primary key (run_id, step_name)
+       ) partition by range (run_id)',
+      'w_' || p_queue_name
+    );
+  else
+    execute format(
+      'create table if not exists absurd.%I (
+          task_id uuid not null,
+          run_id uuid not null,
+          step_name text not null,
+          event_name text not null,
+          timeout_at timestamptz,
+          created_at timestamptz not null default absurd.current_time(),
+          primary key (run_id, step_name)
+       )',
+      'w_' || p_queue_name
+    );
+  end if;
+
+  if v_storage_mode = 'partitioned' then
+    execute format(
+      'create table if not exists absurd.%I (
+          idempotency_key text primary key,
+          task_id uuid not null
+       )',
+      'i_' || p_queue_name
+    );
+  end if;
 
   execute format(
     'create index if not exists %I on absurd.%I (state, available_at)',
@@ -210,27 +309,67 @@ begin
     ('e_' || p_queue_name) || '_eai',
     'e_' || p_queue_name
   );
+
+  if v_storage_mode = 'partitioned' then
+    execute format(
+      'create index if not exists %I on absurd.%I (task_id)',
+      ('i_' || p_queue_name) || '_ti',
+      'i_' || p_queue_name
+    );
+
+    perform absurd.ensure_partitions(p_queue_name);
+  end if;
 end;
 $$;
 
--- Creates the queue with the given name.
+-- Creates the queue with the given name and storage mode.
 --
--- If the table already exists, the function returns silently.
-create function absurd.create_queue (p_queue_name text)
+-- Existing queues are idempotent as long as the requested mode matches.
+create function absurd.create_queue (
+  p_queue_name text,
+  p_storage_mode text
+)
+  returns void
+  language plpgsql
+as $$
+declare
+  v_storage_mode text;
+  v_existing_mode text;
+begin
+  p_queue_name := absurd.validate_queue_name(p_queue_name);
+
+  v_storage_mode := lower(trim(coalesce(p_storage_mode, '')));
+  if v_storage_mode not in ('unpartitioned', 'partitioned') then
+    raise exception 'Unsupported queue storage mode "%"', p_storage_mode;
+  end if;
+
+  insert into absurd.queues (queue_name, storage_mode)
+  values (p_queue_name, v_storage_mode)
+  on conflict (queue_name) do nothing;
+
+  select storage_mode into v_existing_mode
+  from absurd.queues
+  where queue_name = p_queue_name;
+
+  if v_existing_mode is null then
+    raise exception 'Queue "%" was not found after create attempt', p_queue_name;
+  end if;
+
+  if v_existing_mode <> v_storage_mode then
+    raise exception 'Queue "%" already exists with storage mode "%"', p_queue_name, v_existing_mode;
+  end if;
+
+  perform absurd.ensure_queue_tables(p_queue_name);
+end;
+$$;
+
+-- Creates an unpartitioned queue (backward-compatible API).
+create or replace function absurd.create_queue (p_queue_name text)
   returns void
   language plpgsql
 as $$
 begin
-  p_queue_name := absurd.validate_queue_name(p_queue_name);
-
-  begin
-    insert into absurd.queues (queue_name)
-    values (p_queue_name);
-  exception when unique_violation then
-    return;
-  end;
-
-  perform absurd.ensure_queue_tables(p_queue_name);
+  perform absurd.create_queue(p_queue_name, 'unpartitioned');
 end;
 $$;
 
@@ -252,6 +391,7 @@ begin
     return;
   end if;
 
+  execute format('drop table if exists absurd.%I cascade', 'i_' || p_queue_name);
   execute format('drop table if exists absurd.%I cascade', 'w_' || p_queue_name);
   execute format('drop table if exists absurd.%I cascade', 'e_' || p_queue_name);
   execute format('drop table if exists absurd.%I cascade', 'c_' || p_queue_name);
@@ -334,7 +474,11 @@ declare
   v_cancellation jsonb;
   v_idempotency_key text;
   v_existing_task_id uuid;
+  v_existing_run_id uuid;
+  v_existing_attempt integer;
   v_row_count integer;
+  v_storage_mode text := 'unpartitioned';
+  v_task_inserted boolean := false;
   v_now timestamptz := absurd.current_time();
   v_params jsonb := coalesce(p_params, 'null'::jsonb);
 begin
@@ -355,38 +499,92 @@ begin
     v_idempotency_key := p_options->>'idempotency_key';
   end if;
 
-  -- If idempotency_key is provided, use INSERT ... ON CONFLICT DO NOTHING
   if v_idempotency_key is not null then
+    select storage_mode into v_storage_mode
+    from absurd.queues
+    where queue_name = p_queue_name;
+
+    v_storage_mode := coalesce(v_storage_mode, 'unpartitioned');
+    if v_storage_mode not in ('unpartitioned', 'partitioned') then
+      raise exception 'Unsupported queue storage mode "%"', v_storage_mode;
+    end if;
+
+    if v_storage_mode = 'partitioned' then
+      -- Reserve idempotency key via dedicated side table.
+      execute format(
+        'insert into absurd.%I (idempotency_key, task_id)
+         values ($1, $2)
+         on conflict (idempotency_key) do nothing',
+        'i_' || p_queue_name
+      )
+      using v_idempotency_key, v_task_id;
+
+      get diagnostics v_row_count = row_count;
+
+      if v_row_count = 0 then
+        execute format(
+          'select task_id
+             from absurd.%I
+            where idempotency_key = $1',
+          'i_' || p_queue_name
+        )
+        into v_existing_task_id
+        using v_idempotency_key;
+
+        execute format(
+          'select last_attempt_run, attempts
+             from absurd.%I
+            where task_id = $1',
+          't_' || p_queue_name
+        )
+        into v_existing_run_id, v_existing_attempt
+        using v_existing_task_id;
+
+        if v_existing_task_id is null or v_existing_run_id is null then
+          raise exception 'Idempotency key "%" is inconsistent in queue "%"', v_idempotency_key, p_queue_name;
+        end if;
+
+        return query select v_existing_task_id, v_existing_run_id, v_existing_attempt, false;
+        return;
+      end if;
+    else
+      -- Unpartitioned queues keep the original unique(idempotency_key)
+      -- behavior directly on t_<queue>.
+      execute format(
+        'insert into absurd.%I (task_id, task_name, params, headers, retry_strategy, max_attempts, cancellation, enqueue_at, first_started_at, state, attempts, last_attempt_run, completed_payload, cancelled_at, idempotency_key)
+         values ($1, $2, $3, $4, $5, $6, $7, $8, null, ''pending'', $9, $10, null, null, $11)
+         on conflict (idempotency_key) do nothing',
+        't_' || p_queue_name
+      )
+      using v_task_id, p_task_name, v_params, v_headers, v_retry_strategy, v_max_attempts, v_cancellation, v_now, v_attempt, v_run_id, v_idempotency_key;
+
+      get diagnostics v_row_count = row_count;
+
+      if v_row_count = 0 then
+        execute format(
+          'select task_id, last_attempt_run, attempts
+             from absurd.%I
+            where idempotency_key = $1',
+          't_' || p_queue_name
+        )
+        into v_existing_task_id, v_existing_run_id, v_existing_attempt
+        using v_idempotency_key;
+
+        return query select v_existing_task_id, v_existing_run_id, v_existing_attempt, false;
+        return;
+      end if;
+
+      v_task_inserted := true;
+    end if;
+  end if;
+
+  if not v_task_inserted then
     execute format(
       'insert into absurd.%I (task_id, task_name, params, headers, retry_strategy, max_attempts, cancellation, enqueue_at, first_started_at, state, attempts, last_attempt_run, completed_payload, cancelled_at, idempotency_key)
-       values ($1, $2, $3, $4, $5, $6, $7, $8, null, ''pending'', $9, $10, null, null, $11)
-       on conflict (idempotency_key) do nothing',
+       values ($1, $2, $3, $4, $5, $6, $7, $8, null, ''pending'', $9, $10, null, null, $11)',
       't_' || p_queue_name
     )
     using v_task_id, p_task_name, v_params, v_headers, v_retry_strategy, v_max_attempts, v_cancellation, v_now, v_attempt, v_run_id, v_idempotency_key;
-
-    get diagnostics v_row_count = row_count;
-
-    if v_row_count = 0 then
-      -- Task already exists, look up existing task info
-      execute format(
-        'select task_id, last_attempt_run, attempts from absurd.%I where idempotency_key = $1',
-        't_' || p_queue_name
-      )
-      into v_existing_task_id, v_run_id, v_attempt
-      using v_idempotency_key;
-
-      return query select v_existing_task_id, v_run_id, v_attempt, false;
-      return;
-    end if;
-  else
-    -- No idempotency key, insert normally
-    execute format(
-      'insert into absurd.%I (task_id, task_name, params, headers, retry_strategy, max_attempts, cancellation, enqueue_at, first_started_at, state, attempts, last_attempt_run, completed_payload, cancelled_at, idempotency_key)
-       values ($1, $2, $3, $4, $5, $6, $7, $8, null, ''pending'', $9, $10, null, null, null)',
-      't_' || p_queue_name
-    )
-    using v_task_id, p_task_name, v_params, v_headers, v_retry_strategy, v_max_attempts, v_cancellation, v_now, v_attempt, v_run_id;
   end if;
 
   execute format(
@@ -1546,6 +1744,7 @@ declare
   v_now timestamptz := absurd.current_time();
   v_cutoff timestamptz;
   v_deleted_count integer;
+  v_storage_mode text := 'unpartitioned';
 begin
   if p_ttl_seconds is null or p_ttl_seconds < 0 then
     raise exception 'TTL must be a non-negative number of seconds';
@@ -1553,54 +1752,116 @@ begin
 
   v_cutoff := v_now - (p_ttl_seconds * interval '1 second');
 
-  -- Delete in order: wait registrations, checkpoints, runs, then tasks
-  -- Use a CTE to find eligible tasks and delete their related data
-  execute format(
-    'with eligible_tasks as (
-        select t.task_id,
-               case
-                 when t.state = ''completed'' then r.completed_at
-                 when t.state = ''failed'' then r.failed_at
-                 when t.state = ''cancelled'' then t.cancelled_at
-                 else null
-               end as terminal_at
-          from absurd.%1$I t
-          left join absurd.%2$I r on r.run_id = t.last_attempt_run
-         where t.state in (''completed'', ''failed'', ''cancelled'')
-     ),
-     to_delete as (
-        select task_id
-          from eligible_tasks
-         where terminal_at is not null
-           and terminal_at < $1
-         order by terminal_at
-         limit $2
-     ),
-     del_waits as (
-        delete from absurd.%3$I w
-         where w.task_id in (select task_id from to_delete)
-     ),
-     del_checkpoints as (
-        delete from absurd.%4$I c
-         where c.task_id in (select task_id from to_delete)
-     ),
-     del_runs as (
-        delete from absurd.%2$I r
-         where r.task_id in (select task_id from to_delete)
-     ),
-     del_tasks as (
-        delete from absurd.%1$I t
-         where t.task_id in (select task_id from to_delete)
-         returning 1
-     )
-     select count(*) from del_tasks',
-    't_' || p_queue_name,
-    'r_' || p_queue_name,
-    'w_' || p_queue_name,
-    'c_' || p_queue_name
-  )
-  into v_deleted_count
-  using v_cutoff, p_limit;
+  select storage_mode into v_storage_mode
+  from absurd.queues
+  where queue_name = p_queue_name;
+
+  v_storage_mode := coalesce(v_storage_mode, 'unpartitioned');
+
+  if v_storage_mode = 'partitioned' then
+    -- Delete in order: wait registrations, checkpoints, runs, idempotency keys,
+    -- then tasks.
+    execute format(
+      'with eligible_tasks as (
+          select t.task_id,
+                 case
+                   when t.state = ''completed'' then r.completed_at
+                   when t.state = ''failed'' then r.failed_at
+                   when t.state = ''cancelled'' then t.cancelled_at
+                   else null
+                 end as terminal_at
+            from absurd.%1$I t
+            left join absurd.%2$I r on r.run_id = t.last_attempt_run
+           where t.state in (''completed'', ''failed'', ''cancelled'')
+       ),
+       to_delete as (
+          select task_id
+            from eligible_tasks
+           where terminal_at is not null
+             and terminal_at < $1
+           order by terminal_at
+           limit $2
+       ),
+       del_waits as (
+          delete from absurd.%3$I w
+           where w.task_id in (select task_id from to_delete)
+       ),
+       del_checkpoints as (
+          delete from absurd.%4$I c
+           where c.task_id in (select task_id from to_delete)
+       ),
+       del_runs as (
+          delete from absurd.%2$I r
+           where r.task_id in (select task_id from to_delete)
+       ),
+       del_idempotency as (
+          delete from absurd.%5$I i
+           where i.task_id in (select task_id from to_delete)
+       ),
+       del_tasks as (
+          delete from absurd.%1$I t
+           where t.task_id in (select task_id from to_delete)
+           returning 1
+       )
+       select count(*) from del_tasks',
+      't_' || p_queue_name,
+      'r_' || p_queue_name,
+      'w_' || p_queue_name,
+      'c_' || p_queue_name,
+      'i_' || p_queue_name
+    )
+    into v_deleted_count
+    using v_cutoff, p_limit;
+  else
+    -- Unpartitioned queues keep idempotency key ownership on the task row,
+    -- so no side-table cleanup is needed.
+    execute format(
+      'with eligible_tasks as (
+          select t.task_id,
+                 case
+                   when t.state = ''completed'' then r.completed_at
+                   when t.state = ''failed'' then r.failed_at
+                   when t.state = ''cancelled'' then t.cancelled_at
+                   else null
+                 end as terminal_at
+            from absurd.%1$I t
+            left join absurd.%2$I r on r.run_id = t.last_attempt_run
+           where t.state in (''completed'', ''failed'', ''cancelled'')
+       ),
+       to_delete as (
+          select task_id
+            from eligible_tasks
+           where terminal_at is not null
+             and terminal_at < $1
+           order by terminal_at
+           limit $2
+       ),
+       del_waits as (
+          delete from absurd.%3$I w
+           where w.task_id in (select task_id from to_delete)
+       ),
+       del_checkpoints as (
+          delete from absurd.%4$I c
+           where c.task_id in (select task_id from to_delete)
+       ),
+       del_runs as (
+          delete from absurd.%2$I r
+           where r.task_id in (select task_id from to_delete)
+       ),
+       del_tasks as (
+          delete from absurd.%1$I t
+           where t.task_id in (select task_id from to_delete)
+           returning 1
+       )
+       select count(*) from del_tasks',
+      't_' || p_queue_name,
+      'r_' || p_queue_name,
+      'w_' || p_queue_name,
+      'c_' || p_queue_name
+    )
+    into v_deleted_count
+    using v_cutoff, p_limit;
+  end if;
 
   return v_deleted_count;
 end;
@@ -1776,4 +2037,129 @@ as $$
     ((extract(isoyear from ts)::int % 10)::text) ||
     lpad((extract(week from ts)::int)::text, 2, '0')
   from bucket;
+$$;
+
+-- Ensures weekly UUIDv7 partitions exist for partitioned queues.
+--
+-- By default this creates partitions for:
+-- * the week containing now()
+-- * the previous week if now() is within 1 day of a week boundary
+--
+-- p_until can be provided to pre-create partitions up to a future timestamp.
+create function absurd.ensure_partitions (
+  p_queue_name text default null,
+  p_until timestamptz default null,
+  p_clock_skew interval default interval '1 day'
+)
+  returns void
+  language plpgsql
+as $$
+declare
+  v_now timestamptz := absurd.current_time();
+  v_until timestamptz := coalesce(p_until, absurd.current_time());
+  v_skew interval := coalesce(p_clock_skew, interval '1 day');
+  v_window_start timestamptz;
+  v_window_end timestamptz;
+  v_week_start timestamptz;
+  v_week_end timestamptz;
+  v_partition_tag text;
+  v_uuid_from uuid;
+  v_uuid_to uuid;
+  v_queue record;
+begin
+  if v_skew < interval '0 seconds' then
+    raise exception 'clock skew tolerance must be non-negative';
+  end if;
+
+  if p_queue_name is not null then
+    p_queue_name := absurd.validate_queue_name(p_queue_name);
+
+    if not exists (
+      select 1
+      from absurd.queues
+      where queue_name = p_queue_name
+    ) then
+      raise exception 'Queue "%" does not exist', p_queue_name;
+    end if;
+  end if;
+
+  if v_until < v_now then
+    v_until := v_now;
+  end if;
+
+  v_window_start := absurd.week_bucket_utc(v_now - v_skew);
+  v_window_end := absurd.week_bucket_utc(v_until);
+
+  for v_queue in
+    select queue_name
+    from absurd.queues
+    where storage_mode = 'partitioned'
+      and (p_queue_name is null or queue_name = p_queue_name)
+    order by queue_name
+  loop
+    execute format(
+      'create table if not exists absurd.%I partition of absurd.%I default',
+      't_' || v_queue.queue_name || '_d',
+      't_' || v_queue.queue_name
+    );
+    execute format(
+      'create table if not exists absurd.%I partition of absurd.%I default',
+      'r_' || v_queue.queue_name || '_d',
+      'r_' || v_queue.queue_name
+    );
+    execute format(
+      'create table if not exists absurd.%I partition of absurd.%I default',
+      'c_' || v_queue.queue_name || '_d',
+      'c_' || v_queue.queue_name
+    );
+    execute format(
+      'create table if not exists absurd.%I partition of absurd.%I default',
+      'w_' || v_queue.queue_name || '_d',
+      'w_' || v_queue.queue_name
+    );
+
+    v_week_start := v_window_start;
+    while v_week_start <= v_window_end loop
+      v_week_end := v_week_start + interval '7 days';
+      v_partition_tag := absurd.partition_week_tag(v_week_start);
+      v_uuid_from := absurd.uuidv7_floor(v_week_start);
+      v_uuid_to := absurd.uuidv7_floor(v_week_end);
+
+      execute format(
+        'create table if not exists absurd.%I partition of absurd.%I
+         for values from (%L::uuid) to (%L::uuid)',
+        't_' || v_queue.queue_name || '_' || v_partition_tag,
+        't_' || v_queue.queue_name,
+        v_uuid_from,
+        v_uuid_to
+      );
+      execute format(
+        'create table if not exists absurd.%I partition of absurd.%I
+         for values from (%L::uuid) to (%L::uuid)',
+        'r_' || v_queue.queue_name || '_' || v_partition_tag,
+        'r_' || v_queue.queue_name,
+        v_uuid_from,
+        v_uuid_to
+      );
+      execute format(
+        'create table if not exists absurd.%I partition of absurd.%I
+         for values from (%L::uuid) to (%L::uuid)',
+        'c_' || v_queue.queue_name || '_' || v_partition_tag,
+        'c_' || v_queue.queue_name,
+        v_uuid_from,
+        v_uuid_to
+      );
+      execute format(
+        'create table if not exists absurd.%I partition of absurd.%I
+         for values from (%L::uuid) to (%L::uuid)',
+        'w_' || v_queue.queue_name || '_' || v_partition_tag,
+        'w_' || v_queue.queue_name,
+        v_uuid_from,
+        v_uuid_to
+      );
+
+      v_week_start := v_week_end;
+    end loop;
+  end loop;
+end;
 $$;
