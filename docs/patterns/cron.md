@@ -1,23 +1,24 @@
-# Cron Jobs With Deduplication Keys
+# Scheduling Tasks with Cron
 
-It's quite common that you need to run tasks on a schedule.  Usually that is expressed
-in the form of [cron rules](https://en.wikipedia.org/wiki/Cron).  With absurd running
-cronjobs is pretty simple even though it does not have a scheduler itself.
+Absurd does not include a built-in scheduler, but scheduling is straightforward.
+There are two common approaches:
 
-The only tricky is to ensure that each cron only runs once.  If your scheduler
-runs twice (deploy overlap, crash restart, two replicas), you can still
-guarantee each cron slot is enqueued only once.
+1. **Application-side scheduler + idempotency keys**
+2. **Database-side scheduler with `pg_cron`**
 
-The trick: derive an idempotency key from:
+## Application-side Scheduler
+
+Run a small scheduler process (or serverless job) that evaluates cron
+expressions and calls `spawn`.
+
+Here you should use an idempotency key derived from:
 
 1. task name
 2. cron expression
-3. computed next execution slot (normalized to UTC minute)
+3. computed execution slot (UTC minute)
 
-If two scheduler processes compute the same slot, they produce the same key, and
-Absurd returns the already-existing task instead of creating a duplicate.
-
-## Example
+That ensures duplicate scheduler runs (deploy overlap, crash restart, multiple
+replicas) collapse into a single Absurd task.
 
 === "TypeScript"
 
@@ -165,3 +166,52 @@ Absurd returns the already-existing task instead of creating a duplicate.
         }
     }
     ```
+
+## Postgres-side Scheduler With `pg_cron`
+
+If you already run Postgres with [`pg_cron`](https://github.com/citusdata/pg_cron),
+you can schedule `absurd.spawn_task(...)` directly inside the database.
+
+This is often simpler operationally: no separate scheduler process, and one
+`pg_cron` job entry maps to one schedule.
+
+### Setup
+
+```sql
+create extension if not exists pg_cron;
+```
+
+> Depending on your Postgres setup, `pg_cron` may require
+> `shared_preload_libraries = 'pg_cron'` and a restart.
+
+### Schedule a Task Spawn
+
+```sql
+select cron.schedule(
+  'absurd-send-report-every-5m',
+  '*/5 * * * *',
+  $$
+  select absurd.spawn_task(
+    'default',
+    'send-report',
+    jsonb_build_object('scheduled_for', now())
+  );
+  $$
+);
+```
+
+### Daily Job Example
+
+```sql
+select cron.schedule(
+  'absurd-rebuild-search-index-daily',
+  '0 2 * * *',
+  $$
+  select absurd.spawn_task(
+    'default',
+    'rebuild-search-index',
+    jsonb_build_object('scheduled_for', now())
+  );
+  $$
+);
+```
