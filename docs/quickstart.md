@@ -424,12 +424,17 @@ store, inspect later, or await.
     const userID = args[0] ?? "alice";
     const email = args[1] ?? `${userID}@example.com`;
 
-    const app = new Absurd({ queueName: "default" });
+    const queueName = "default";
+    const app = new Absurd({ queueName });
 
-    const spawned = await app.spawn("provision-user", {
-      user_id: userID,
-      email,
-    });
+    const spawned = await app.spawn(
+      "provision-user",
+      {
+        user_id: userID,
+        email,
+      },
+      { queue: queueName },
+    );
 
     console.log("spawned:", spawned);
     console.log(
@@ -463,7 +468,8 @@ store, inspect later, or await.
     user_id = args[0] if len(args) > 0 else "alice"
     email = args[1] if len(args) > 1 else f"{user_id}@example.com"
 
-    app = Absurd(queue_name="default")
+    queue_name = "default"
+    app = Absurd(queue_name=queue_name)
 
     spawned = app.spawn(
         "provision-user",
@@ -471,6 +477,7 @@ store, inspect later, or await.
             "user_id": user_id,
             "email": email,
         },
+        queue=queue_name,
     )
 
     print("spawned:", spawned)
@@ -536,10 +543,15 @@ store, inspect later, or await.
         }
         defer app.Close()
 
-        spawned, err := app.Spawn(ctx, "provision-user", ProvisionUserParams{
-            UserID: userID,
-            Email:  email,
-        })
+        spawned, err := app.Spawn(
+            ctx,
+            "provision-user",
+            ProvisionUserParams{
+                UserID: userID,
+                Email:  email,
+            },
+            absurd.SpawnOptions{QueueName: app.QueueName()},
+        )
         if err != nil {
             log.Fatal(err)
         }
@@ -575,6 +587,17 @@ store, inspect later, or await.
         }
     }
     ```
+
+!!! warning "Spawning from a separate process"
+
+    The client snippets above do **not** register `provision-user` locally.
+    For safety, SDK `spawn()` requires an explicit queue for unregistered
+    tasks.
+
+    Also note: when a task is unregistered in the spawning process, task-level
+    registration defaults (for example `default_max_attempts`) are not loaded.
+    Retry/cancellation settings come from explicit spawn options (or SDK client
+    defaults).
 
 === "CLI"
 
@@ -665,10 +688,15 @@ activation event from another terminal.
         }
         defer app.Close()
 
-        spawned, err := app.Spawn(ctx, "provision-user", ProvisionUserParams{
-            UserID: "bob",
-            Email:  "bob@example.com",
-        })
+        spawned, err := app.Spawn(
+            ctx,
+            "provision-user",
+            ProvisionUserParams{
+                UserID: "bob",
+                Email:  "bob@example.com",
+            },
+            absurd.SpawnOptions{QueueName: app.QueueName()},
+        )
         if err != nil {
             log.Fatal(err)
         }
@@ -702,10 +730,12 @@ activation event from another terminal.
 
     ```pycon
     >>> from absurd_sdk import Absurd
-    >>> app = Absurd(queue_name="default")
+    >>> queue_name = "default"
+    >>> app = Absurd(queue_name=queue_name)
     >>> spawned = app.spawn(
     ...     "provision-user",
     ...     {"user_id": "bob", "email": "bob@example.com"},
+    ...     queue=queue_name,
     ... )
     >>> spawned
     {'task_id': '019...', 'run_id': '019...', 'attempt': 1}
@@ -733,12 +763,17 @@ activation event from another terminal.
     ```typescript
     import { Absurd } from "absurd-sdk";
 
-    const app = new Absurd({ queueName: "default" });
+    const queueName = "default";
+    const app = new Absurd({ queueName });
 
-    const spawned = await app.spawn("provision-user", {
-      user_id: "bob",
-      email: "bob@example.com",
-    });
+    const spawned = await app.spawn(
+      "provision-user",
+      {
+        user_id: "bob",
+        email: "bob@example.com",
+      },
+      { queue: queueName },
+    );
 
     console.log(spawned);
     console.log(await app.fetchTaskResult(spawned.taskID));

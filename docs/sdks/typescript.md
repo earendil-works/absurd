@@ -97,6 +97,13 @@ const { taskID, runID, attempt, created } = await app.spawn(
 );
 ```
 
+Safety behavior: if the task is not registered in this process, `app.spawn()`
+requires `options.queue`. This avoids silently routing unknown tasks to the
+client queue. In that unregistered case, task-level defaults from
+`registerTask(...)` (`defaultMaxAttempts` / `defaultCancellation`) are
+unavailable; retry/cancellation come from explicit spawn options (or client
+defaults).
+
 ### `SpawnOptions`
 
 | Option | Type | Description |
@@ -104,7 +111,7 @@ const { taskID, runID, attempt, created } = await app.spawn(
 | `maxAttempts` | `number` | Max retry attempts |
 | `retryStrategy` | `RetryStrategy` | Backoff configuration |
 | `headers` | `JsonObject` | Metadata attached to the task |
-| `queue` | `string` | Target queue (must match registration if registered) |
+| `queue` | `string` | Target queue (required for unregistered tasks; must match registration if registered) |
 | `cancellation` | `CancellationPolicy` | Auto-cancellation policy |
 | `idempotencyKey` | `string` | Dedup key (existing task returned if key matches) |
 

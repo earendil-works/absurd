@@ -244,12 +244,25 @@ func TestRetryTaskParity(t *testing.T) {
 	}
 }
 
-func TestUnknownTaskFailsClaimedRunImmediately(t *testing.T) {
+func TestUnknownTaskRequiresExplicitQueueAtSpawn(t *testing.T) {
 	queue := randomQueueName("go_unknown")
+	client := newTestClient(t, queue)
+
+	_, err := client.Spawn(context.Background(), "ghost-task", map[string]any{"value": 1})
+	if err == nil {
+		t.Fatal("expected spawn to fail for unregistered task without explicit queue")
+	}
+	if !strings.Contains(err.Error(), `task "ghost-task" is not registered`) {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestUnknownTaskWithExplicitQueueFailsClaimedRunImmediately(t *testing.T) {
+	queue := randomQueueName("go_unknown_explicit")
 	db := setupTestDatabase(t)
 	client := newTestClient(t, queue)
 
-	spawned, err := client.Spawn(context.Background(), "ghost-task", map[string]any{"value": 1}, absurd.SpawnOptions{MaxAttempts: 1})
+	spawned, err := client.Spawn(context.Background(), "ghost-task", map[string]any{"value": 1}, absurd.SpawnOptions{QueueName: queue, MaxAttempts: 1})
 	if err != nil {
 		t.Fatalf("Spawn: %v", err)
 	}
@@ -292,7 +305,7 @@ func TestQueueMismatchFailsClaimedRunImmediately(t *testing.T) {
 		t.Fatalf("New producer client: %v", err)
 	}
 
-	spawned, err := producer.Spawn(context.Background(), "misqueued-task", nil, absurd.SpawnOptions{MaxAttempts: 1})
+	spawned, err := producer.Spawn(context.Background(), "misqueued-task", nil, absurd.SpawnOptions{QueueName: queue, MaxAttempts: 1})
 	if err != nil {
 		t.Fatalf("Spawn: %v", err)
 	}

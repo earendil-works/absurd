@@ -170,6 +170,11 @@ if err != nil {
 log.Printf("task=%s run=%s", result.TaskID, result.RunID)
 ```
 
+If `order-fulfillment` is not registered in this process, pass
+`absurd.SpawnOptions{QueueName: "..."}` explicitly. For unregistered tasks,
+per-task defaults from registration are not available; spawn options (or client
+defaults) are used instead.
+
 ## Task Result Snapshots
 
 You can inspect or wait for a task's terminal result:

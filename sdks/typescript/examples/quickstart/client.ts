@@ -5,12 +5,17 @@ const args = process.argv.slice(2).filter((arg) => arg !== "--await");
 const userID = args[0] ?? "alice";
 const email = args[1] ?? `${userID}@example.com`;
 
-const app = new Absurd({ queueName: "default" });
+const queueName = "default";
+const app = new Absurd({ queueName });
 
-const spawned = await app.spawn("provision-user", {
-  user_id: userID,
-  email,
-});
+const spawned = await app.spawn(
+  "provision-user",
+  {
+    user_id: userID,
+    email,
+  },
+  { queue: queueName },
+);
 
 console.log("spawned:", spawned);
 console.log("current snapshot:", await app.fetchTaskResult(spawned.taskID));

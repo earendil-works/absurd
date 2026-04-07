@@ -163,6 +163,13 @@ def agent_turn(params, ctx):
 The async API provides the same methods as `await ctx.begin_step(...)` and
 `await ctx.complete_step(...)`.
 
+## Spawning from a Separate Process
+
+If a task is not registered in the current process, `spawn()` requires an
+explicit `queue=...` for safety. In that case, task-level defaults from
+`register_task(...)` are unavailable; spawn options (or client defaults) are
+used.
+
 ## Task Result Snapshots
 
 You can inspect or await a task's result state. Both methods return a

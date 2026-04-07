@@ -91,6 +91,10 @@ await app.spawn("order-fulfillment", {
 });
 ```
 
+If the task is not registered in this process, pass `options.queue` explicitly.
+For unregistered tasks, defaults from `registerTask(...)` are unavailable;
+spawn options (or client defaults) are used.
+
 ## Task Result Snapshots
 
 You can inspect or wait for a task's terminal result:

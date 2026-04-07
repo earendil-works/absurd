@@ -307,6 +307,12 @@ result, err := sendEmailTask.Spawn(
 )
 ```
 
+Safety behavior: if the task is not registered in this process, `app.Spawn`
+requires `SpawnOptions.QueueName`. This avoids silently routing unknown tasks to
+the client default queue. In that unregistered case, task-level defaults from
+`TaskOptions` are unavailable; retries/cancellation come from explicit spawn
+options (or client defaults).
+
 ### `SpawnOptions`
 
 | Option | Type | Description |
