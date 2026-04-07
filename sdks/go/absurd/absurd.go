@@ -811,7 +811,10 @@ func (c *Client) resolveSpawn(taskName string, opts SpawnOptions) (string, int, 
 		}
 		cancellation = cloneCancellationPolicy(registration.defaultCancellation)
 	} else {
-		queue = orString(opts.QueueName, queue)
+		if opts.QueueName == "" {
+			return "", 0, nil, fmt.Errorf("task %q is not registered. provide SpawnOptions.QueueName when spawning unregistered tasks", taskName)
+		}
+		queue = opts.QueueName
 	}
 
 	if opts.MaxAttempts != 0 {

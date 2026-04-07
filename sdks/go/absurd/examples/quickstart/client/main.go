@@ -45,10 +45,15 @@ func main() {
 
 	queue := app.QueueName()
 
-	spawned, err := app.Spawn(ctx, "provision-user", ProvisionUserParams{
-		UserID: userID,
-		Email:  email,
-	})
+	spawned, err := app.Spawn(
+		ctx,
+		"provision-user",
+		ProvisionUserParams{
+			UserID: userID,
+			Email:  email,
+		},
+		absurd.SpawnOptions{QueueName: queue},
+	)
 	if err != nil {
 		log.Fatal(err)
 	}

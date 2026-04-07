@@ -119,6 +119,12 @@ result = app.spawn(
 print(result["task_id"], result["run_id"])
 ```
 
+Safety behavior: if the task is not registered in this process, `spawn()`
+requires `queue=...`. This avoids silently routing unknown tasks to the client
+queue. In that unregistered case, task-level defaults from `register_task()`
+(such as `default_max_attempts` / `default_cancellation`) are unavailable;
+retry/cancellation come from explicit spawn options (or client defaults).
+
 ### Spawn Parameters
 
 | Parameter | Type | Description |
@@ -128,7 +134,7 @@ print(result["task_id"], result["run_id"])
 | `max_attempts` | `int` | Max retry attempts |
 | `retry_strategy` | `RetryStrategy` | Backoff configuration |
 | `headers` | `dict` | Metadata attached to the task |
-| `queue` | `str` | Target queue (must match registration if registered) |
+| `queue` | `str` | Target queue (required for unregistered tasks; must match registration if registered) |
 | `cancellation` | `CancellationPolicy` | Auto-cancellation policy |
 | `idempotency_key` | `str` | Dedup key |
 

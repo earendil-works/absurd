@@ -7,7 +7,8 @@ args = [arg for arg in sys.argv[1:] if arg != "--await"]
 user_id = args[0] if len(args) > 0 else "alice"
 email = args[1] if len(args) > 1 else f"{user_id}@example.com"
 
-app = Absurd(queue_name="default")
+queue_name = "default"
+app = Absurd(queue_name=queue_name)
 
 spawned = app.spawn(
     "provision-user",
@@ -15,6 +16,7 @@ spawned = app.spawn(
         "user_id": user_id,
         "email": email,
     },
+    queue=queue_name,
 )
 
 print("spawned:", spawned)
