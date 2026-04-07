@@ -168,8 +168,9 @@ absurdctl queue-policy jobs
 # Update cleanup behavior
 absurdctl queue-policy jobs --cleanup-ttl '7 days' --cleanup-limit 2000
 
-# Update partition window and detach behavior
+# Update partition window, default partition, and detach behavior
 absurdctl queue-policy jobs \
+  --default-partition disabled \
   --partition-lookahead '42 days' \
   --partition-lookback '2 days' \
   --detach-mode empty \
@@ -180,6 +181,7 @@ Options:
 
 | Flag | Description |
 |------|-------------|
+| `--default-partition MODE` | Default partition mode: `enabled` or `disabled` (partitioned queues only) |
 | `--partition-lookahead INTERVAL` | Partition lookahead window |
 | `--partition-lookback INTERVAL` | Partition lookback window |
 | `--cleanup-ttl INTERVAL` | Cleanup retention interval |
@@ -250,7 +252,8 @@ absurdctl list-detach-candidates --queue jobs --show-sql
 
 ### `detach-candidate`
 
-Execute one candidate's `DETACH PARTITION ... CONCURRENTLY` manually.
+Execute one candidate's `DETACH PARTITION ...` manually.
+(Uses `CONCURRENTLY` only when the candidate SQL is eligible.)
 
 ```bash
 absurdctl detach-candidate --queue jobs t_jobs_2414

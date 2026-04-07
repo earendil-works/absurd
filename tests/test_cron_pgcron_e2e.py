@@ -167,6 +167,77 @@ def test_pgcron_time_jump_executes_detach_and_drop_jobs(
         time.sleep(1.0)
 
 
+def test_pgcron_detach_uses_concurrently_when_default_partition_disabled(
+    pgcron_client, pgcron_postgres_container
+):
+    queue = "cron-live-detach-concurrent"
+    base = datetime(2024, 4, 1, 12, 0, tzinfo=timezone.utc)
+
+    pgcron_postgres_container.set_system_time(base)
+
+    pgcron_client.create_queue(queue, storage_mode="partitioned")
+    pgcron_client.conn.execute(
+        "select absurd.set_queue_policy(%s, %s::jsonb)",
+        (
+            queue,
+            '{"detach_mode": "empty", "detach_min_age": "0 days", "default_partition": "disabled"}',
+        ),
+    )
+
+    pgcron_client.conn.execute(
+        """
+        select *
+        from absurd.enable_cron(
+          %s,
+          %s,
+          %s,
+          %s
+        )
+        """,
+        (
+            queue,
+            "0 0 1 1 *",
+            "0 0 1 1 *",
+            "1 second",
+        ),
+    )
+
+    pgcron_postgres_container.advance_system_time(days=120)
+
+    scope = pgcron_client.conn.execute(
+        "select substr(md5(%s), 1, 12)",
+        (queue,),
+    ).fetchone()[0]
+
+    _wait_until(
+        lambda: pgcron_client.conn.execute(
+            "select exists (select 1 from cron.job where jobname like %s)",
+            (f"absurd_detach_run_{scope}_%",),
+        ).fetchone()[0],
+        timeout=20.0,
+        message="pg_cron did not schedule detach run jobs",
+    )
+
+    deadline = time.monotonic() + 45.0
+    while True:
+        concurrent_succeeded = pgcron_client.conn.execute(
+            """
+            select exists (
+              select 1
+              from cron.job_run_details
+              where command ilike 'alter table absurd.% detach partition absurd.% concurrently'
+                and status = 'succeeded'
+            )
+            """
+        ).fetchone()[0]
+        if concurrent_succeeded:
+            break
+        if time.monotonic() >= deadline:
+            raise AssertionError("concurrent detach job did not succeed")
+        pgcron_postgres_container.advance_system_time(minutes=2)
+        time.sleep(1.0)
+
+
 def test_drop_queue_removes_queue_scoped_pgcron_jobs(pgcron_client):
     queue = "cron-drop-live"
 

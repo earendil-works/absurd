@@ -77,6 +77,7 @@ def test_queue_storage_mode_defaults_to_unpartitioned(client):
         """
         select
           storage_mode,
+          default_partition,
           partition_lookahead,
           partition_lookback,
           cleanup_ttl,
@@ -90,12 +91,13 @@ def test_queue_storage_mode_defaults_to_unpartitioned(client):
     ).fetchone()
     assert row is not None
     assert row[0] == "unpartitioned"
-    assert row[1] == timedelta(days=28)
-    assert row[2] == timedelta(days=1)
-    assert row[3] == timedelta(days=30)
-    assert row[4] == 1000
-    assert row[5] == "none"
-    assert row[6] == timedelta(days=30)
+    assert row[1] == "enabled"
+    assert row[2] == timedelta(days=28)
+    assert row[3] == timedelta(days=1)
+    assert row[4] == timedelta(days=30)
+    assert row[5] == 1000
+    assert row[6] == "none"
+    assert row[7] == timedelta(days=30)
 
     has_idempotency_table = client.conn.execute(
         """
@@ -250,13 +252,14 @@ def test_queue_policy_can_be_updated(client):
         """,
         (
             queue,
-            '{"partition_lookahead":"35 days","partition_lookback":"2 days","cleanup_ttl":"12345 seconds","cleanup_limit":77,"detach_mode":"empty","detach_min_age":"45 days"}',
+            '{"default_partition":"disabled","partition_lookahead":"35 days","partition_lookback":"2 days","cleanup_ttl":"12345 seconds","cleanup_limit":77,"detach_mode":"empty","detach_min_age":"45 days"}',
         ),
     )
 
     row = client.conn.execute(
         """
         select
+          default_partition,
           partition_lookahead,
           partition_lookback,
           cleanup_ttl,
@@ -269,12 +272,13 @@ def test_queue_policy_can_be_updated(client):
     ).fetchone()
 
     assert row is not None
-    assert row[0] == timedelta(days=35)
-    assert row[1] == timedelta(days=2)
-    assert row[2] == timedelta(seconds=12345)
-    assert row[3] == 77
-    assert row[4] == "empty"
-    assert row[5] == timedelta(days=45)
+    assert row[0] == "disabled"
+    assert row[1] == timedelta(days=35)
+    assert row[2] == timedelta(days=2)
+    assert row[3] == timedelta(seconds=12345)
+    assert row[4] == 77
+    assert row[5] == "empty"
+    assert row[6] == timedelta(days=45)
 
 
 def test_set_queue_policy_rejects_unknown_keys(client):
@@ -297,6 +301,96 @@ def test_set_queue_policy_rejects_invalid_values(client):
             "select absurd.set_queue_policy(%s, %s::jsonb)",
             (queue, '{"cleanup_limit": 0}'),
         )
+    client.conn.rollback()
+
+    with pytest.raises(Exception):
+        client.conn.execute(
+            "select absurd.set_queue_policy(%s, %s::jsonb)",
+            (queue, '{"default_partition": "disabled"}'),
+        )
+    client.conn.rollback()
+
+    queue_partitioned = "mode-policy-invalid-part"
+    client.create_queue(queue_partitioned, storage_mode="partitioned")
+
+    with pytest.raises(Exception):
+        client.conn.execute(
+            "select absurd.set_queue_policy(%s, %s::jsonb)",
+            (queue_partitioned, '{"default_partition": "oops"}'),
+        )
+
+
+def test_partitioned_queue_can_disable_and_reenable_default_partitions(client):
+    queue = "mode-default-toggle"
+    client.create_queue(queue, storage_mode="partitioned")
+
+    for prefix in ["t", "r", "c", "w"]:
+        assert _get_relkind(client.conn, f"{prefix}_{queue}_d") == "r"
+
+    client.conn.execute(
+        "select absurd.set_queue_policy(%s, %s::jsonb)",
+        (queue, '{"default_partition": "disabled"}'),
+    )
+
+    row = client.conn.execute(
+        "select default_partition from absurd.get_queue_policy(%s)",
+        (queue,),
+    ).fetchone()
+    assert row is not None
+    assert row[0] == "disabled"
+
+    for prefix in ["t", "r", "c", "w"]:
+        assert _get_relkind(client.conn, f"{prefix}_{queue}_d") is None
+
+    client.conn.execute(
+        "select absurd.set_queue_policy(%s, %s::jsonb)",
+        (queue, '{"default_partition": "enabled"}'),
+    )
+
+    row = client.conn.execute(
+        "select default_partition from absurd.get_queue_policy(%s)",
+        (queue,),
+    ).fetchone()
+    assert row is not None
+    assert row[0] == "enabled"
+
+    for prefix in ["t", "r", "c", "w"]:
+        assert _get_relkind(client.conn, f"{prefix}_{queue}_d") == "r"
+
+
+def test_disabling_default_partitions_requires_empty_default_partitions(client):
+    queue = "mode-default-disable-nonempty"
+    base = datetime(2024, 4, 1, 12, 0, tzinfo=timezone.utc)
+    client.set_fake_now(base)
+    client.create_queue(queue, storage_mode="partitioned")
+
+    # Move well beyond the initially pre-created window so writes land in _d.
+    client.set_fake_now(base + timedelta(days=120))
+    client.spawn_task(queue, "out-of-window", {"x": 1})
+
+    with pytest.raises(Exception):
+        client.conn.execute(
+            "select absurd.set_queue_policy(%s, %s::jsonb)",
+            (queue, '{"default_partition": "disabled"}'),
+        )
+
+
+def test_partitioned_queue_without_default_partition_fails_out_of_window_insert(client):
+    queue = "mode-default-disabled-insert"
+    base = datetime(2024, 4, 1, 12, 0, tzinfo=timezone.utc)
+    client.set_fake_now(base)
+    client.create_queue(queue, storage_mode="partitioned")
+
+    client.conn.execute(
+        "select absurd.set_queue_policy(%s, %s::jsonb)",
+        (queue, '{"default_partition": "disabled"}'),
+    )
+
+    # No ensure_partitions call after this time jump means no matching weekly
+    # partition should exist and, without _d, inserts must fail.
+    client.set_fake_now(base + timedelta(days=120))
+    with pytest.raises(Exception):
+        client.spawn_task(queue, "should-fail", {"x": 1})
 
 
 def test_create_queue_rejects_existing_partitioned_queue_in_default_mode(client):

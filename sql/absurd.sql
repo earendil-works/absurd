@@ -58,6 +58,8 @@ create table if not exists absurd.queues (
   created_at timestamptz not null default absurd.current_time(),
   storage_mode text not null default 'unpartitioned'
     check (storage_mode in ('unpartitioned', 'partitioned')),
+  default_partition text not null default 'enabled'
+    check (default_partition in ('enabled', 'disabled')),
   partition_lookahead interval not null default interval '28 days'
     check (partition_lookahead >= interval '0 seconds'),
   partition_lookback interval not null default interval '1 day'
@@ -440,6 +442,7 @@ create function absurd.get_queue_policy (
   returns table (
     queue_name text,
     storage_mode text,
+    default_partition text,
     partition_lookahead interval,
     partition_lookback interval,
     cleanup_ttl interval,
@@ -452,6 +455,7 @@ as $$
   select
     q.queue_name,
     q.storage_mode,
+    q.default_partition,
     q.partition_lookahead,
     q.partition_lookback,
     q.cleanup_ttl,
@@ -471,6 +475,7 @@ $$;
 -- * cleanup_limit (integer >= 1)
 -- * detach_mode ('none' | 'empty')
 -- * detach_min_age (interval text)
+-- * default_partition ('enabled' | 'disabled')
 create function absurd.set_queue_policy (
   p_queue_name text,
   p_policy jsonb
@@ -482,6 +487,14 @@ declare
   v_policy jsonb := coalesce(p_policy, '{}'::jsonb);
   v_unknown_key text;
   v_exists boolean := false;
+  v_storage_mode text;
+  v_default_partition text;
+  v_previous_default_partition text;
+  v_parent_prefix text;
+  v_parent_table text;
+  v_default_table text;
+  v_default_attached boolean;
+  v_default_has_rows boolean;
 
   v_partition_lookahead interval;
   v_partition_lookback interval;
@@ -505,7 +518,8 @@ begin
       'cleanup_ttl',
       'cleanup_limit',
       'detach_mode',
-      'detach_min_age'
+      'detach_min_age',
+      'default_partition'
    )
    limit 1;
 
@@ -525,6 +539,8 @@ begin
   end if;
 
   select
+    storage_mode,
+    default_partition,
     partition_lookahead,
     partition_lookback,
     cleanup_ttl,
@@ -532,6 +548,8 @@ begin
     detach_mode,
     detach_min_age
   into
+    v_storage_mode,
+    v_default_partition,
     v_partition_lookahead,
     v_partition_lookback,
     v_cleanup_ttl,
@@ -566,6 +584,12 @@ begin
     v_detach_min_age := (v_policy->>'detach_min_age')::interval;
   end if;
 
+  v_previous_default_partition := v_default_partition;
+
+  if v_policy ? 'default_partition' then
+    v_default_partition := lower(trim(coalesce(v_policy->>'default_partition', '')));
+  end if;
+
   if v_partition_lookahead < interval '0 seconds' then
     raise exception 'partition_lookahead must be non-negative';
   end if;
@@ -590,14 +614,78 @@ begin
     raise exception 'detach_min_age must be non-negative';
   end if;
 
+  if v_default_partition not in ('enabled', 'disabled') then
+    raise exception 'Unsupported default_partition mode "%"', v_default_partition;
+  end if;
+
+  if v_storage_mode <> 'partitioned' and v_policy ? 'default_partition' then
+    raise exception 'default_partition policy is only supported for partitioned queues';
+  end if;
+
   update absurd.queues
-     set partition_lookahead = v_partition_lookahead,
+     set default_partition = v_default_partition,
+         partition_lookahead = v_partition_lookahead,
          partition_lookback = v_partition_lookback,
          cleanup_ttl = v_cleanup_ttl,
          cleanup_limit = v_cleanup_limit,
          detach_mode = v_detach_mode,
          detach_min_age = v_detach_min_age
    where queue_name = p_queue_name;
+
+  if v_storage_mode = 'partitioned'
+     and v_previous_default_partition <> v_default_partition then
+    if v_default_partition = 'enabled' then
+      perform absurd.ensure_partitions(p_queue_name);
+    else
+      foreach v_parent_prefix in array array['t', 'r', 'c', 'w'] loop
+        v_parent_table := v_parent_prefix || '_' || p_queue_name;
+        v_default_table := v_parent_table || '_d';
+
+        select exists (
+          select 1
+          from pg_inherits inh
+          join pg_class parent on parent.oid = inh.inhparent
+          join pg_class child on child.oid = inh.inhrelid
+          join pg_namespace n on n.oid = parent.relnamespace
+          where n.nspname = 'absurd'
+            and parent.relname = v_parent_table
+            and child.relname = v_default_table
+        )
+        into v_default_attached;
+
+        if not coalesce(v_default_attached, false) then
+          continue;
+        end if;
+
+        -- Block out-of-window writes into the default partition while we
+        -- validate emptiness and detach/drop it.
+        execute format(
+          'lock table absurd.%I in access exclusive mode',
+          v_default_table
+        );
+
+        execute format(
+          'select exists (select 1 from absurd.%I limit 1)',
+          v_default_table
+        )
+        into v_default_has_rows;
+
+        if coalesce(v_default_has_rows, false) then
+          raise exception
+            'Cannot disable default_partition for queue "%": default partition "%" is not empty',
+            p_queue_name,
+            v_default_table;
+        end if;
+
+        execute format(
+          'alter table absurd.%I detach partition absurd.%I',
+          v_parent_table,
+          v_default_table
+        );
+        execute format('drop table if exists absurd.%I', v_default_table);
+      end loop;
+    end if;
+  end if;
 end;
 $$;
 
@@ -2325,6 +2413,7 @@ begin
   for v_queue in
     select
       queue_name,
+      default_partition,
       partition_lookahead,
       partition_lookback
     from absurd.queues
@@ -2335,26 +2424,28 @@ begin
     v_window_start := absurd.week_bucket_utc(v_now - v_queue.partition_lookback);
     v_window_end := absurd.week_bucket_utc(v_now + v_queue.partition_lookahead);
 
-    execute format(
-      'create table if not exists absurd.%I partition of absurd.%I default',
-      't_' || v_queue.queue_name || '_d',
-      't_' || v_queue.queue_name
-    );
-    execute format(
-      'create table if not exists absurd.%I partition of absurd.%I default',
-      'r_' || v_queue.queue_name || '_d',
-      'r_' || v_queue.queue_name
-    );
-    execute format(
-      'create table if not exists absurd.%I partition of absurd.%I default',
-      'c_' || v_queue.queue_name || '_d',
-      'c_' || v_queue.queue_name
-    );
-    execute format(
-      'create table if not exists absurd.%I partition of absurd.%I default',
-      'w_' || v_queue.queue_name || '_d',
-      'w_' || v_queue.queue_name
-    );
+    if v_queue.default_partition = 'enabled' then
+      execute format(
+        'create table if not exists absurd.%I partition of absurd.%I default',
+        't_' || v_queue.queue_name || '_d',
+        't_' || v_queue.queue_name
+      );
+      execute format(
+        'create table if not exists absurd.%I partition of absurd.%I default',
+        'r_' || v_queue.queue_name || '_d',
+        'r_' || v_queue.queue_name
+      );
+      execute format(
+        'create table if not exists absurd.%I partition of absurd.%I default',
+        'c_' || v_queue.queue_name || '_d',
+        'c_' || v_queue.queue_name
+      );
+      execute format(
+        'create table if not exists absurd.%I partition of absurd.%I default',
+        'w_' || v_queue.queue_name || '_d',
+        'w_' || v_queue.queue_name
+      );
+    end if;
 
     v_week_start := v_window_start;
     while v_week_start <= v_window_end loop
@@ -2424,6 +2515,7 @@ declare
   v_parent_prefix text;
   v_parent_table text;
   v_parent_oid oid;
+  v_parent_has_default_partition boolean;
   v_part record;
   v_upper_uuid uuid;
   v_upper_ts timestamptz;
@@ -2465,6 +2557,15 @@ begin
       if v_parent_oid is null then
         continue;
       end if;
+
+      select exists (
+        select 1
+        from pg_inherits inh
+        join pg_class child on child.oid = inh.inhrelid
+        where inh.inhparent = v_parent_oid
+          and pg_get_expr(child.relpartbound, child.oid) = 'DEFAULT'
+      )
+      into v_parent_has_default_partition;
 
       for v_part in
         select
@@ -2509,11 +2610,19 @@ begin
         queue_name := v_queue.queue_name;
         parent_table := v_parent_table;
         partition_table := v_part.partition_name;
-        detach_sql := format(
-          'alter table absurd.%I detach partition absurd.%I',
-          v_parent_table,
-          v_part.partition_name
-        );
+        if coalesce(v_parent_has_default_partition, false) then
+          detach_sql := format(
+            'alter table absurd.%I detach partition absurd.%I',
+            v_parent_table,
+            v_part.partition_name
+          );
+        else
+          detach_sql := format(
+            'alter table absurd.%I detach partition absurd.%I concurrently',
+            v_parent_table,
+            v_part.partition_name
+          );
+        end if;
         drop_sql := format(
           'drop table if exists absurd.%I',
           v_part.partition_name
@@ -2602,9 +2711,14 @@ begin
 end;
 $$;
 
--- Schedules per-partition one-off-ish cron jobs for detach/drop.
+-- Schedules per-parent one-at-a-time cron jobs for detach/drop.
 --
--- Detach jobs run the raw DETACH PARTITION statement.
+-- For each parent table, only the oldest eligible partition is scheduled and
+-- only when there is no active detach/drop job for that parent.
+--
+-- Detach jobs run the raw DETACH statement. They use CONCURRENTLY when
+-- possible; if a parent still has an attached DEFAULT partition, they fall
+-- back to non-concurrent DETACH (Postgres limitation).
 --
 -- Drop jobs poll via absurd.drop_detached_partition(); once a partition is
 -- detached, that function unschedules the paired detach job immediately and
@@ -2624,11 +2738,13 @@ as $$
 declare
   v_scope text;
   v_candidate record;
+  v_parent_key text;
   v_candidate_key text;
   v_detach_job_name text;
   v_drop_job_name text;
   v_detach_command text;
   v_drop_command text;
+  v_parent_has_default_partition boolean;
   v_job_id bigint;
 begin
   if p_queue_name is not null then
@@ -2665,10 +2781,51 @@ begin
   end;
 
   for v_candidate in
-    select c.*
-    from absurd.list_detach_candidates(p_queue_name) c
-    order by c.queue_name, c.parent_table, c.partition_table
+    with candidates as (
+      select
+        c.*,
+        absurd.uuidv7_timestamp(
+          (regexp_match(
+            pg_get_expr(child.relpartbound, child.oid),
+            'TO \(''([^'']+)''(::uuid)?\)'
+          ))[1]::uuid
+        ) as upper_ts
+      from absurd.list_detach_candidates(p_queue_name) c
+      join pg_class child on child.relname = c.partition_table
+      join pg_namespace n on n.oid = child.relnamespace
+      where n.nspname = 'absurd'
+    ),
+    ranked as (
+      select
+        candidates.*,
+        row_number() over (
+          partition by candidates.parent_table
+          order by candidates.upper_ts asc nulls last, candidates.partition_table asc
+        ) as rn
+      from candidates
+    )
+    select
+      ranked.queue_name,
+      ranked.parent_table,
+      ranked.partition_table,
+      ranked.detach_sql,
+      ranked.drop_sql
+    from ranked
+    where ranked.rn = 1
+    order by ranked.queue_name, ranked.parent_table, ranked.partition_table
   loop
+    v_parent_key := substr(md5(v_candidate.parent_table), 1, 8);
+
+    -- Only one active detach pipeline per parent table.
+    if exists (
+      select 1
+      from cron.job
+      where jobname like ('absurd_detach_run_%_' || v_parent_key || '_%')
+         or jobname like ('absurd_drop_run_%_' || v_parent_key || '_%')
+    ) then
+      continue;
+    end if;
+
     v_candidate_key := substr(
       md5(v_candidate.parent_table || ':' || v_candidate.partition_table),
       1,
@@ -2676,13 +2833,15 @@ begin
     );
 
     v_detach_job_name := format(
-      'absurd_detach_run_%s_%s',
+      'absurd_detach_run_%s_%s_%s',
       v_scope,
+      v_parent_key,
       v_candidate_key
     );
     v_drop_job_name := format(
-      'absurd_drop_run_%s_%s',
+      'absurd_drop_run_%s_%s_%s',
       v_scope,
+      v_parent_key,
       v_candidate_key
     );
 
@@ -2692,7 +2851,28 @@ begin
       where jobname = v_detach_job_name
          or jobname like ('absurd_detach_run_%_' || v_candidate_key)
     ) then
-      v_detach_command := v_candidate.detach_sql;
+      select exists (
+        select 1
+        from pg_class parent
+        join pg_namespace pn on pn.oid = parent.relnamespace
+        join pg_inherits inh on inh.inhparent = parent.oid
+        join pg_class child on child.oid = inh.inhrelid
+        where pn.nspname = 'absurd'
+          and parent.relname = v_candidate.parent_table
+          and pg_get_expr(child.relpartbound, child.oid) = 'DEFAULT'
+      )
+      into v_parent_has_default_partition;
+
+      if coalesce(v_parent_has_default_partition, false) then
+        v_detach_command := regexp_replace(
+          v_candidate.detach_sql,
+          ' concurrently$',
+          '',
+          'i'
+        );
+      else
+        v_detach_command := v_candidate.detach_sql;
+      end if;
 
       execute 'select cron.schedule($1, $2, $3)'
         into v_job_id

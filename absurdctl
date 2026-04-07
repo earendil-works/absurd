@@ -1047,6 +1047,7 @@ def _fetch_queue_policy(config, queue_name):
         SELECT
           queue_name,
           storage_mode,
+          default_partition,
           partition_lookahead::text,
           partition_lookback::text,
           cleanup_ttl::text,
@@ -1061,24 +1062,26 @@ def _fetch_queue_policy(config, queue_name):
         return None
 
     parts = rows[0]
-    if len(parts) < 8:
+    if len(parts) < 9:
         return None
 
     return {
         "queue_name": parts[0],
         "storage_mode": parts[1],
-        "partition_lookahead": parts[2],
-        "partition_lookback": parts[3],
-        "cleanup_ttl": parts[4],
-        "cleanup_limit": parts[5],
-        "detach_mode": parts[6],
-        "detach_min_age": parts[7],
+        "default_partition": parts[2],
+        "partition_lookahead": parts[3],
+        "partition_lookback": parts[4],
+        "cleanup_ttl": parts[5],
+        "cleanup_limit": parts[6],
+        "detach_mode": parts[7],
+        "detach_min_age": parts[8],
     }
 
 
 def _print_queue_policy(policy):
     print(f"Queue policy for '{policy['queue_name']}':")
     print(f"  storage_mode: {policy['storage_mode']}")
+    print(f"  default_partition: {policy['default_partition']}")
     print(f"  partition_lookahead: {policy['partition_lookahead']}")
     print(f"  partition_lookback: {policy['partition_lookback']}")
     print(f"  cleanup_ttl: {policy['cleanup_ttl']}")
@@ -1091,6 +1094,14 @@ def cmd_queue_policy(args):
     """Get or update queue maintenance policy."""
     usage = "usage: %prog queue-policy [options] QUEUE_NAME"
     parser = build_command_parser(usage)
+    parser.add_option(
+        "--default-partition",
+        dest="default_partition",
+        type="choice",
+        choices=["enabled", "disabled"],
+        metavar="MODE",
+        help="Default partition mode for partitioned queues (enabled or disabled)",
+    )
     parser.add_option(
         "--partition-lookahead",
         dest="partition_lookahead",
@@ -1134,6 +1145,7 @@ def cmd_queue_policy(args):
     examples = [
         "absurdctl queue-policy myqueue",
         "absurdctl queue-policy myqueue --cleanup-ttl '30 days' --cleanup-limit 2000",
+        "absurdctl queue-policy myqueue --default-partition disabled",
         "absurdctl queue-policy myqueue --partition-lookahead '42 days' --partition-lookback '2 days'",
         "absurdctl queue-policy myqueue --detach-mode empty --detach-min-age '30 days'",
     ]
@@ -1150,6 +1162,8 @@ def cmd_queue_policy(args):
     ensure_queue_exists(config, queue_name)
 
     policy_payload = {}
+    if options.default_partition is not None:
+        policy_payload["default_partition"] = options.default_partition
     if options.partition_lookahead is not None:
         policy_payload["partition_lookahead"] = options.partition_lookahead
     if options.partition_lookback is not None:

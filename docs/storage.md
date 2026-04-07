@@ -70,6 +70,7 @@ mode.  If you try to recreate with a different mode, Absurd raises an error.
 
 Each queue has policy fields in `absurd.queues`:
 
+- `default_partition` (`enabled` or `disabled`, default `enabled`)
 - `partition_lookahead` (default `28 days`)
 - `partition_lookback` (default `1 day`)
 - `cleanup_ttl` (default `30 days`)
@@ -85,6 +86,7 @@ absurdctl queue-policy jobs
 
 # update
 absurdctl queue-policy jobs \
+  --default-partition enabled \
   --partition-lookahead '42 days' \
   --partition-lookback '2 days' \
   --cleanup-ttl '30 days' \
@@ -99,6 +101,7 @@ Equivalent SQL:
 select absurd.set_queue_policy(
   'jobs',
   '{
+    "default_partition": "enabled",
     "partition_lookahead": "42 days",
     "partition_lookback": "2 days",
     "cleanup_ttl": "30 days",
@@ -157,8 +160,8 @@ See also:
 For partitioned queues, Absurd supports policy-based detach planning:
 
 1. `absurd.list_detach_candidates(...)` finds old, empty weekly partitions.
-2. Those partitions can be detached with
-   `ALTER TABLE ... DETACH PARTITION ... CONCURRENTLY`.
+2. Those partitions can be detached with `ALTER TABLE ... DETACH PARTITION ...`.
+   When no DEFAULT partition is attached, `... CONCURRENTLY` can be used.
 3. Detached tables can then be dropped.
 
 Why this is split: `DETACH ... CONCURRENTLY` must run as top-level SQL.
@@ -203,9 +206,13 @@ absurdctl cron --disable --queue jobs
 2. **cleanup** (`absurd.cleanup_all_queues(...)`)
 3. **detach planning** (`absurd.schedule_detach_jobs(...)`)
 
-Detach planning then creates per-partition detach/drop jobs as needed.
+Detach planning creates one active detach/drop pipeline per parent table.
+It schedules only the oldest eligible partition for each parent at a time.
 
-- detach jobs run top-level `DETACH PARTITION ... CONCURRENTLY`
+- detach jobs run top-level `DETACH PARTITION` statements
+  - when possible, they use `CONCURRENTLY`
+  - if a parent still has an attached `DEFAULT` partition, they fall back to
+    non-concurrent detach (Postgres limitation)
 - drop jobs call `absurd.drop_detached_partition(...)` until the table is safe to drop
 - both unschedule themselves when done
 
@@ -226,8 +233,11 @@ For lower-volume queues, keep `unpartitioned` and only configure cleanup.
 ## Notes and Caveats
 
 - Partitioning is currently based on UUIDv7 time ranges and weekly buckets.
-- Default (`_d`) partitions are intentionally kept as a safety net for rows
+- `default_partition=enabled` keeps `_d` partitions as a safety net for rows
   outside pre-created weekly windows.
+- `default_partition=disabled` removes attached `_d` partitions (if empty) and
+  causes out-of-window writes to fail until matching weekly partitions are
+  created.
 - `detach_mode=empty` only detaches partitions that are both old enough and
   empty.
 - `pg_cron` integration requires `cron.job` plus `cron.schedule` and

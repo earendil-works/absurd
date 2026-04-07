@@ -41,6 +41,34 @@ def test_list_detach_candidates_respects_detach_policy(client):
         assert row[4].lower().startswith("drop table if exists absurd.")
 
 
+def test_list_detach_candidates_uses_concurrently_without_default_partition(client):
+    queue = "detach-policy-concurrent"
+    base = datetime(2024, 4, 1, 12, 0, tzinfo=timezone.utc)
+
+    client.set_fake_now(base)
+    client.create_queue(queue, storage_mode="partitioned")
+    client.conn.execute(
+        "select absurd.set_queue_policy(%s, %s::jsonb)",
+        (
+            queue,
+            '{"detach_mode": "empty", "detach_min_age": "30 days", "default_partition": "disabled"}',
+        ),
+    )
+
+    client.set_fake_now(base + timedelta(days=120))
+    rows = client.conn.execute(
+        """
+        select partition_table, detach_sql
+        from absurd.list_detach_candidates(%s)
+        order by partition_table
+        """,
+        (queue,),
+    ).fetchall()
+
+    assert rows
+    assert all("concurrently" in row[1].lower() for row in rows)
+
+
 def test_list_detach_candidates_skips_non_empty_partitions(client):
     queue = "detach-nonempty"
     base = datetime(2024, 4, 8, 9, 0, tzinfo=timezone.utc)

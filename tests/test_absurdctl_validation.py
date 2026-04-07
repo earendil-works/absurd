@@ -216,6 +216,7 @@ def test_queue_policy_get_uses_policy_function(monkeypatch):
             [
                 "jobs",
                 "partitioned",
+                "enabled",
                 "28 days",
                 "1 day",
                 "2592000",
@@ -251,6 +252,7 @@ def test_queue_policy_set_uses_parameterized_json_payload(monkeypatch):
             [
                 "jobs",
                 "partitioned",
+                "enabled",
                 "28 days",
                 "1 day",
                 "7 days",
@@ -279,6 +281,47 @@ def test_queue_policy_set_uses_parameterized_json_payload(monkeypatch):
         captured["variables"]["policy_json"]
         == '{"cleanup_ttl": "7 days", "cleanup_limit": 100}'
     )
+
+
+def test_queue_policy_set_default_partition_uses_parameterized_json_payload(monkeypatch):
+    captured = {}
+
+    def fake_run_psql(config, query=None, **kwargs):
+        captured["query"] = query
+        captured["variables"] = kwargs.get("variables")
+        return ""
+
+    def fake_run_psql_csv(config, query=None, **kwargs):
+        return [
+            [
+                "jobs",
+                "partitioned",
+                "disabled",
+                "28 days",
+                "1 day",
+                "7 days",
+                "100",
+                "none",
+                "30 days",
+            ]
+        ]
+
+    monkeypatch.setitem(cmd_queue_policy.__globals__, "run_psql", fake_run_psql)
+    monkeypatch.setitem(cmd_queue_policy.__globals__, "run_psql_csv", fake_run_psql_csv)
+    monkeypatch.setitem(
+        cmd_queue_policy.__globals__,
+        "ensure_queue_exists",
+        lambda *_: None,
+    )
+
+    cmd_queue_policy(["jobs", "--default-partition", "disabled"])
+
+    assert (
+        captured["query"]
+        == "SELECT absurd.set_queue_policy(:'queue_name', :'policy_json'::jsonb);"
+    )
+    assert captured["variables"]["queue_name"] == "jobs"
+    assert captured["variables"]["policy_json"] == '{"default_partition": "disabled"}'
 
 
 def test_cron_enable_uses_enable_cron_function(monkeypatch):
