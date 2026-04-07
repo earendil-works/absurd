@@ -82,21 +82,17 @@ def normalize_partition_table_name(value):
         print("Error: Partition table must be provided.", file=sys.stderr)
         sys.exit(1)
 
-    if partition_table.lower().startswith("absurd."):
-        partition_table = partition_table.split(".", 1)[1]
+    lower_partition_table = partition_table.lower()
+    if lower_partition_table.startswith("absurd."):
+        partition_table = partition_table[len("absurd.") :]
+    elif lower_partition_table.startswith('"absurd".'):
+        partition_table = partition_table[len('"absurd".') :]
 
     if partition_table.startswith('"') and partition_table.endswith('"'):
         partition_table = partition_table[1:-1].replace('""', '"')
 
     if not partition_table:
         print("Error: Partition table must be provided.", file=sys.stderr)
-        sys.exit(1)
-
-    if "." in partition_table:
-        print(
-            "Error: PARTITION_TABLE must be an unqualified table name in schema absurd.",
-            file=sys.stderr,
-        )
         sys.exit(1)
 
     return partition_table

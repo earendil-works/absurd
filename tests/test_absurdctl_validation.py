@@ -20,6 +20,7 @@ cmd_queue_policy = MODULE["cmd_queue_policy"]
 cmd_cron = MODULE["cmd_cron"]
 cmd_list_detach_candidates = MODULE["cmd_list_detach_candidates"]
 cmd_detach_candidate = MODULE["cmd_detach_candidate"]
+normalize_partition_table_name = MODULE["normalize_partition_table_name"]
 config_from_options = MODULE["config_from_options"]
 run_psql = MODULE["run_psql"]
 parse_migration_filename = MODULE["parse_migration_filename"]
@@ -372,6 +373,50 @@ def test_detach_candidate_executes_detach_then_drop(monkeypatch):
         psql_calls[1][0] == "SELECT absurd.drop_detached_partition(:'partition_table');"
     )
     assert psql_calls[1][1]["variables"]["partition_table"] == "t_jobs_401"
+
+
+def test_detach_candidate_accepts_dotted_partition_name(monkeypatch):
+    csv_calls = {}
+    psql_calls = []
+
+    def fake_run_psql_csv(config, query=None, **kwargs):
+        csv_calls["query"] = query
+        csv_calls["variables"] = kwargs.get("variables")
+        return [
+            [
+                "foo.bar",
+                "t_foo.bar",
+                "t_foo.bar_401",
+                'alter table absurd."t_foo.bar" detach partition absurd."t_foo.bar_401"',
+                'drop table if exists absurd."t_foo.bar_401"',
+            ]
+        ]
+
+    def fake_run_psql(config, query=None, **kwargs):
+        psql_calls.append((query, kwargs))
+        return ""
+
+    monkeypatch.setitem(
+        cmd_detach_candidate.__globals__, "run_psql_csv", fake_run_psql_csv
+    )
+    monkeypatch.setitem(cmd_detach_candidate.__globals__, "run_psql", fake_run_psql)
+
+    cmd_detach_candidate(["--queue", "foo.bar", "t_foo.bar_401"])
+
+    assert "FROM absurd.list_detach_candidates(:'queue_name')" in csv_calls["query"]
+    assert csv_calls["variables"]["queue_name"] == "foo.bar"
+    assert csv_calls["variables"]["partition_table"] == "t_foo.bar_401"
+
+    assert len(psql_calls) == 1
+    assert "detach partition" in psql_calls[0][0]
+
+
+def test_normalize_partition_table_name_allows_dotted_partition_names():
+    assert normalize_partition_table_name("t_foo.bar_401") == "t_foo.bar_401"
+
+
+def test_normalize_partition_table_name_strips_absurd_prefix_for_dotted_names():
+    assert normalize_partition_table_name('absurd."t_foo.bar_401"') == "t_foo.bar_401"
 
 
 def test_run_psql_sends_query_via_stdin_for_variable_expansion(monkeypatch):
