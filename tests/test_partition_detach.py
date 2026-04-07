@@ -25,7 +25,7 @@ def test_list_detach_candidates_respects_detach_policy(client):
 
     rows = client.conn.execute(
         """
-        select queue_name, parent_table, partition_table, detach_sql, drop_sql
+        select queue_name, parent_table, partition_table
         from absurd.list_detach_candidates(%s)
         order by partition_table
         """,
@@ -36,12 +36,9 @@ def test_list_detach_candidates_respects_detach_policy(client):
     for row in rows:
         assert row[0] == queue
         assert row[2].endswith("_d") is False
-        assert "detach partition" in row[3].lower()
-        assert "concurrently" not in row[3].lower()
-        assert row[4].lower().startswith("drop table if exists absurd.")
 
 
-def test_list_detach_candidates_uses_concurrently_without_default_partition(client):
+def test_list_detach_candidates_with_default_partition_disabled(client):
     queue = "detach-policy-concurrent"
     base = datetime(2024, 4, 1, 12, 0, tzinfo=timezone.utc)
 
@@ -58,7 +55,7 @@ def test_list_detach_candidates_uses_concurrently_without_default_partition(clie
     client.set_fake_now(base + timedelta(days=120))
     rows = client.conn.execute(
         """
-        select partition_table, detach_sql
+        select queue_name, parent_table, partition_table
         from absurd.list_detach_candidates(%s)
         order by partition_table
         """,
@@ -66,7 +63,7 @@ def test_list_detach_candidates_uses_concurrently_without_default_partition(clie
     ).fetchall()
 
     assert rows
-    assert all("concurrently" in row[1].lower() for row in rows)
+    assert all(row[0] == queue for row in rows)
 
 
 def test_list_detach_candidates_skips_non_empty_partitions(client):

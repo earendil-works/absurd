@@ -2493,19 +2493,17 @@ begin
 end;
 $$;
 
--- Lists detach/drop commands for eligible partition tables.
+-- Lists eligible partition tables for detach/drop planning.
 --
 -- This does not execute detach directly.
--- Use this output from an external scheduler/executor.
+-- Callers should construct SQL locally from parent/partition names.
 create function absurd.list_detach_candidates (
   p_queue_name text default null
 )
   returns table (
     queue_name text,
     parent_table text,
-    partition_table text,
-    detach_sql text,
-    drop_sql text
+    partition_table text
   )
   language plpgsql
 as $$
@@ -2515,7 +2513,6 @@ declare
   v_parent_prefix text;
   v_parent_table text;
   v_parent_oid oid;
-  v_parent_has_default_partition boolean;
   v_part record;
   v_upper_uuid uuid;
   v_upper_ts timestamptz;
@@ -2557,15 +2554,6 @@ begin
       if v_parent_oid is null then
         continue;
       end if;
-
-      select exists (
-        select 1
-        from pg_inherits inh
-        join pg_class child on child.oid = inh.inhrelid
-        where inh.inhparent = v_parent_oid
-          and pg_get_expr(child.relpartbound, child.oid) = 'DEFAULT'
-      )
-      into v_parent_has_default_partition;
 
       for v_part in
         select
@@ -2610,24 +2598,6 @@ begin
         queue_name := v_queue.queue_name;
         parent_table := v_parent_table;
         partition_table := v_part.partition_name;
-        if coalesce(v_parent_has_default_partition, false) then
-          detach_sql := format(
-            'alter table absurd.%I detach partition absurd.%I',
-            v_parent_table,
-            v_part.partition_name
-          );
-        else
-          detach_sql := format(
-            'alter table absurd.%I detach partition absurd.%I concurrently',
-            v_parent_table,
-            v_part.partition_name
-          );
-        end if;
-        drop_sql := format(
-          'drop table if exists absurd.%I',
-          v_part.partition_name
-        );
-
         return next;
       end loop;
     end loop;
@@ -2807,9 +2777,7 @@ begin
     select
       ranked.queue_name,
       ranked.parent_table,
-      ranked.partition_table,
-      ranked.detach_sql,
-      ranked.drop_sql
+      ranked.partition_table
     from ranked
     where ranked.rn = 1
     order by ranked.queue_name, ranked.parent_table, ranked.partition_table
@@ -2863,15 +2831,14 @@ begin
       )
       into v_parent_has_default_partition;
 
-      if coalesce(v_parent_has_default_partition, false) then
-        v_detach_command := regexp_replace(
-          v_candidate.detach_sql,
-          ' concurrently$',
-          '',
-          'i'
-        );
-      else
-        v_detach_command := v_candidate.detach_sql;
+      v_detach_command := format(
+        'alter table absurd.%I detach partition absurd.%I',
+        v_candidate.parent_table,
+        v_candidate.partition_table
+      );
+
+      if not coalesce(v_parent_has_default_partition, false) then
+        v_detach_command := v_detach_command || ' concurrently';
       end if;
 
       execute 'select cron.schedule($1, $2, $3)'

@@ -98,6 +98,39 @@ def normalize_partition_table_name(value):
     return partition_table
 
 
+def build_drop_partition_sql(partition_table):
+    return f"drop table if exists absurd.{quote_ident(partition_table)}"
+
+
+def build_detach_partition_sql(config, parent_table, partition_table):
+    has_default = run_psql(
+        config,
+        """
+        select exists (
+          select 1
+          from pg_class parent
+          join pg_namespace pn on pn.oid = parent.relnamespace
+          join pg_inherits inh on inh.inhparent = parent.oid
+          join pg_class child on child.oid = inh.inhrelid
+          where pn.nspname = 'absurd'
+            and parent.relname = :'parent_table'
+            and pg_get_expr(child.relpartbound, child.oid) = 'DEFAULT'
+        )
+        """,
+        tuples_only=True,
+        no_align=True,
+        variables={"parent_table": parent_table},
+    ).strip()
+
+    sql = (
+        f"alter table absurd.{quote_ident(parent_table)} "
+        f"detach partition absurd.{quote_ident(partition_table)}"
+    )
+    if has_default != "t":
+        sql += " concurrently"
+    return sql
+
+
 class RemoteMigrationDiscoveryError(Exception):
     pass
 
@@ -1399,9 +1432,7 @@ def cmd_list_detach_candidates(args):
             SELECT
               queue_name,
               parent_table,
-              partition_table,
-              detach_sql,
-              drop_sql
+              partition_table
             FROM absurd.list_detach_candidates(:'queue_name')
             ORDER BY queue_name, parent_table, partition_table
         """
@@ -1410,9 +1441,7 @@ def cmd_list_detach_candidates(args):
             SELECT
               queue_name,
               parent_table,
-              partition_table,
-              detach_sql,
-              drop_sql
+              partition_table
             FROM absurd.list_detach_candidates(null::text)
             ORDER BY queue_name, parent_table, partition_table
         """
@@ -1430,13 +1459,15 @@ def cmd_list_detach_candidates(args):
         return
 
     for row in rows:
-        if len(row) < 5:
+        if len(row) < 3:
             continue
+        detach_sql = build_detach_partition_sql(config, row[1], row[2])
+        drop_sql = build_drop_partition_sql(row[2])
         print(f"  queue: {row[0]}")
         print(f"  parent: {row[1]}")
         print(f"  partition: {row[2]}")
-        print(f"  detach_sql: {row[3]}")
-        print(f"  drop_sql: {row[4]}")
+        print(f"  detach_sql: {detach_sql}")
+        print(f"  drop_sql: {drop_sql}")
         print()
 
 
@@ -1482,9 +1513,7 @@ def cmd_detach_candidate(args):
             SELECT
               queue_name,
               parent_table,
-              partition_table,
-              detach_sql,
-              drop_sql
+              partition_table
             FROM absurd.list_detach_candidates(:'queue_name')
             WHERE partition_table = :'partition_table'
             ORDER BY queue_name, parent_table, partition_table
@@ -1494,9 +1523,7 @@ def cmd_detach_candidate(args):
             SELECT
               queue_name,
               parent_table,
-              partition_table,
-              detach_sql,
-              drop_sql
+              partition_table
             FROM absurd.list_detach_candidates(null::text)
             WHERE partition_table = :'partition_table'
             ORDER BY queue_name, parent_table, partition_table
@@ -1518,7 +1545,8 @@ def cmd_detach_candidate(args):
         sys.exit(1)
 
     row = rows[0]
-    queue_name, parent_table, partition_table, detach_sql, _drop_sql = row
+    queue_name, parent_table, partition_table = row
+    detach_sql = build_detach_partition_sql(config, parent_table, partition_table)
 
     print(f"Detaching partition {partition_table}:")
     print(f"  queue: {queue_name}")

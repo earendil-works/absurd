@@ -373,6 +373,8 @@ def test_list_detach_candidates_queries_function(monkeypatch):
     cmd_list_detach_candidates(["--queue", "jobs"])
 
     assert "FROM absurd.list_detach_candidates(:'queue_name')" in captured["query"]
+    assert "detach_sql" not in captured["query"].lower()
+    assert "drop_sql" not in captured["query"].lower()
     assert captured["variables"]["queue_name"] == "jobs"
 
 
@@ -388,13 +390,13 @@ def test_detach_candidate_executes_detach_then_drop(monkeypatch):
                 "jobs",
                 "t_jobs",
                 "t_jobs_401",
-                'alter table absurd."t_jobs" detach partition absurd."t_jobs_401"',
-                'drop table if exists absurd."t_jobs_401"',
             ]
         ]
 
     def fake_run_psql(config, query=None, **kwargs):
         psql_calls.append((query, kwargs))
+        if "pg_get_expr(child.relpartbound" in (query or ""):
+            return "t"
         if "drop_detached_partition" in (query or ""):
             return "t"
         return ""
@@ -407,15 +409,24 @@ def test_detach_candidate_executes_detach_then_drop(monkeypatch):
     cmd_detach_candidate(["--queue", "jobs", "t_jobs_401", "--drop"])
 
     assert "FROM absurd.list_detach_candidates(:'queue_name')" in csv_calls["query"]
+    assert "detach_sql" not in csv_calls["query"].lower()
+    assert "drop_sql" not in csv_calls["query"].lower()
     assert csv_calls["variables"]["queue_name"] == "jobs"
     assert csv_calls["variables"]["partition_table"] == "t_jobs_401"
 
-    assert len(psql_calls) == 2
-    assert "detach partition" in psql_calls[0][0]
-    assert (
-        psql_calls[1][0] == "SELECT absurd.drop_detached_partition(:'partition_table');"
+    assert len(psql_calls) >= 3
+    assert any("pg_get_expr(child.relpartbound" in (call[0] or "") for call in psql_calls)
+    assert any("detach partition" in (call[0] or "") for call in psql_calls)
+    assert any(
+        (call[0] or "") == "SELECT absurd.drop_detached_partition(:'partition_table');"
+        for call in psql_calls
     )
-    assert psql_calls[1][1]["variables"]["partition_table"] == "t_jobs_401"
+    drop_call = [
+        call
+        for call in psql_calls
+        if (call[0] or "") == "SELECT absurd.drop_detached_partition(:'partition_table');"
+    ][0]
+    assert drop_call[1]["variables"]["partition_table"] == "t_jobs_401"
 
 
 def test_detach_candidate_accepts_dotted_partition_name(monkeypatch):
@@ -430,13 +441,13 @@ def test_detach_candidate_accepts_dotted_partition_name(monkeypatch):
                 "foo.bar",
                 "t_foo.bar",
                 "t_foo.bar_401",
-                'alter table absurd."t_foo.bar" detach partition absurd."t_foo.bar_401"',
-                'drop table if exists absurd."t_foo.bar_401"',
             ]
         ]
 
     def fake_run_psql(config, query=None, **kwargs):
         psql_calls.append((query, kwargs))
+        if "pg_get_expr(child.relpartbound" in (query or ""):
+            return "t"
         return ""
 
     monkeypatch.setitem(
@@ -447,11 +458,13 @@ def test_detach_candidate_accepts_dotted_partition_name(monkeypatch):
     cmd_detach_candidate(["--queue", "foo.bar", "t_foo.bar_401"])
 
     assert "FROM absurd.list_detach_candidates(:'queue_name')" in csv_calls["query"]
+    assert "detach_sql" not in csv_calls["query"].lower()
+    assert "drop_sql" not in csv_calls["query"].lower()
     assert csv_calls["variables"]["queue_name"] == "foo.bar"
     assert csv_calls["variables"]["partition_table"] == "t_foo.bar_401"
 
-    assert len(psql_calls) == 1
-    assert "detach partition" in psql_calls[0][0]
+    assert len(psql_calls) >= 2
+    assert any("detach partition" in (call[0] or "") for call in psql_calls)
 
 
 def test_normalize_partition_table_name_allows_dotted_partition_names():
