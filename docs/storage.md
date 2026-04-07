@@ -29,6 +29,8 @@ For **partitioned** queues:
 
 - `t_`, `r_`, `c_`, `w_` are declarative partitioned parent tables
 - weekly child partitions are created with a suffix like `<YWW>` (ISO year + ISO week)
+  where `Y` is the last ISO year digit, so partition names roll over every 10
+  years
 - default catch-all partitions are created with `_d` suffix
 - an additional `i_<queue>` table is created for idempotency-key mapping
 
@@ -233,6 +235,9 @@ For lower-volume queues, keep `unpartitioned` and only configure cleanup.
 ## Notes and Caveats
 
 - Partitioning is currently based on UUIDv7 time ranges and weekly buckets.
+- Weekly partition names use `<YWW>` where `Y` is one ISO year digit, so names
+  roll over every 10 years; practical retention must stay below that horizon to
+  avoid partition name collisions.
 - `default_partition=enabled` keeps `_d` partitions as a safety net for rows
   outside pre-created weekly windows.
 - `default_partition=disabled` removes attached `_d` partitions (if empty) and
