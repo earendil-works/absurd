@@ -112,6 +112,11 @@ create function absurd.ensure_queue_tables (p_queue_name text)
 as $$
 declare
   v_storage_mode text := 'unpartitioned';
+  v_t_suffix text;
+  v_r_suffix text;
+  v_c_suffix text;
+  v_w_suffix text;
+  v_t_idempotency_def text;
 begin
   perform absurd.validate_queue_name(p_queue_name);
 
@@ -126,118 +131,77 @@ begin
   end if;
 
   if v_storage_mode = 'partitioned' then
-    execute format(
-      'create table if not exists absurd.%I (
-          task_id uuid primary key,
-          task_name text not null,
-          params jsonb not null,
-          headers jsonb,
-          retry_strategy jsonb,
-          max_attempts integer,
-          cancellation jsonb,
-          enqueue_at timestamptz not null default absurd.current_time(),
-          first_started_at timestamptz,
-          state text not null check (state in (''pending'', ''running'', ''sleeping'', ''completed'', ''failed'', ''cancelled'')),
-          attempts integer not null default 0,
-          last_attempt_run uuid,
-          completed_payload jsonb,
-          cancelled_at timestamptz,
-          idempotency_key text
-       ) partition by range (task_id)',
-      't_' || p_queue_name
-    );
+    v_t_suffix := 'partition by range (task_id)';
+    v_r_suffix := 'partition by range (run_id)';
+    v_c_suffix := 'partition by range (task_id)';
+    v_w_suffix := 'partition by range (run_id)';
+    v_t_idempotency_def := 'idempotency_key text';
   else
-    execute format(
-      'create table if not exists absurd.%I (
-          task_id uuid primary key,
-          task_name text not null,
-          params jsonb not null,
-          headers jsonb,
-          retry_strategy jsonb,
-          max_attempts integer,
-          cancellation jsonb,
-          enqueue_at timestamptz not null default absurd.current_time(),
-          first_started_at timestamptz,
-          state text not null check (state in (''pending'', ''running'', ''sleeping'', ''completed'', ''failed'', ''cancelled'')),
-          attempts integer not null default 0,
-          last_attempt_run uuid,
-          completed_payload jsonb,
-          cancelled_at timestamptz,
-          idempotency_key text unique
-       ) with (fillfactor=70)',
-      't_' || p_queue_name
-    );
+    v_t_suffix := 'with (fillfactor=70)';
+    v_r_suffix := 'with (fillfactor=70)';
+    v_c_suffix := 'with (fillfactor=70)';
+    v_w_suffix := '';
+    v_t_idempotency_def := 'idempotency_key text unique';
   end if;
 
-  if v_storage_mode = 'partitioned' then
-    execute format(
-      'create table if not exists absurd.%I (
-          run_id uuid primary key,
-          task_id uuid not null,
-          attempt integer not null,
-          state text not null check (state in (''pending'', ''running'', ''sleeping'', ''completed'', ''failed'', ''cancelled'')),
-          claimed_by text,
-          claim_expires_at timestamptz,
-          available_at timestamptz not null,
-          wake_event text,
-          event_payload jsonb,
-          started_at timestamptz,
-          completed_at timestamptz,
-          failed_at timestamptz,
-          result jsonb,
-          failure_reason jsonb,
-          created_at timestamptz not null default absurd.current_time()
-       ) partition by range (run_id)',
-      'r_' || p_queue_name
-    );
+  execute format(
+    'create table if not exists absurd.%I (
+        task_id uuid primary key,
+        task_name text not null,
+        params jsonb not null,
+        headers jsonb,
+        retry_strategy jsonb,
+        max_attempts integer,
+        cancellation jsonb,
+        enqueue_at timestamptz not null default absurd.current_time(),
+        first_started_at timestamptz,
+        state text not null check (state in (''pending'', ''running'', ''sleeping'', ''completed'', ''failed'', ''cancelled'')),
+        attempts integer not null default 0,
+        last_attempt_run uuid,
+        completed_payload jsonb,
+        cancelled_at timestamptz,
+        %s
+     ) %s',
+    't_' || p_queue_name,
+    v_t_idempotency_def,
+    v_t_suffix
+  );
 
-    execute format(
-      'create table if not exists absurd.%I (
-          task_id uuid not null,
-          checkpoint_name text not null,
-          state jsonb,
-          status text not null default ''committed'',
-          owner_run_id uuid,
-          updated_at timestamptz not null default absurd.current_time(),
-          primary key (task_id, checkpoint_name)
-       ) partition by range (task_id)',
-      'c_' || p_queue_name
-    );
-  else
-    execute format(
-      'create table if not exists absurd.%I (
-          run_id uuid primary key,
-          task_id uuid not null,
-          attempt integer not null,
-          state text not null check (state in (''pending'', ''running'', ''sleeping'', ''completed'', ''failed'', ''cancelled'')),
-          claimed_by text,
-          claim_expires_at timestamptz,
-          available_at timestamptz not null,
-          wake_event text,
-          event_payload jsonb,
-          started_at timestamptz,
-          completed_at timestamptz,
-          failed_at timestamptz,
-          result jsonb,
-          failure_reason jsonb,
-          created_at timestamptz not null default absurd.current_time()
-       ) with (fillfactor=70)',
-      'r_' || p_queue_name
-    );
+  execute format(
+    'create table if not exists absurd.%I (
+        run_id uuid primary key,
+        task_id uuid not null,
+        attempt integer not null,
+        state text not null check (state in (''pending'', ''running'', ''sleeping'', ''completed'', ''failed'', ''cancelled'')),
+        claimed_by text,
+        claim_expires_at timestamptz,
+        available_at timestamptz not null,
+        wake_event text,
+        event_payload jsonb,
+        started_at timestamptz,
+        completed_at timestamptz,
+        failed_at timestamptz,
+        result jsonb,
+        failure_reason jsonb,
+        created_at timestamptz not null default absurd.current_time()
+     ) %s',
+    'r_' || p_queue_name,
+    v_r_suffix
+  );
 
-    execute format(
-      'create table if not exists absurd.%I (
-          task_id uuid not null,
-          checkpoint_name text not null,
-          state jsonb,
-          status text not null default ''committed'',
-          owner_run_id uuid,
-          updated_at timestamptz not null default absurd.current_time(),
-          primary key (task_id, checkpoint_name)
-       ) with (fillfactor=70)',
-      'c_' || p_queue_name
-    );
-  end if;
+  execute format(
+    'create table if not exists absurd.%I (
+        task_id uuid not null,
+        checkpoint_name text not null,
+        state jsonb,
+        status text not null default ''committed'',
+        owner_run_id uuid,
+        updated_at timestamptz not null default absurd.current_time(),
+        primary key (task_id, checkpoint_name)
+     ) %s',
+    'c_' || p_queue_name,
+    v_c_suffix
+  );
 
   execute format(
     'create table if not exists absurd.%I (
@@ -248,33 +212,19 @@ begin
     'e_' || p_queue_name
   );
 
-  if v_storage_mode = 'partitioned' then
-    execute format(
-      'create table if not exists absurd.%I (
-          task_id uuid not null,
-          run_id uuid not null,
-          step_name text not null,
-          event_name text not null,
-          timeout_at timestamptz,
-          created_at timestamptz not null default absurd.current_time(),
-          primary key (run_id, step_name)
-       ) partition by range (run_id)',
-      'w_' || p_queue_name
-    );
-  else
-    execute format(
-      'create table if not exists absurd.%I (
-          task_id uuid not null,
-          run_id uuid not null,
-          step_name text not null,
-          event_name text not null,
-          timeout_at timestamptz,
-          created_at timestamptz not null default absurd.current_time(),
-          primary key (run_id, step_name)
-       )',
-      'w_' || p_queue_name
-    );
-  end if;
+  execute format(
+    'create table if not exists absurd.%I (
+        task_id uuid not null,
+        run_id uuid not null,
+        step_name text not null,
+        event_name text not null,
+        timeout_at timestamptz,
+        created_at timestamptz not null default absurd.current_time(),
+        primary key (run_id, step_name)
+     ) %s',
+    'w_' || p_queue_name,
+    v_w_suffix
+  );
 
   if v_storage_mode = 'partitioned' then
     execute format(
