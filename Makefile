@@ -33,7 +33,7 @@ check: check-python
 # Run Python SDK type checks
 check-python:
 	@echo "Running Python SDK type checks"
-	@cd sdks/python && uvx ty check
+	@cd sdks/python && uv run --all-groups --with ty ty check
 
 # Run all tests
 test: test-core test-typescript test-python test-go
