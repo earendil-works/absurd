@@ -2,7 +2,7 @@
 
 import asyncio
 import contextvars
-from typing import Any
+from typing import Any, Optional
 
 import pytest
 from psycopg import sql
@@ -190,7 +190,7 @@ class TestContextvarsIntegration:
         """Contextvars can be propagated via hooks."""
         queue = queue_name("hooks")
         
-        trace_context: contextvars.ContextVar[dict] = contextvars.ContextVar("trace_context")
+        trace_context: contextvars.ContextVar[Optional[dict]] = contextvars.ContextVar("trace_context")
         
         captured_in_handler = []
         
@@ -249,7 +249,7 @@ class TestContextvarsIntegration:
         
         Absurd(conn, queue_name=queue).create_queue()
         
-        trace_context: contextvars.ContextVar[dict] = contextvars.ContextVar("trace_context")
+        trace_context: contextvars.ContextVar[Optional[dict]] = contextvars.ContextVar("trace_context")
         
         captured_in_handler = []
         
@@ -406,7 +406,7 @@ class TestChildSpawnInheritsContext:
         """Child task spawned from parent inherits trace context via hooks."""
         queue = queue_name("hooks")
         
-        trace_context: contextvars.ContextVar[dict] = contextvars.ContextVar("trace_context")
+        trace_context: contextvars.ContextVar[Optional[dict]] = contextvars.ContextVar("trace_context")
         
         child_trace_id = []
         

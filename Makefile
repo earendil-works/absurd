@@ -1,4 +1,4 @@
-.PHONY: format test test-core test-typescript test-python test-go build-absurdctl build-absurdctl-pypi docs serve-docs
+.PHONY: format check check-python test test-core test-typescript test-python test-go build-absurdctl build-absurdctl-pypi docs serve-docs
 
 # Format all code
 format:
@@ -26,6 +26,14 @@ build-absurdctl:
 # Build the PyPI staging directory for absurdctl
 build-absurdctl-pypi:
 	@./scripts/build-absurdctl --pypi-only
+
+# Run static checks
+check: check-python
+
+# Run Python SDK type checks
+check-python:
+	@echo "Running Python SDK type checks"
+	@cd sdks/python && uvx ty check
 
 # Run all tests
 test: test-core test-typescript test-python test-go

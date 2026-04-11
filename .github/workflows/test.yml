@@ -29,5 +29,8 @@ jobs:
         working-directory: sdks/typescript
         run: npm ci
 
+      - name: Run checks
+        run: make check
+
       - name: Run tests
         run: make test
