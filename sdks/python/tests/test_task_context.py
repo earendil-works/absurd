@@ -1,5 +1,6 @@
 import json
 from datetime import datetime, timezone
+from typing import cast
 
 import pytest
 from psycopg import sql
@@ -37,7 +38,8 @@ def test_step_persists_and_reuses_checkpoints(conn, queue_name):
 
     def compute():
         calls.append("called")
-        return {"user_id": task["params"]["user_id"]}
+        params = cast(dict[str, int], task["params"])
+        return {"user_id": params["user_id"]}
 
     first = ctx.step("load-profile", compute)
     assert first == {"user_id": 7}

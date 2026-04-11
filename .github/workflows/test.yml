@@ -29,6 +29,9 @@ jobs:
         working-directory: sdks/typescript
         run: npm ci
 
+      - name: Run checks
+        run: make check
+
       - name: Restore pg_cron test image cache
         id: cache-pgcron-image
         uses: actions/cache@v4

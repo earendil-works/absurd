@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import contextvars
 from dataclasses import dataclass
+import inspect
 import json
 import os
 import socket
@@ -18,7 +19,6 @@ from typing import (
     Awaitable,
     Callable,
     Dict,
-    Generic,
     List,
     Literal,
     Mapping,
@@ -79,7 +79,6 @@ JsonObject = Dict[str, JsonValue]
 
 P = TypeVar("P")
 R = TypeVar("R")
-T = TypeVar("T")
 
 
 class RetryStrategy(TypedDict, total=False):
@@ -190,7 +189,7 @@ class TaskResultSnapshot:
 
 
 @dataclass(frozen=True)
-class StepHandle(Generic[T]):
+class StepHandle:
     """Handle returned by ``begin_step()`` for decomposed step execution.
 
     A handle represents one concrete checkpoint slot (including automatic
@@ -200,7 +199,7 @@ class StepHandle(Generic[T]):
     name: str
     checkpoint_name: str
     done: bool
-    state: Optional[T] = None
+    state: Optional[JsonValue] = None
 
 
 # Type aliases for hook callbacks
@@ -337,7 +336,7 @@ def _fail_task_run(
     queue_name: str,
     run_id: str,
     err: Any,
-    fatal_error: Optional[str] = None,
+    retry_at: Optional[datetime] = None,
 ) -> None:
     conn.cursor().execute(
         "SELECT absurd.fail_run(%s, %s, %s, %s)",
@@ -345,7 +344,7 @@ def _fail_task_run(
             queue_name,
             run_id,
             json.dumps(_serialize_error(err)),
-            fatal_error,
+            retry_at,
         ),
     )
 
@@ -367,7 +366,7 @@ async def _fail_task_run_async(
     queue_name: str,
     run_id: str,
     err: Any,
-    fatal_error: Optional[str] = None,
+    retry_at: Optional[datetime] = None,
 ) -> None:
     await conn.cursor().execute(
         "SELECT absurd.fail_run(%s, %s, %s, %s)",
@@ -375,7 +374,7 @@ async def _fail_task_run_async(
             queue_name,
             run_id,
             json.dumps(_serialize_error(err)),
-            fatal_error,
+            retry_at,
         ),
     )
 
@@ -682,7 +681,7 @@ class TaskContext:
         rv = fn()
         return self.complete_step(handle, rv)
 
-    def begin_step(self, name: str) -> StepHandle[JsonValue]:
+    def begin_step(self, name: str) -> StepHandle:
         """Start a step and check if its checkpoint already exists."""
         checkpoint_name = self._get_checkpoint_name(name)
         state = self._lookup_checkpoint(checkpoint_name)
@@ -696,10 +695,10 @@ class TaskContext:
 
         return StepHandle(name=name, checkpoint_name=checkpoint_name, done=False)
 
-    def complete_step(self, handle: StepHandle[T], value: T) -> T:
+    def complete_step(self, handle: StepHandle, value: R) -> R:
         """Complete a step started with ``begin_step()`` by persisting its state."""
         if handle.done:
-            return cast(T, handle.state)
+            return cast(R, handle.state)
 
         self._persist_checkpoint(handle.checkpoint_name, value)
         return value
@@ -973,7 +972,7 @@ class AsyncTaskContext:
         rv = await fn()
         return await self.complete_step(handle, rv)
 
-    async def begin_step(self, name: str) -> StepHandle[JsonValue]:
+    async def begin_step(self, name: str) -> StepHandle:
         """Start a step and check if its checkpoint already exists."""
         checkpoint_name = self._get_checkpoint_name(name)
         state = await self._lookup_checkpoint(checkpoint_name)
@@ -987,10 +986,10 @@ class AsyncTaskContext:
 
         return StepHandle(name=name, checkpoint_name=checkpoint_name, done=False)
 
-    async def complete_step(self, handle: StepHandle[T], value: T) -> T:
+    async def complete_step(self, handle: StepHandle, value: R) -> R:
         """Complete a step started with ``begin_step()`` by persisting its state."""
         if handle.done:
-            return cast(T, handle.state)
+            return cast(R, handle.state)
 
         await self._persist_checkpoint(handle.checkpoint_name, value)
         return value
@@ -1211,20 +1210,20 @@ class _AbsurdBase:
     ) -> None:
         self._queue_name = _validate_queue_name(queue_name)
         self._default_max_attempts = default_max_attempts
-        self._hooks: AbsurdHooks = hooks or {}
+        self._hooks: AbsurdHooks = hooks if hooks is not None else cast(AbsurdHooks, {})
         self._registry: Dict[str, Dict[str, Any]] = {}
         self._worker_running = False
 
-    def register_task(
+    def _register_task_decorator(
         self,
         name: str,
         queue: Optional[str] = None,
         default_max_attempts: Optional[int] = None,
         default_cancellation: Optional[CancellationPolicy] = None,
-    ) -> Callable[[TaskHandler], TaskHandler]:
+    ) -> Callable[[Any], Any]:
         """Register a task handler by name"""
 
-        def decorator(handler: TaskHandler) -> TaskHandler:
+        def decorator(handler: Any) -> Any:
             actual_queue = queue if queue is not None else self._queue_name
             actual_queue = _validate_queue_name(actual_queue)
 
@@ -1317,6 +1316,23 @@ class Absurd(_AbsurdBase):
             self._conn = conn_or_url
             self._owned_conn = False
         super().__init__(validated_queue_name, default_max_attempts, hooks)
+
+    def register_task(
+        self,
+        name: str,
+        queue: Optional[str] = None,
+        default_max_attempts: Optional[int] = None,
+        default_cancellation: Optional[CancellationPolicy] = None,
+    ) -> Callable[[TaskHandler], TaskHandler]:
+        return cast(
+            Callable[[TaskHandler], TaskHandler],
+            self._register_task_decorator(
+                name,
+                queue=queue,
+                default_max_attempts=default_max_attempts,
+                default_cancellation=default_cancellation,
+            ),
+        )
 
     def create_queue(
         self,
@@ -1441,16 +1457,21 @@ class Absurd(_AbsurdBase):
     ) -> SpawnResult:
         """Spawn a task execution by enqueueing it for processing"""
         # Build SpawnOptions and apply before_spawn hook if configured
-        spawn_options: SpawnOptions = {
-            "max_attempts": max_attempts,
-            "retry_strategy": retry_strategy,
-            "headers": headers,
-            "queue": queue,
-            "cancellation": cancellation,
-            "idempotency_key": idempotency_key,
-        }
+        spawn_options: SpawnOptions = {}
+        if max_attempts is not None:
+            spawn_options["max_attempts"] = max_attempts
+        if retry_strategy is not None:
+            spawn_options["retry_strategy"] = retry_strategy
+        if headers is not None:
+            spawn_options["headers"] = headers
+        if queue is not None:
+            spawn_options["queue"] = queue
+        if cancellation is not None:
+            spawn_options["cancellation"] = cancellation
+        if idempotency_key is not None:
+            spawn_options["idempotency_key"] = idempotency_key
 
-        before_spawn = self._hooks.get("before_spawn")
+        before_spawn = cast(Optional[BeforeSpawnHook], self._hooks.get("before_spawn"))
         if before_spawn is not None:
             spawn_options = before_spawn(task_name, params, spawn_options)
 
@@ -1674,13 +1695,21 @@ class Absurd(_AbsurdBase):
         # Set contextvar and execute with optional wrap hook
         token = _current_task_context.set(ctx)
         try:
-            wrap_hook = self._hooks.get("wrap_task_execution")
+            wrap_hook = cast(
+                Optional[WrapTaskExecutionHook], self._hooks.get("wrap_task_execution")
+            )
             if wrap_hook is not None:
-                result = wrap_hook(
-                    ctx, lambda: registration["handler"](task["params"], ctx)
+                result = cast(
+                    JsonValue,
+                    wrap_hook(
+                        ctx,
+                        lambda: cast(
+                            JsonValue, registration["handler"](task["params"], ctx)
+                        ),
+                    ),
                 )
             else:
-                result = registration["handler"](task["params"], ctx)
+                result = cast(JsonValue, registration["handler"](task["params"], ctx))
             _complete_task_run(self._conn, queue_name, task["run_id"], result)
         except (SuspendTask, CancelledTask, FailedTask):
             pass
@@ -1712,6 +1741,23 @@ class AsyncAbsurd(_AbsurdBase):
             self._conn_string = None
             self._owned_conn = False
         super().__init__(queue_name, default_max_attempts, hooks)
+
+    def register_task(
+        self,
+        name: str,
+        queue: Optional[str] = None,
+        default_max_attempts: Optional[int] = None,
+        default_cancellation: Optional[CancellationPolicy] = None,
+    ) -> Callable[[AsyncTaskHandler], AsyncTaskHandler]:
+        return cast(
+            Callable[[AsyncTaskHandler], AsyncTaskHandler],
+            self._register_task_decorator(
+                name,
+                queue=queue,
+                default_max_attempts=default_max_attempts,
+                default_cancellation=default_cancellation,
+            ),
+        )
 
     async def _ensure_connected(self) -> None:
         """Ensure the connection is established"""
@@ -1855,23 +1901,27 @@ class AsyncAbsurd(_AbsurdBase):
         assert self._conn is not None
 
         # Build SpawnOptions and apply before_spawn hook if configured
-        spawn_options: SpawnOptions = {
-            "max_attempts": max_attempts,
-            "retry_strategy": retry_strategy,
-            "headers": headers,
-            "queue": queue,
-            "cancellation": cancellation,
-            "idempotency_key": idempotency_key,
-        }
+        spawn_options: SpawnOptions = {}
+        if max_attempts is not None:
+            spawn_options["max_attempts"] = max_attempts
+        if retry_strategy is not None:
+            spawn_options["retry_strategy"] = retry_strategy
+        if headers is not None:
+            spawn_options["headers"] = headers
+        if queue is not None:
+            spawn_options["queue"] = queue
+        if cancellation is not None:
+            spawn_options["cancellation"] = cancellation
+        if idempotency_key is not None:
+            spawn_options["idempotency_key"] = idempotency_key
 
         before_spawn = self._hooks.get("before_spawn")
         if before_spawn is not None:
-            result = before_spawn(task_name, params, spawn_options)
-            # Handle both sync and async hooks
-            if hasattr(result, "__await__"):
-                spawn_options = await result
+            hook_result = before_spawn(task_name, params, spawn_options)
+            if inspect.isawaitable(hook_result):
+                spawn_options = await cast(Awaitable[SpawnOptions], hook_result)
             else:
-                spawn_options = result
+                spawn_options = cast(SpawnOptions, hook_result)
 
         actual_queue, options = self._prepare_spawn(
             task_name,
@@ -1924,8 +1974,9 @@ class AsyncAbsurd(_AbsurdBase):
         queue = _validate_queue_name(
             queue_name if queue_name is not None else self._queue_name
         )
+        conn = self._conn
         return await _await_task_result_with_backoff_async(
-            lambda: _fetch_task_result_snapshot_async(self._conn, queue, task_id),
+            lambda: _fetch_task_result_snapshot_async(conn, queue, task_id),
             task_id,
             timeout,
         )
@@ -2123,17 +2174,20 @@ class AsyncAbsurd(_AbsurdBase):
             wrap_hook = self._hooks.get("wrap_task_execution")
             if wrap_hook is not None:
 
-                async def execute():
-                    return await registration["handler"](task["params"], ctx)
+                async def execute() -> JsonValue:
+                    return cast(
+                        JsonValue, await registration["handler"](task["params"], ctx)
+                    )
 
                 hook_result = wrap_hook(ctx, execute)
-                # Handle both sync and async wrap hooks
-                if hasattr(hook_result, "__await__"):
-                    result = await hook_result
+                if inspect.isawaitable(hook_result):
+                    result = cast(JsonValue, await cast(Awaitable[Any], hook_result))
                 else:
-                    result = hook_result
+                    result = cast(JsonValue, hook_result)
             else:
-                result = await registration["handler"](task["params"], ctx)
+                result = cast(
+                    JsonValue, await registration["handler"](task["params"], ctx)
+                )
             await _complete_task_run_async(
                 self._conn, queue_name, task["run_id"], result
             )

@@ -39,7 +39,7 @@ def postgres_container():
 @pytest.fixture(scope="session")
 def db_dsn(postgres_container):
     dsn = _normalize_dsn(postgres_container.get_connection_url())
-    schema = ABSURD_SQL.read_text()
+    schema = ABSURD_SQL.read_bytes()
     with psycopg.connect(dsn, autocommit=True) as conn:
         conn.execute(schema)
     return dsn
