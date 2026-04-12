@@ -49,21 +49,24 @@ def db_dsn(postgres_container):
 def conn(db_dsn, monkeypatch):
     with psycopg.connect(db_dsn, autocommit=True) as connection:
         connection.execute("set timezone to 'UTC'")
-        
+
         # Store original function
         original_get_current_time = absurd_sdk._get_current_time
-        
+
         # Create a wrapper that checks for fake_now
         def patched_get_current_time():
-            result = connection.execute("SELECT current_setting('absurd.fake_now', true)").fetchone()
+            result = connection.execute(
+                "SELECT current_setting('absurd.fake_now', true)"
+            ).fetchone()
             fake_now = result[0] if result else None
             if fake_now and fake_now.strip():
                 from datetime import datetime
+
                 return datetime.fromisoformat(fake_now)
             return original_get_current_time()
-        
+
         monkeypatch.setattr(absurd_sdk, "_get_current_time", patched_get_current_time)
-        
+
         try:
             yield connection
         finally:

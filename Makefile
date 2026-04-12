@@ -4,7 +4,7 @@
 format:
 	@cd sdks/typescript && npx prettier -w .
 	@cd habitat/ui && npx prettier -w .
-	@uvx ruff format tests
+	@uvx ruff format tests sdks/python
 	@gofmt -w habitat
 	@gofmt -w sdks/go/absurd
 

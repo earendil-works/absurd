@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+from contextlib import contextmanager
 from dataclasses import dataclass
 import inspect
 import json
@@ -19,6 +20,7 @@ from typing import (
     Awaitable,
     Callable,
     Dict,
+    Iterator,
     List,
     Literal,
     Mapping,
@@ -74,6 +76,7 @@ def get_current_context() -> Optional[Union["TaskContext", "AsyncTaskContext"]]:
     This works with both sync and async task handlers.
     """
     return _current_task_context.get()
+
 
 JsonValue = Union[
     str, int, float, bool, None, List["JsonValue"], Dict[str, "JsonValue"]
@@ -274,12 +277,17 @@ class TimeoutError(Exception):
     """Error thrown when waiting for an event or task result times out."""
 
 
-def _raise_task_state_exception(err: Exception) -> None:
-    code = getattr(err, "sqlstate", None) or getattr(err, "pgcode", None)
-    if code == "AB001":
-        raise CancelledTask() from err
-    if code == "AB002":
-        raise FailedTask() from err
+@contextmanager
+def _task_state_exception_handling() -> Iterator[None]:
+    try:
+        yield
+    except Exception as err:
+        code = getattr(err, "sqlstate", None) or getattr(err, "pgcode", None)
+        if code == "AB001":
+            raise CancelledTask() from err
+        if code == "AB002":
+            raise FailedTask() from err
+        raise
 
 
 _MAX_QUEUE_NAME_LENGTH = 57
@@ -404,7 +412,9 @@ async def _fetch_task_result_snapshot_async(
     return _task_result_snapshot_from_row(row)
 
 
-def _task_result_snapshot_from_row(row: Optional[Mapping[str, Any]]) -> Optional[TaskResultSnapshot]:
+def _task_result_snapshot_from_row(
+    row: Optional[Mapping[str, Any]],
+) -> Optional[TaskResultSnapshot]:
     if not row:
         return None
 
@@ -796,7 +806,7 @@ class TaskContext:
             raise TimeoutError(f'Timed out waiting for event "{event_name}"')
 
         cursor = self._conn.cursor(row_factory=dict_row)
-        try:
+        with _task_state_exception_handling():
             cursor.execute(
                 """SELECT should_suspend, payload
                    FROM absurd.await_event(%s, %s, %s, %s, %s, %s)""",
@@ -809,9 +819,6 @@ class TaskContext:
                     timeout,
                 ),
             )
-        except Exception as e:
-            _raise_task_state_exception(e)
-            raise
 
         result = cursor.fetchone()
 
@@ -879,7 +886,7 @@ class TaskContext:
     def heartbeat(self, seconds: Optional[int] = None) -> None:
         """Extend the current run's lease by the given seconds"""
         cursor = self._conn.cursor()
-        try:
+        with _task_state_exception_handling():
             cursor.execute(
                 "SELECT absurd.extend_claim(%s, %s, %s)",
                 (
@@ -888,9 +895,6 @@ class TaskContext:
                     seconds if seconds is not None else self._claim_timeout,
                 ),
             )
-        except Exception as e:
-            _raise_task_state_exception(e)
-            raise
 
     def _get_checkpoint_name(self, name: str) -> str:
         """Get unique checkpoint name handling duplicates"""
@@ -921,7 +925,7 @@ class TaskContext:
     def _persist_checkpoint(self, checkpoint_name: str, value: Any) -> None:
         """Persist a checkpoint value"""
         cursor = self._conn.cursor()
-        try:
+        with _task_state_exception_handling():
             cursor.execute(
                 "SELECT absurd.set_task_checkpoint_state(%s, %s, %s, %s, %s, %s)",
                 (
@@ -933,9 +937,6 @@ class TaskContext:
                     self._claim_timeout,
                 ),
             )
-        except Exception as e:
-            _raise_task_state_exception(e)
-            raise
         self._checkpoint_cache[checkpoint_name] = value
 
     def _schedule_run(self, wake_at: datetime) -> None:
@@ -1047,7 +1048,7 @@ class AsyncTaskContext:
             raise TimeoutError(f'Timed out waiting for event "{event_name}"')
 
         cursor = self._conn.cursor(row_factory=dict_row)
-        try:
+        with _task_state_exception_handling():
             await cursor.execute(
                 """SELECT should_suspend, payload
                    FROM absurd.await_event(%s, %s, %s, %s, %s, %s)""",
@@ -1060,9 +1061,6 @@ class AsyncTaskContext:
                     timeout,
                 ),
             )
-        except Exception as e:
-            _raise_task_state_exception(e)
-            raise
 
         result = await cursor.fetchone()
 
@@ -1132,7 +1130,7 @@ class AsyncTaskContext:
     async def heartbeat(self, seconds: Optional[int] = None) -> None:
         """Extend the current run's lease by the given seconds"""
         cursor = self._conn.cursor()
-        try:
+        with _task_state_exception_handling():
             await cursor.execute(
                 "SELECT absurd.extend_claim(%s, %s, %s)",
                 (
@@ -1141,9 +1139,6 @@ class AsyncTaskContext:
                     seconds if seconds is not None else self._claim_timeout,
                 ),
             )
-        except Exception as e:
-            _raise_task_state_exception(e)
-            raise
 
     def _get_checkpoint_name(self, name: str) -> str:
         """Get unique checkpoint name handling duplicates"""
@@ -1176,7 +1171,7 @@ class AsyncTaskContext:
     async def _persist_checkpoint(self, checkpoint_name: str, value: Any) -> None:
         """Persist a checkpoint value"""
         cursor = self._conn.cursor()
-        try:
+        with _task_state_exception_handling():
             await cursor.execute(
                 "SELECT absurd.set_task_checkpoint_state(%s, %s, %s, %s, %s, %s)",
                 (
@@ -1188,9 +1183,6 @@ class AsyncTaskContext:
                     self._claim_timeout,
                 ),
             )
-        except Exception as e:
-            _raise_task_state_exception(e)
-            raise
         self._checkpoint_cache[checkpoint_name] = value
 
     async def _schedule_run(self, wake_at: datetime) -> None:
@@ -1281,7 +1273,9 @@ class _AbsurdBase:
         effective_cancellation = (
             cancellation
             if cancellation is not None
-            else registration.get("default_cancellation") if registration else None
+            else registration.get("default_cancellation")
+            if registration
+            else None
         )
 
         actual_queue = _validate_queue_name(actual_queue)
@@ -1313,7 +1307,9 @@ class Absurd(_AbsurdBase):
             conn_or_url = _default_connection_url()
 
         if isinstance(conn_or_url, str):
-            self._conn: Connection[Any] = Connection.connect(conn_or_url, autocommit=True)
+            self._conn: Connection[Any] = Connection.connect(
+                conn_or_url, autocommit=True
+            )
             self._owned_conn = True
         else:
             self._conn = conn_or_url
@@ -1407,7 +1403,9 @@ class Absurd(_AbsurdBase):
             (queue, json.dumps(policy)),
         )
 
-    def get_queue_policy(self, queue_name: Optional[str] = None) -> Optional[QueuePolicy]:
+    def get_queue_policy(
+        self, queue_name: Optional[str] = None
+    ) -> Optional[QueuePolicy]:
         """Fetch queue maintenance policy fields."""
         queue = _validate_queue_name(
             queue_name if queue_name is not None else self._queue_name
@@ -1779,7 +1777,9 @@ class AsyncAbsurd(_AbsurdBase):
     async def _ensure_connected(self) -> None:
         """Ensure the connection is established"""
         if self._conn is None and self._conn_string:
-            self._conn = await AsyncConnection.connect(self._conn_string, autocommit=True)
+            self._conn = await AsyncConnection.connect(
+                self._conn_string, autocommit=True
+            )
 
     async def create_queue(
         self,
@@ -1807,7 +1807,9 @@ class AsyncAbsurd(_AbsurdBase):
         if storage_mode == "unpartitioned":
             await cursor.execute("SELECT absurd.create_queue(%s)", (queue,))
         else:
-            await cursor.execute("SELECT absurd.create_queue(%s, %s)", (queue, storage_mode))
+            await cursor.execute(
+                "SELECT absurd.create_queue(%s, %s)", (queue, storage_mode)
+            )
 
         await self.set_queue_policy(
             queue_name=queue,
@@ -1855,7 +1857,9 @@ class AsyncAbsurd(_AbsurdBase):
             (queue, json.dumps(policy)),
         )
 
-    async def get_queue_policy(self, queue_name: Optional[str] = None) -> Optional[QueuePolicy]:
+    async def get_queue_policy(
+        self, queue_name: Optional[str] = None
+    ) -> Optional[QueuePolicy]:
         """Fetch queue maintenance policy fields."""
         await self._ensure_connected()
         assert self._conn is not None

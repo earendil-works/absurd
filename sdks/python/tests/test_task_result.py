@@ -65,7 +65,9 @@ def test_await_task_result_times_out(conn, queue_name):
         client.await_task_result(spawned["task_id"], timeout=0.05)
 
 
-def test_task_context_await_task_result_waits_for_terminal_state(conn, db_dsn, queue_name):
+def test_task_context_await_task_result_waits_for_terminal_state(
+    conn, db_dsn, queue_name
+):
     parent_queue = queue_name("task_result_ctx_parent")
     child_queue = queue_name("task_result_ctx_child")
     parent_client = Absurd(conn, queue_name=parent_queue)
@@ -174,7 +176,11 @@ def test_async_task_context_await_task_result_rejects_same_queue(db_dsn, queue_n
             assert client._conn is not None
 
             ctx = await _create_async_task_context(
-                parent_claim["task_id"], client._conn, queue, parent_claim, claim_timeout=120
+                parent_claim["task_id"],
+                client._conn,
+                queue,
+                parent_claim,
+                claim_timeout=120,
             )
 
             child = await client.spawn("child", {}, queue=queue)

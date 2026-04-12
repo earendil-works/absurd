@@ -55,7 +55,9 @@ def test_async_queue_policy_methods(db_dsn, queue_name):
         assert str(policy["partition_lookahead"]) == "21 days, 0:00:00"
         assert str(policy["cleanup_ttl"]) == "0:16:39"
 
-        await client.set_queue_policy(queue, detach_mode="empty", detach_min_age="10 days")
+        await client.set_queue_policy(
+            queue, detach_mode="empty", detach_min_age="10 days"
+        )
         updated = await client.get_queue_policy(queue)
         assert updated is not None
         assert updated["detach_mode"] == "empty"

@@ -113,7 +113,9 @@ def test_unknown_task_is_deferred_not_failed(conn, queue_name):
     assert available_at is not None and available_at > base_time
 
 
-def test_unknown_task_defer_failure_preserves_error_context(conn, queue_name, monkeypatch):
+def test_unknown_task_defer_failure_preserves_error_context(
+    conn, queue_name, monkeypatch
+):
     queue = queue_name("unknown_defer_fail")
     client = Absurd(conn, queue_name=queue)
     client.create_queue()
@@ -134,7 +136,9 @@ def test_unknown_task_defer_failure_preserves_error_context(conn, queue_name, mo
     assert task_state == "failed"
     assert task_attempts == 1
 
-    run_state, _, failure_reason = _fetch_run_with_failure(conn, queue, spawned["run_id"])
+    run_state, _, failure_reason = _fetch_run_with_failure(
+        conn, queue, spawned["run_id"]
+    )
     assert run_state == "failed"
     assert failure_reason is not None
     assert failure_reason["name"] == "InvalidTextRepresentation"
@@ -172,7 +176,9 @@ def test_async_absurd_round_trip(db_dsn, queue_name):
     assert calls == ["called"]
 
     with psycopg.connect(db_dsn, autocommit=True) as check_conn:
-        run_state, available_at, result = _fetch_run(check_conn, queue, spawned["run_id"])
+        run_state, available_at, result = _fetch_run(
+            check_conn, queue, spawned["run_id"]
+        )
         assert run_state == "completed"
         assert result == {"processed": 6}
 
@@ -200,7 +206,9 @@ def test_async_unknown_task_is_deferred_not_failed(db_dsn, queue_name):
     spawned = asyncio.run(run())
 
     with psycopg.connect(db_dsn, autocommit=True) as check_conn:
-        task_state, task_attempts, _ = _fetch_task(check_conn, queue, spawned["task_id"])
+        task_state, task_attempts, _ = _fetch_task(
+            check_conn, queue, spawned["task_id"]
+        )
         assert task_state == "sleeping"
         assert task_attempts == 1
 
@@ -240,7 +248,9 @@ def test_async_unknown_task_defer_failure_preserves_error_context(
     spawned = asyncio.run(run())
 
     with psycopg.connect(db_dsn, autocommit=True) as check_conn:
-        task_state, task_attempts, _ = _fetch_task(check_conn, queue, spawned["task_id"])
+        task_state, task_attempts, _ = _fetch_task(
+            check_conn, queue, spawned["task_id"]
+        )
         assert task_state == "failed"
         assert task_attempts == 1
 

@@ -13,6 +13,7 @@ def _set_fake_now(conn, fake_time):
     else:
         # SET doesn't support parameterized queries, need to format as string
         from psycopg import sql
+
         conn.execute(
             sql.SQL("set absurd.fake_now = '{}'").format(sql.SQL(fake_time.isoformat()))
         )
