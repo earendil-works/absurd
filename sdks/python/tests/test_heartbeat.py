@@ -192,3 +192,129 @@ def test_async_heartbeat_on_failed_run_raises_failed_task(db_dsn, queue_name):
         run = _fetch_run(check_conn, queue, spawned["run_id"])
         assert run is not None
         assert run[0] == "failed"
+
+
+def test_sync_execute_task_swallows_cancelled_task_on_complete_run(conn, queue_name):
+    queue = queue_name("complete_cancel_wrapper")
+    client = Absurd(conn, queue_name=queue)
+    client.create_queue()
+
+    @client.register_task("complete-cancel")
+    def complete_cancel(_params, _ctx):
+        return {"ok": True}
+
+    spawned = client.spawn("complete-cancel", {"value": 1})
+    task = client.claim_tasks(worker_id="worker", claim_timeout=60)[0]
+
+    client.cancel_task(spawned["task_id"])
+
+    # Must not raise: cancellation after claim should be treated as terminal control flow.
+    client._execute_task(task, 60)
+
+    run = _fetch_run(conn, queue, spawned["run_id"])
+    assert run is not None
+    assert run[0] == "cancelled"
+
+    task_row = _fetch_task(conn, queue, spawned["task_id"])
+    assert task_row is not None
+    assert task_row[0] == "cancelled"
+
+
+def test_sync_execute_task_swallows_cancelled_task_on_fail_run(conn, queue_name):
+    queue = queue_name("fail_cancel_wrapper")
+    client = Absurd(conn, queue_name=queue)
+    client.create_queue()
+
+    @client.register_task("fail-cancel")
+    def fail_cancel(_params, _ctx):
+        raise RuntimeError("boom")
+
+    spawned = client.spawn("fail-cancel", {"value": 1})
+    task = client.claim_tasks(worker_id="worker", claim_timeout=60)[0]
+
+    client.cancel_task(spawned["task_id"])
+
+    # Must not raise: fail_run should map cancellation to CancelledTask and be swallowed.
+    client._execute_task(task, 60)
+
+    run = _fetch_run(conn, queue, spawned["run_id"])
+    assert run is not None
+    assert run[0] == "cancelled"
+
+    task_row = _fetch_task(conn, queue, spawned["task_id"])
+    assert task_row is not None
+    assert task_row[0] == "cancelled"
+
+
+def test_async_execute_task_swallows_cancelled_task_on_complete_run(db_dsn, queue_name):
+    queue = queue_name("complete_cancel_wrapper_async")
+
+    with psycopg.connect(db_dsn, autocommit=True) as setup_conn:
+        Absurd(setup_conn, queue_name=queue).create_queue()
+
+    async def run_case():
+        client = AsyncAbsurd(db_dsn, queue_name=queue)
+
+        @client.register_task("complete-cancel-async")
+        async def complete_cancel_async(_params, _ctx):
+            return {"ok": True}
+
+        spawned = await client.spawn("complete-cancel-async", {"value": 1})
+        tasks = await client.claim_tasks(worker_id="worker", claim_timeout=60)
+        task = tasks[0]
+
+        await client.cancel_task(spawned["task_id"])
+
+        # Must not raise.
+        await client._execute_task(task, 60)
+
+        await client.close()
+        return spawned
+
+    spawned = asyncio.run(run_case())
+
+    with psycopg.connect(db_dsn, autocommit=True) as check_conn:
+        run = _fetch_run(check_conn, queue, spawned["run_id"])
+        assert run is not None
+        assert run[0] == "cancelled"
+
+        task_row = _fetch_task(check_conn, queue, spawned["task_id"])
+        assert task_row is not None
+        assert task_row[0] == "cancelled"
+
+
+def test_async_execute_task_swallows_cancelled_task_on_fail_run(db_dsn, queue_name):
+    queue = queue_name("fail_cancel_wrapper_async")
+
+    with psycopg.connect(db_dsn, autocommit=True) as setup_conn:
+        Absurd(setup_conn, queue_name=queue).create_queue()
+
+    async def run_case():
+        client = AsyncAbsurd(db_dsn, queue_name=queue)
+
+        @client.register_task("fail-cancel-async")
+        async def fail_cancel_async(_params, _ctx):
+            raise RuntimeError("boom")
+
+        spawned = await client.spawn("fail-cancel-async", {"value": 1})
+        tasks = await client.claim_tasks(worker_id="worker", claim_timeout=60)
+        task = tasks[0]
+
+        await client.cancel_task(spawned["task_id"])
+
+        # Must not raise.
+        await client._execute_task(task, 60)
+
+        await client.close()
+        return spawned
+
+    spawned = asyncio.run(run_case())
+
+    with psycopg.connect(db_dsn, autocommit=True) as check_conn:
+        run = _fetch_run(check_conn, queue, spawned["run_id"])
+        assert run is not None
+        assert run[0] == "cancelled"
+
+        task_row = _fetch_task(check_conn, queue, spawned["task_id"])
+        assert task_row is not None
+        assert task_row[0] == "cancelled"

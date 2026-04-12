@@ -336,10 +336,11 @@ def _complete_task_run(
     run_id: str,
     result: Optional[JsonValue],
 ) -> None:
-    conn.cursor().execute(
-        "SELECT absurd.complete_run(%s, %s, %s)",
-        (queue_name, run_id, json.dumps(result)),
-    )
+    with _task_state_exception_handling():
+        conn.cursor().execute(
+            "SELECT absurd.complete_run(%s, %s, %s)",
+            (queue_name, run_id, json.dumps(result)),
+        )
 
 
 def _fail_task_run(
@@ -349,15 +350,16 @@ def _fail_task_run(
     err: Any,
     retry_at: Optional[datetime] = None,
 ) -> None:
-    conn.cursor().execute(
-        "SELECT absurd.fail_run(%s, %s, %s, %s)",
-        (
-            queue_name,
-            run_id,
-            json.dumps(_serialize_error(err)),
-            retry_at,
-        ),
-    )
+    with _task_state_exception_handling():
+        conn.cursor().execute(
+            "SELECT absurd.fail_run(%s, %s, %s, %s)",
+            (
+                queue_name,
+                run_id,
+                json.dumps(_serialize_error(err)),
+                retry_at,
+            ),
+        )
 
 
 async def _complete_task_run_async(
@@ -366,10 +368,11 @@ async def _complete_task_run_async(
     run_id,
     result,
 ) -> None:
-    await conn.cursor().execute(
-        "SELECT absurd.complete_run(%s, %s, %s)",
-        (queue_name, run_id, json.dumps(result)),
-    )
+    with _task_state_exception_handling():
+        await conn.cursor().execute(
+            "SELECT absurd.complete_run(%s, %s, %s)",
+            (queue_name, run_id, json.dumps(result)),
+        )
 
 
 async def _fail_task_run_async(
@@ -379,15 +382,16 @@ async def _fail_task_run_async(
     err: Any,
     retry_at: Optional[datetime] = None,
 ) -> None:
-    await conn.cursor().execute(
-        "SELECT absurd.fail_run(%s, %s, %s, %s)",
-        (
-            queue_name,
-            run_id,
-            json.dumps(_serialize_error(err)),
-            retry_at,
-        ),
-    )
+    with _task_state_exception_handling():
+        await conn.cursor().execute(
+            "SELECT absurd.fail_run(%s, %s, %s, %s)",
+            (
+                queue_name,
+                run_id,
+                json.dumps(_serialize_error(err)),
+                retry_at,
+            ),
+        )
 
 
 def _fetch_task_result_snapshot(
@@ -1684,23 +1688,29 @@ class Absurd(_AbsurdBase):
                 )
                 return
             except Exception as defer_err:
-                _fail_task_run(
-                    self._conn,
-                    self._queue_name,
-                    task["run_id"],
-                    defer_err,
-                )
+                try:
+                    _fail_task_run(
+                        self._conn,
+                        self._queue_name,
+                        task["run_id"],
+                        defer_err,
+                    )
+                except (CancelledTask, FailedTask):
+                    pass
                 return
 
         queue_name = registration["queue"]
 
         if queue_name != self._queue_name:
-            _fail_task_run(
-                self._conn,
-                self._queue_name,
-                task["run_id"],
-                Exception("Misconfigured task (queue mismatch)"),
-            )
+            try:
+                _fail_task_run(
+                    self._conn,
+                    self._queue_name,
+                    task["run_id"],
+                    Exception("Misconfigured task (queue mismatch)"),
+                )
+            except (CancelledTask, FailedTask):
+                pass
             return
 
         ctx = _create_task_context(
@@ -1729,7 +1739,10 @@ class Absurd(_AbsurdBase):
         except (SuspendTask, CancelledTask, FailedTask):
             pass
         except Exception as err:
-            _fail_task_run(self._conn, queue_name, task["run_id"], err)
+            try:
+                _fail_task_run(self._conn, queue_name, task["run_id"], err)
+            except (CancelledTask, FailedTask):
+                pass
         finally:
             _current_task_context.reset(token)
 
@@ -2180,23 +2193,29 @@ class AsyncAbsurd(_AbsurdBase):
                 )
                 return
             except Exception as defer_err:
-                await _fail_task_run_async(
-                    self._conn,
-                    self._queue_name,
-                    task["run_id"],
-                    defer_err,
-                )
+                try:
+                    await _fail_task_run_async(
+                        self._conn,
+                        self._queue_name,
+                        task["run_id"],
+                        defer_err,
+                    )
+                except (CancelledTask, FailedTask):
+                    pass
                 return
 
         queue_name = registration["queue"]
 
         if queue_name != self._queue_name:
-            await _fail_task_run_async(
-                self._conn,
-                self._queue_name,
-                task["run_id"],
-                Exception("Misconfigured task (queue mismatch)"),
-            )
+            try:
+                await _fail_task_run_async(
+                    self._conn,
+                    self._queue_name,
+                    task["run_id"],
+                    Exception("Misconfigured task (queue mismatch)"),
+                )
+            except (CancelledTask, FailedTask):
+                pass
             return
 
         ctx = await _create_async_task_context(
@@ -2229,11 +2248,14 @@ class AsyncAbsurd(_AbsurdBase):
         except (SuspendTask, CancelledTask, FailedTask):
             pass
         except Exception as err:
-            await _fail_task_run_async(
-                self._conn,
-                queue_name,
-                task["run_id"],
-                err,
-            )
+            try:
+                await _fail_task_run_async(
+                    self._conn,
+                    queue_name,
+                    task["run_id"],
+                    err,
+                )
+            except (CancelledTask, FailedTask):
+                pass
         finally:
             _current_task_context.reset(token)

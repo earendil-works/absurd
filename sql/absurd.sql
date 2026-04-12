@@ -1022,6 +1022,12 @@ begin
   end if;
 
   if v_state <> 'running' then
+    if v_state = 'cancelled' then
+      raise exception sqlstate 'AB001' using message = 'Task has been cancelled';
+    end if;
+    if v_state = 'failed' then
+      raise exception sqlstate 'AB002' using message = format('Run "%s" has already failed in queue "%s"', p_run_id, p_queue_name);
+    end if;
     raise exception 'Run "%" is not currently running in queue "%"', p_run_id, p_queue_name;
   end if;
 
@@ -1108,6 +1114,7 @@ as $$
 declare
   v_task_id uuid;
   v_attempt integer;
+  v_run_state text;
   v_retry_strategy jsonb;
   v_max_attempts integer;
   v_now timestamptz := absurd.current_time();
@@ -1129,17 +1136,28 @@ declare
   v_cancelled_at timestamptz := null;
 begin
   execute format(
-    'select r.task_id, r.attempt
+    'select r.task_id, r.attempt, r.state
        from absurd.%I r
       where r.run_id = $1
-        and r.state in (''running'', ''sleeping'')
       for update',
     'r_' || p_queue_name
   )
-  into v_task_id, v_attempt
+  into v_task_id, v_attempt, v_run_state
   using p_run_id;
 
   if v_task_id is null then
+    raise exception 'Run "%" cannot be failed in queue "%"', p_run_id, p_queue_name;
+  end if;
+
+  if v_run_state = 'cancelled' then
+    raise exception sqlstate 'AB001' using message = 'Task has been cancelled';
+  end if;
+
+  if v_run_state = 'failed' then
+    raise exception sqlstate 'AB002' using message = format('Run "%s" has already failed in queue "%s"', p_run_id, p_queue_name);
+  end if;
+
+  if v_run_state not in ('running', 'sleeping') then
     raise exception 'Run "%" cannot be failed in queue "%"', p_run_id, p_queue_name;
   end if;
 

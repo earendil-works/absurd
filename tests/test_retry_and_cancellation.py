@@ -157,6 +157,36 @@ def test_cancel_prevents_extend_claim(client):
     assert "AB001" in str(exc_info.value) or "cancelled" in str(exc_info.value).lower()
 
 
+def test_cancelled_run_blocks_complete_run_with_ab001(client):
+    queue = "cancel_complete_run"
+    client.create_queue(queue)
+
+    spawn = client.spawn_task(queue, "complete-task", {"data": "test"})
+    claim = client.claim_tasks(queue, worker="worker-1")[0]
+
+    client.cancel_task(queue, spawn.task_id)
+
+    with pytest.raises(Exception) as exc_info:
+        client.complete_run(queue, claim["run_id"], {"ok": True})
+
+    assert getattr(exc_info.value, "sqlstate", None) == "AB001"
+
+
+def test_failed_run_blocks_complete_run_with_ab002(client):
+    queue = "failed_complete_run"
+    client.create_queue(queue)
+
+    spawn = client.spawn_task(queue, "failed-task", {"data": "test"})
+    claim = client.claim_tasks(queue, worker="worker-1")[0]
+
+    client.fail_run(queue, claim["run_id"], {"message": "boom"})
+
+    with pytest.raises(Exception) as exc_info:
+        client.complete_run(queue, claim["run_id"], {"ok": True})
+
+    assert getattr(exc_info.value, "sqlstate", None) == "AB002"
+
+
 def test_cancel_idempotent(client):
     """Test that cancelling an already cancelled task is idempotent."""
     queue = "cancel_idempotent"

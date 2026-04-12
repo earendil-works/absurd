@@ -836,7 +836,10 @@ func completeTaskRun(ctx context.Context, db *sql.DB, queueName string, runID st
 		return err
 	}
 	_, err = db.ExecContext(ctx, `SELECT absurd.complete_run($1, $2, $3)`, queueName, runID, string(raw))
-	return err
+	if err != nil {
+		return mapTaskStateError(err)
+	}
+	return nil
 }
 
 func failTaskRun(ctx context.Context, db *sql.DB, queueName string, runID string, err error) error {
@@ -853,7 +856,10 @@ func failTaskRunWithTraceback(ctx context.Context, db *sql.DB, queueName string,
 		return marshalErr
 	}
 	_, execErr := db.ExecContext(ctx, `SELECT absurd.fail_run($1, $2, $3, $4)`, queueName, runID, string(serialized), nil)
-	return execErr
+	if execErr != nil {
+		return mapTaskStateError(execErr)
+	}
+	return nil
 }
 
 // Utility functions

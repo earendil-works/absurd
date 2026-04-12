@@ -350,6 +350,50 @@ describe("Retry and cancellation", () => {
     expect(checkpoints.rows).toHaveLength(0);
   });
 
+  test("executeTask swallows AB002 from complete_run on failed run", async () => {
+    absurd.registerTask({ name: "failed-complete" }, async () => {
+      return { ok: true };
+    });
+
+    const { runID } = await absurd.spawn("failed-complete", { data: 1 });
+    const [claim] = await absurd.claimTasks({
+      workerId: "worker-1",
+      claimTimeout: 60,
+    });
+    expect(claim.run_id).toBe(runID);
+
+    await ctx.pool.query(`SELECT absurd.fail_run($1, $2, $3, $4)`, [
+      ctx.queueName,
+      claim.run_id,
+      JSON.stringify({ name: "$ClaimTimeout", message: "timeout" }),
+      null,
+    ]);
+
+    await absurd.executeTask(claim, 60);
+
+    const staleRun = await ctx.getRun(claim.run_id);
+    expect(staleRun?.state).toBe("failed");
+  });
+
+  test("executeTask swallows AB001 when fail_run hits cancelled run", async () => {
+    absurd.registerTask({ name: "cancelled-fail" }, async () => {
+      throw new Error("boom");
+    });
+
+    const { taskID, runID } = await absurd.spawn("cancelled-fail", { data: 1 });
+    const [claim] = await absurd.claimTasks({
+      workerId: "worker-1",
+      claimTimeout: 60,
+    });
+    expect(claim.run_id).toBe(runID);
+
+    await absurd.cancelTask(taskID);
+    await absurd.executeTask(claim, 60);
+
+    const task = await ctx.getTask(taskID);
+    expect(task?.state).toBe("cancelled");
+  });
+
   test("cancel blocks checkpoint writes", async () => {
     absurd.registerTask({ name: "checkpoint-cancel" }, async () => {
       return { ok: true };

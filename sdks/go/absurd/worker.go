@@ -231,6 +231,13 @@ func panicDetails(v any) (string, string) {
 	return fmt.Sprintf("%T", v), fmt.Sprintf("panic: %v", v)
 }
 
+func swallowTerminalTaskStateError(err error) error {
+	if errors.Is(err, errCancelled) || errors.Is(err, errFailedRun) {
+		return nil
+	}
+	return err
+}
+
 type leaseWatchdog struct {
 	mu                  sync.Mutex
 	warn                *time.Timer
@@ -317,7 +324,9 @@ func (c *Client) executeTask(ctx context.Context, task claimedTask, claimTimeout
 		if v := recover(); v != nil {
 			name, message := panicDetails(v)
 			c.logger.Printf("[absurd] task execution panicked: %s", message)
-			err = failTaskRunWithTraceback(completionCtx, c.db, c.queueName, task.RunID, name, message, debug.Stack())
+			err = swallowTerminalTaskStateError(
+				failTaskRunWithTraceback(completionCtx, c.db, c.queueName, task.RunID, name, message, debug.Stack()),
+			)
 		}
 	}()
 
@@ -327,7 +336,9 @@ func (c *Client) executeTask(ctx context.Context, task claimedTask, claimTimeout
 		if err := c.deferClaimedRun(completionCtx, task.RunID, delay); err != nil {
 			c.logger.Printf("[absurd] failed to defer unknown task %q (%s): %v", task.TaskName, task.TaskID, err)
 			deferErr := fmt.Errorf("failed to defer unknown task %q (%s): %w", task.TaskName, task.TaskID, err)
-			return failTaskRun(completionCtx, c.db, c.queueName, task.RunID, deferErr)
+			return swallowTerminalTaskStateError(
+				failTaskRun(completionCtx, c.db, c.queueName, task.RunID, deferErr),
+			)
 		}
 		c.logger.Printf("[absurd] claimed unknown task %q (%s); deferred run %s by %s", task.TaskName, task.TaskID, task.RunID, delay)
 		return nil
@@ -335,7 +346,9 @@ func (c *Client) executeTask(ctx context.Context, task claimedTask, claimTimeout
 	if registration.queueName != c.queueName {
 		err := fmt.Errorf("misconfigured task %q (queue mismatch)", task.TaskName)
 		c.logger.Printf("[absurd] %v", err)
-		return failTaskRun(completionCtx, c.db, c.queueName, task.RunID, err)
+		return swallowTerminalTaskStateError(
+			failTaskRun(completionCtx, c.db, c.queueName, task.RunID, err),
+		)
 	}
 	taskCtx, err := newTaskContext(ctx, c, registration.queueName, task, effectiveLease, func(d time.Duration) {
 		watchdog.schedule(d)
@@ -343,7 +356,9 @@ func (c *Client) executeTask(ctx context.Context, task claimedTask, claimTimeout
 	if err != nil {
 		if errors.Is(err, errInvalidTaskHeaders) {
 			c.logger.Printf("[absurd] %v", err)
-			return failTaskRun(completionCtx, c.db, c.queueName, task.RunID, err)
+			return swallowTerminalTaskStateError(
+				failTaskRun(completionCtx, c.db, c.queueName, task.RunID, err),
+			)
 		}
 		return err
 	}
@@ -361,7 +376,11 @@ func (c *Client) executeTask(ctx context.Context, task claimedTask, claimTimeout
 			return nil
 		}
 		c.logger.Printf("[absurd] task execution failed: %v", err)
-		return failTaskRun(completionCtx, c.db, c.queueName, task.RunID, err)
+		return swallowTerminalTaskStateError(
+			failTaskRun(completionCtx, c.db, c.queueName, task.RunID, err),
+		)
 	}
-	return completeTaskRun(completionCtx, c.db, c.queueName, task.RunID, result)
+	return swallowTerminalTaskStateError(
+		completeTaskRun(completionCtx, c.db, c.queueName, task.RunID, result),
+	)
 }

@@ -338,12 +338,7 @@ export class TaskContext {
     try {
       return await this.con.query(sql, params);
     } catch (err: any) {
-      if (err?.code === "AB001") {
-        throw new CancelledTask();
-      } else if (err?.code === "AB002") {
-        throw new FailedTask();
-      }
-      throw err;
+      throw mapTaskStateError(err);
     }
   }
 
@@ -1311,7 +1306,14 @@ export class Absurd {
             `failed to defer unknown task "${task.task_name}" (${task.task_id}); failing run`,
             deferErr,
           );
-          await failTaskRun(this.con, this.queueName, task.run_id, deferErr);
+          try {
+            await failTaskRun(this.con, this.queueName, task.run_id, deferErr);
+          } catch (failErr) {
+            if (isTaskStateTerminalError(failErr)) {
+              return;
+            }
+            throw failErr;
+          }
           return;
         }
       } else if (registration.queue !== this.queueName) {
@@ -1338,7 +1340,14 @@ export class Absurd {
         return;
       }
       this.log.error("[absurd] task execution failed:", err);
-      await failTaskRun(this.con, this.queueName, task.run_id, err);
+      try {
+        await failTaskRun(this.con, this.queueName, task.run_id, err);
+      } catch (failErr) {
+        if (isTaskStateTerminalError(failErr)) {
+          return;
+        }
+        throw failErr;
+      }
     } finally {
       clearLeaseTimers();
     }
@@ -1380,17 +1389,35 @@ function serializeError(err: unknown): JsonValue {
   return { message: String(err) };
 }
 
+function mapTaskStateError(err: any): Error {
+  if (err?.code === "AB001") {
+    return new CancelledTask();
+  }
+  if (err?.code === "AB002") {
+    return new FailedTask();
+  }
+  return err;
+}
+
+function isTaskStateTerminalError(err: unknown): boolean {
+  return err instanceof CancelledTask || err instanceof FailedTask;
+}
+
 async function completeTaskRun(
   con: Queryable,
   queueName: string,
   runID: string,
   result?: any,
 ): Promise<void> {
-  await con.query(`SELECT absurd.complete_run($1, $2, $3)`, [
-    queueName,
-    runID,
-    JSON.stringify(result ?? null),
-  ]);
+  try {
+    await con.query(`SELECT absurd.complete_run($1, $2, $3)`, [
+      queueName,
+      runID,
+      JSON.stringify(result ?? null),
+    ]);
+  } catch (err) {
+    throw mapTaskStateError(err);
+  }
 }
 
 async function failTaskRun(
@@ -1399,12 +1426,16 @@ async function failTaskRun(
   runID: string,
   err: unknown,
 ): Promise<void> {
-  await con.query(`SELECT absurd.fail_run($1, $2, $3, $4)`, [
-    queueName,
-    runID,
-    JSON.stringify(serializeError(err)),
-    null,
-  ]);
+  try {
+    await con.query(`SELECT absurd.fail_run($1, $2, $3, $4)`, [
+      queueName,
+      runID,
+      JSON.stringify(serializeError(err)),
+      null,
+    ]);
+  } catch (execErr) {
+    throw mapTaskStateError(execErr);
+  }
 }
 
 async function deferClaimedRun(

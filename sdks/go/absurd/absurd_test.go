@@ -29,3 +29,18 @@ func TestMapTaskStateError(t *testing.T) {
 		t.Fatalf("expected original error to be preserved, got %v", mapped)
 	}
 }
+
+func TestSwallowTerminalTaskStateError(t *testing.T) {
+	if err := swallowTerminalTaskStateError(errCancelled); err != nil {
+		t.Fatalf("expected cancelled error to be swallowed, got %v", err)
+	}
+
+	if err := swallowTerminalTaskStateError(errFailedRun); err != nil {
+		t.Fatalf("expected failed-run error to be swallowed, got %v", err)
+	}
+
+	original := fmt.Errorf("boom")
+	if err := swallowTerminalTaskStateError(original); err != original {
+		t.Fatalf("expected original error to be preserved, got %v", err)
+	}
+}
