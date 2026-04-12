@@ -45,6 +45,9 @@ __all__ = [
     "RetryStrategy",
     "CancellationPolicy",
     "SpawnOptions",
+    "CreateQueueOptions",
+    "QueuePolicyOptions",
+    "QueuePolicy",
     "RetryTaskResult",
     "TaskResultState",
     "TaskResultSnapshot",
@@ -103,6 +106,40 @@ class SpawnOptions(TypedDict, total=False):
     queue: str
     cancellation: CancellationPolicy
     idempotency_key: str
+
+
+QueueStorageMode = Literal["unpartitioned", "partitioned"]
+QueueDetachMode = Literal["none", "empty"]
+
+
+class QueuePolicyOptions(TypedDict, total=False):
+    """Queue maintenance policy update payload."""
+
+    partition_lookahead: str
+    partition_lookback: str
+    cleanup_ttl: str
+    cleanup_limit: int
+    detach_mode: QueueDetachMode
+    detach_min_age: str
+
+
+class CreateQueueOptions(QueuePolicyOptions, total=False):
+    """Options used when creating a queue."""
+
+    storage_mode: QueueStorageMode
+
+
+class QueuePolicy(TypedDict):
+    """Queue maintenance policy as returned by the database."""
+
+    queue_name: str
+    storage_mode: QueueStorageMode
+    partition_lookahead: timedelta
+    partition_lookback: timedelta
+    cleanup_ttl: timedelta
+    cleanup_limit: int
+    detach_mode: QueueDetachMode
+    detach_min_age: timedelta
 
 
 class ClaimedTask(TypedDict):
@@ -247,7 +284,7 @@ _CHECKPOINT_NOT_FOUND = object()
 
 
 def _validate_queue_name(queue_name: str) -> str:
-    if queue_name is None or len(queue_name.strip()) == 0:
+    if queue_name is None or queue_name == "":
         raise ValueError("Queue name must be provided")
 
     if len(queue_name.encode("utf-8")) > _MAX_QUEUE_NAME_LENGTH:
@@ -495,6 +532,32 @@ def _normalize_spawn_options(
 
     if idempotency_key is not None:
         normalized["idempotency_key"] = idempotency_key
+
+    return normalized
+
+
+def _normalize_queue_policy_options(
+    partition_lookahead: Optional[str] = None,
+    partition_lookback: Optional[str] = None,
+    cleanup_ttl: Optional[str] = None,
+    cleanup_limit: Optional[int] = None,
+    detach_mode: Optional[QueueDetachMode] = None,
+    detach_min_age: Optional[str] = None,
+) -> JsonObject:
+    normalized: JsonObject = {}
+
+    if partition_lookahead is not None:
+        normalized["partition_lookahead"] = partition_lookahead
+    if partition_lookback is not None:
+        normalized["partition_lookback"] = partition_lookback
+    if cleanup_ttl is not None:
+        normalized["cleanup_ttl"] = cleanup_ttl
+    if cleanup_limit is not None:
+        normalized["cleanup_limit"] = cleanup_limit
+    if detach_mode is not None:
+        normalized["detach_mode"] = detach_mode
+    if detach_min_age is not None:
+        normalized["detach_min_age"] = detach_min_age
 
     return normalized
 
@@ -1271,13 +1334,101 @@ class Absurd(_AbsurdBase):
             ),
         )
 
-    def create_queue(self, queue_name: Optional[str] = None) -> None:
-        """Create a queue (defaults to this client's queue)"""
+    def create_queue(
+        self,
+        queue_name: Optional[str] = None,
+        *,
+        storage_mode: QueueStorageMode = "unpartitioned",
+        partition_lookahead: Optional[str] = None,
+        partition_lookback: Optional[str] = None,
+        cleanup_ttl: Optional[str] = None,
+        cleanup_limit: Optional[int] = None,
+        detach_mode: Optional[QueueDetachMode] = None,
+        detach_min_age: Optional[str] = None,
+    ) -> None:
+        """Create a queue (defaults to this client's queue)."""
         queue = _validate_queue_name(
             queue_name if queue_name is not None else self._queue_name
         )
+
+        if storage_mode not in ("unpartitioned", "partitioned"):
+            raise ValueError("storage_mode must be 'unpartitioned' or 'partitioned'")
+
         cursor = self._conn.cursor()
-        cursor.execute("SELECT absurd.create_queue(%s)", (queue,))
+        if storage_mode == "unpartitioned":
+            cursor.execute("SELECT absurd.create_queue(%s)", (queue,))
+        else:
+            cursor.execute("SELECT absurd.create_queue(%s, %s)", (queue, storage_mode))
+
+        self.set_queue_policy(
+            queue_name=queue,
+            partition_lookahead=partition_lookahead,
+            partition_lookback=partition_lookback,
+            cleanup_ttl=cleanup_ttl,
+            cleanup_limit=cleanup_limit,
+            detach_mode=detach_mode,
+            detach_min_age=detach_min_age,
+        )
+
+    def set_queue_policy(
+        self,
+        queue_name: Optional[str] = None,
+        *,
+        partition_lookahead: Optional[str] = None,
+        partition_lookback: Optional[str] = None,
+        cleanup_ttl: Optional[str] = None,
+        cleanup_limit: Optional[int] = None,
+        detach_mode: Optional[QueueDetachMode] = None,
+        detach_min_age: Optional[str] = None,
+    ) -> None:
+        """Update queue maintenance policy fields."""
+        queue = _validate_queue_name(
+            queue_name if queue_name is not None else self._queue_name
+        )
+
+        policy = _normalize_queue_policy_options(
+            partition_lookahead=partition_lookahead,
+            partition_lookback=partition_lookback,
+            cleanup_ttl=cleanup_ttl,
+            cleanup_limit=cleanup_limit,
+            detach_mode=detach_mode,
+            detach_min_age=detach_min_age,
+        )
+
+        if not policy:
+            return
+
+        cursor = self._conn.cursor()
+        cursor.execute(
+            "SELECT absurd.set_queue_policy(%s, %s::jsonb)",
+            (queue, json.dumps(policy)),
+        )
+
+    def get_queue_policy(self, queue_name: Optional[str] = None) -> Optional[QueuePolicy]:
+        """Fetch queue maintenance policy fields."""
+        queue = _validate_queue_name(
+            queue_name if queue_name is not None else self._queue_name
+        )
+        cursor = self._conn.cursor(row_factory=dict_row)
+        cursor.execute(
+            """
+            SELECT
+              queue_name,
+              storage_mode,
+              partition_lookahead,
+              partition_lookback,
+              cleanup_ttl,
+              cleanup_limit,
+              detach_mode,
+              detach_min_age
+            FROM absurd.get_queue_policy(%s)
+            """,
+            (queue,),
+        )
+        row = cursor.fetchone()
+        if row is None:
+            return None
+        return cast(QueuePolicy, row)
 
     def drop_queue(self, queue_name: Optional[str] = None) -> None:
         """Drop a queue (defaults to this client's queue)"""
@@ -1613,15 +1764,107 @@ class AsyncAbsurd(_AbsurdBase):
         if self._conn is None and self._conn_string:
             self._conn = await AsyncConnection.connect(self._conn_string, autocommit=True)
 
-    async def create_queue(self, queue_name: Optional[str] = None) -> None:
-        """Create a queue (defaults to this client's queue)"""
+    async def create_queue(
+        self,
+        queue_name: Optional[str] = None,
+        *,
+        storage_mode: QueueStorageMode = "unpartitioned",
+        partition_lookahead: Optional[str] = None,
+        partition_lookback: Optional[str] = None,
+        cleanup_ttl: Optional[str] = None,
+        cleanup_limit: Optional[int] = None,
+        detach_mode: Optional[QueueDetachMode] = None,
+        detach_min_age: Optional[str] = None,
+    ) -> None:
+        """Create a queue (defaults to this client's queue)."""
         await self._ensure_connected()
         assert self._conn is not None
         queue = _validate_queue_name(
             queue_name if queue_name is not None else self._queue_name
         )
+
+        if storage_mode not in ("unpartitioned", "partitioned"):
+            raise ValueError("storage_mode must be 'unpartitioned' or 'partitioned'")
+
         cursor = self._conn.cursor()
-        await cursor.execute("SELECT absurd.create_queue(%s)", (queue,))
+        if storage_mode == "unpartitioned":
+            await cursor.execute("SELECT absurd.create_queue(%s)", (queue,))
+        else:
+            await cursor.execute("SELECT absurd.create_queue(%s, %s)", (queue, storage_mode))
+
+        await self.set_queue_policy(
+            queue_name=queue,
+            partition_lookahead=partition_lookahead,
+            partition_lookback=partition_lookback,
+            cleanup_ttl=cleanup_ttl,
+            cleanup_limit=cleanup_limit,
+            detach_mode=detach_mode,
+            detach_min_age=detach_min_age,
+        )
+
+    async def set_queue_policy(
+        self,
+        queue_name: Optional[str] = None,
+        *,
+        partition_lookahead: Optional[str] = None,
+        partition_lookback: Optional[str] = None,
+        cleanup_ttl: Optional[str] = None,
+        cleanup_limit: Optional[int] = None,
+        detach_mode: Optional[QueueDetachMode] = None,
+        detach_min_age: Optional[str] = None,
+    ) -> None:
+        """Update queue maintenance policy fields."""
+        await self._ensure_connected()
+        assert self._conn is not None
+        queue = _validate_queue_name(
+            queue_name if queue_name is not None else self._queue_name
+        )
+
+        policy = _normalize_queue_policy_options(
+            partition_lookahead=partition_lookahead,
+            partition_lookback=partition_lookback,
+            cleanup_ttl=cleanup_ttl,
+            cleanup_limit=cleanup_limit,
+            detach_mode=detach_mode,
+            detach_min_age=detach_min_age,
+        )
+
+        if not policy:
+            return
+
+        cursor = self._conn.cursor()
+        await cursor.execute(
+            "SELECT absurd.set_queue_policy(%s, %s::jsonb)",
+            (queue, json.dumps(policy)),
+        )
+
+    async def get_queue_policy(self, queue_name: Optional[str] = None) -> Optional[QueuePolicy]:
+        """Fetch queue maintenance policy fields."""
+        await self._ensure_connected()
+        assert self._conn is not None
+        queue = _validate_queue_name(
+            queue_name if queue_name is not None else self._queue_name
+        )
+        cursor = self._conn.cursor(row_factory=dict_row)
+        await cursor.execute(
+            """
+            SELECT
+              queue_name,
+              storage_mode,
+              partition_lookahead,
+              partition_lookback,
+              cleanup_ttl,
+              cleanup_limit,
+              detach_mode,
+              detach_min_age
+            FROM absurd.get_queue_policy(%s)
+            """,
+            (queue,),
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            return None
+        return cast(QueuePolicy, row)
 
     async def drop_queue(self, queue_name: Optional[str] = None) -> None:
         """Drop a queue (defaults to this client's queue)"""

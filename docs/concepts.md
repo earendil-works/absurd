@@ -106,6 +106,20 @@ Postgres tables:
 | `e_`   | Events — emitted signals |
 | `w_`   | Wait registrations — tasks waiting for events |
 
+Partitioned queues additionally have an `i_` table for idempotency key mapping.
+
+Each queue also carries a maintenance policy (stored in `absurd.queues`) for:
+
+- partition window provisioning (`partition_lookahead`, `partition_lookback`)
+- cleanup retention (`cleanup_ttl`, `cleanup_limit`)
+- optional detach planning (`detach_mode`, `detach_min_age`)
+
+`absurd.ensure_partitions()` and `absurd.cleanup_all_queues()` use this stored
+policy, which keeps runtime maintenance behavior consistent and inspectable.
+
+For queue storage mode trade-offs (default vs partitioned), partition lifecycle,
+and `pg_cron` maintenance patterns, see **[Storage](./storage.md)**.
+
 Queues let you scale workers independently and isolate different workloads.
 
 ## Workers

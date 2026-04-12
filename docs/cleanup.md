@@ -1,177 +1,104 @@
 # Cleanup and Retention
 
-Absurd keeps task history and event data in Postgres until you delete it.
+Absurd keeps task history and events in Postgres until you remove them.
 
-That is useful for debugging and inspection, but it also means you need a
-retention plan.  Otherwise old runs, checkpoints, waits, and events will simply
-accumulate forever.
+Cleanup works by setting a retention policy per queue which is then used by
+the maintenance commands.  It works like this:
 
-This page explains what cleanup removes, how to do it with
-[`absurdctl`](./tools/absurdctl.md), how to call the stored procedures directly, and
-how to automate retention with real cron jobs or with an Absurd task of your
-own.
+1. set retention policy per queue
+2. run policy-aware cleanup for all queues
+3. (for partitioned queues) combine row cleanup with partition lifecycle jobs (see below)
 
-## What Cleanup Removes
+This page gives the high-level operating model and links to command details.
 
-Absurd exposes two cleanup functions in SQL:
+## Cleanup Is Policy-Driven Per Queue
 
+Each queue has retention policy fields in `absurd.queues`, including:
+
+- `cleanup_ttl`
+- `cleanup_limit`
+
+You usually manage these with:
+
+```bash
+absurdctl queue-policy <queue> --cleanup-ttl '30 days' --cleanup-limit 1000
+```
+
+Once policy is set, cleanup tasks will honor it:
+
+```sql
+select * from absurd.cleanup_all_queues();
+```
+
+That function applies each queue's own policy, so different queues can keep
+history for different durations without separate scripts per queue.
+
+See also:
+
+- **[Storage](./storage.md)** for full policy fields (including partition policy)
+- **[absurdctl](./tools/absurdctl.md)** for queue-policy command options
+
+## Queue-Specific Cleanup
+
+Queue-targeted cleanup is available for ad-hoc use:
+
+- `absurdctl cleanup <queue> <ttl_days>`
 - `absurd.cleanup_tasks(queue, ttl_seconds, limit)`
 - `absurd.cleanup_events(queue, ttl_seconds, limit)`
 
-### Task cleanup
+## Partitioned Queue Lifecycle
 
-`absurd.cleanup_tasks` deletes **terminal** tasks older than the TTL:
+For partitioned queues, cleanup is only one piece of retention.
 
-- `completed`
-- `failed`
-- `cancelled`
+A complete lifecycle is:
 
-It also deletes their related:
+1. **Provision partitions ahead of time** with `absurd.ensure_partitions(...)`
+2. **Delete old rows** with policy-driven cleanup (`absurd.cleanup_all_queues(...)`)
+3. **Plan and execute detach/drop** for old empty partitions
 
-- wait registrations
-- checkpoints
-- runs
-- the task row itself
+Partition detach/drop is controlled by queue policy (`detach_mode`,
+`detach_min_age`) and is operationally separate from row deletion with the
+help of `DETACH PARTITION ... CONCURRENTLY`.
 
-It does **not** delete tasks that are still pending, running, or sleeping.
+For details, see:
 
-### Event cleanup
+- **[Storage](./storage.md#detaching-old-empty-partitions)**
+- **[absurdctl](./tools/absurdctl.md#partition-detach-operations)**
 
-`absurd.cleanup_events` deletes emitted events older than the TTL.
+## Cron-Driven Maintenance
 
-## The Easiest Option: `absurdctl cleanup`
-
-If you just want a simple retention job, use `absurdctl cleanup`.
-It cleans up both old terminal tasks and old events for the target queue.
+If `pg_cron` is available, let Absurd manage recurring maintenance jobs:
 
 ```bash
-absurdctl cleanup default 7
+# all queues
+absurdctl cron --enable
+
+# queue-scoped schedules
+absurdctl cron --enable --queue jobs \
+  --partition-schedule '*/15 * * * *' \
+  --cleanup-schedule '7 * * * *' \
+  --detach-schedule '29 * * * *'
 ```
 
-That means:
+Under the hood, this schedules:
 
-- queue: `default`
-- retention: `7` days
+- partition provisioning (`ensure_partitions`)
+- policy-driven cleanup (`cleanup_all_queues`)
+- detach planning (`schedule_detach_jobs`)
 
-A couple more examples:
-
-```bash
-absurdctl cleanup emails 30
-absurdctl cleanup reports 90
-```
-
-This is the best choice when:
-
-- you already have shell access to the machine
-- you want one simple command in cron
-- "days" is good enough as your retention unit
-
-## Direct SQL Cleanup
-
-If you want finer control, call the stored procedures directly.
-
-Unlike `absurdctl cleanup`, the SQL functions take TTL in **seconds** and let
-you control the **batch size** explicitly.
-
-```sql
-select absurd.cleanup_tasks('default', 7 * 86400, 1000);
-select absurd.cleanup_events('default', 7 * 86400, 1000);
-```
-
-The third argument is the maximum number of rows to delete in one call.
-
-This is useful when:
-
-- you want to run cleanup from your own application code
-- you want second-level retention control
-- you want to batch large deletions more carefully
-
-## Batching Large Cleanups
-
-If you have a lot of old data, it can be better to delete it in chunks.
-
-For example, in `psql`:
-
-```sql
-select absurd.cleanup_tasks('default', 30 * 86400, 1000);
-select absurd.cleanup_events('default', 30 * 86400, 1000);
-```
-
-Then run those repeatedly until they return `0`.
-
-A simple shell loop looks like this:
-
-```bash
-#!/usr/bin/env bash
-set -euo pipefail
-
-QUEUE="default"
-TTL_SECONDS=$((30 * 86400))
-LIMIT=1000
-
-while true; do
-  deleted_tasks=$(psql "$PGDATABASE" -Atqc \
-    "select absurd.cleanup_tasks('${QUEUE}', ${TTL_SECONDS}, ${LIMIT})")
-  deleted_events=$(psql "$PGDATABASE" -Atqc \
-    "select absurd.cleanup_events('${QUEUE}', ${TTL_SECONDS}, ${LIMIT})")
-
-  echo "deleted tasks=${deleted_tasks} events=${deleted_events}"
-
-  if [ "$deleted_tasks" = "0" ] && [ "$deleted_events" = "0" ]; then
-    break
-  fi
-
-done
-```
-
-That pattern is handy when you are cleaning up a backlog for the first time.
-
-## Real Cron Jobs with `absurdctl`
-
-For most deployments, the simplest production setup is an ordinary OS cron job.
-
-Run every day at 03:17:
-
-```cron
-PGDATABASE=postgresql://user:pass@db/app
-17 3 * * * absurdctl cleanup default 30 >> /var/log/absurd-cleanup.log 2>&1
-```
-
-For multiple queues, use a wrapper script:
-
-```bash
-#!/usr/bin/env bash
-set -euo pipefail
-
-export PGDATABASE="postgresql://user:pass@db/app"
-
-absurdctl cleanup default 30
-absurdctl cleanup emails 90
-absurdctl cleanup reports 14
-```
-
-And then schedule that script:
-
-```cron
-17 3 * * * /srv/app/bin/absurd-retention.sh >> /var/log/absurd-cleanup.log 2>&1
-```
-
-This is usually the right answer if you do not need cleanup itself to be a
-workflow.
+This gives one coherent database-native maintenance loop for both
+unpartitioned and partitioned queues.
 
 ## Using an Absurd Task for Cleanup
 
-If you want cleanup to be observable in Habitat, retryable, and recorded like
-other work, you can wrap it in an Absurd task.
+If you want cleanup to be visible in Habitat and retried like regular work,
+you can wrap cleanup calls in an Absurd task.
 
-A practical way to do that is:
+This is also a good option when you do not use `pg_cron`: you can trigger
+this task from any external scheduler (OS cron, systemd timer, CI, Kubernetes
+CronJob, etc.) or run a one-off manual trigger script.
 
-1. register a `cleanup-retention` task
-2. call the SQL cleanup functions inside steps using your normal Postgres client
-3. schedule that task from cron or another scheduler
-4. use a daily idempotency key so duplicate cron runs collapse into one task
-
-### Example: cleanup task
+### Example cleanup task
 
 === "TypeScript"
 
@@ -258,112 +185,9 @@ A practical way to do that is:
     app.start_worker()
     ```
 
-=== "Go"
+### Manual trigger script (no `pg_cron` required)
 
-    ```go
-    package main
-
-    import (
-        "context"
-        "database/sql"
-        "log"
-        "os"
-
-        "github.com/earendil-works/absurd/sdks/go/absurd"
-    )
-
-    type CleanupParams struct {
-        TargetQueue string `json:"target_queue"`
-        TTLDays     int    `json:"ttl_days"`
-        Limit       int    `json:"limit"`
-    }
-
-    type CleanupResult struct {
-        TargetQueue   string `json:"target_queue"`
-        TTLDays       int    `json:"ttl_days"`
-        DeletedTasks  int    `json:"deleted_tasks"`
-        DeletedEvents int    `json:"deleted_events"`
-    }
-
-    func main() {
-        db, err := sql.Open("postgres", os.Getenv("PGDATABASE"))
-        if err != nil {
-            log.Fatal(err)
-        }
-        defer db.Close()
-
-        app, err := absurd.New(absurd.Options{DB: db, QueueName: "ops"})
-        if err != nil {
-            log.Fatal(err)
-        }
-        defer app.Close()
-
-        app.MustRegister(absurd.Task(
-            "cleanup-retention",
-            func(
-                ctx context.Context,
-                params CleanupParams,
-            ) (CleanupResult, error) {
-                ttlSeconds := params.TTLDays * 86400
-                limit := params.Limit
-                if limit == 0 {
-                    limit = 1000
-                }
-
-                deletedTasks, err := absurd.Step(
-                    ctx,
-                    "cleanup-tasks",
-                    func(ctx context.Context) (int, error) {
-                        var deleted int
-                        err := db.QueryRowContext(
-                            ctx,
-                            "select absurd.cleanup_tasks($1, $2, $3)",
-                            params.TargetQueue,
-                            ttlSeconds,
-                            limit,
-                        ).Scan(&deleted)
-                        return deleted, err
-                    },
-                )
-                if err != nil {
-                    return CleanupResult{}, err
-                }
-
-                deletedEvents, err := absurd.Step(
-                    ctx,
-                    "cleanup-events",
-                    func(ctx context.Context) (int, error) {
-                        var deleted int
-                        err := db.QueryRowContext(
-                            ctx,
-                            "select absurd.cleanup_events($1, $2, $3)",
-                            params.TargetQueue,
-                            ttlSeconds,
-                            limit,
-                        ).Scan(&deleted)
-                        return deleted, err
-                    },
-                )
-                if err != nil {
-                    return CleanupResult{}, err
-                }
-
-                return CleanupResult{
-                    TargetQueue:   params.TargetQueue,
-                    TTLDays:       params.TTLDays,
-                    DeletedTasks:  deletedTasks,
-                    DeletedEvents: deletedEvents,
-                }, nil
-            },
-        ))
-
-        if err := app.RunWorker(context.Background()); err != nil {
-            log.Fatal(err)
-        }
-    }
-    ```
-
-And a small script that enqueues it once per day:
+You can enqueue one cleanup task per day with an idempotency key.
 
 === "TypeScript"
 
@@ -420,112 +244,24 @@ And a small script that enqueues it once per day:
     conn.close()
     ```
 
-=== "Go"
+Then schedule that script in your existing scheduler, for example:
 
-    ```go
-    package main
+```cron
+PGDATABASE=postgresql://user:pass@db/app
+17 3 * * * uv run /srv/app/bin/spawn-cleanup.py
+```
 
-    import (
-        "context"
-        "database/sql"
-        "fmt"
-        "log"
-        "os"
-        "time"
+This model gives a simple split of responsibilities:
 
-        "github.com/earendil-works/absurd/sdks/go/absurd"
-    )
+- external scheduler decides **when** cleanup should run
+- Absurd records **that** cleanup ran, including retries and step history
 
-    type CleanupParams struct {
-        TargetQueue string `json:"target_queue"`
-        TTLDays     int    `json:"ttl_days"`
-        Limit       int    `json:"limit"`
-    }
+## Practical Model by Storage Mode
 
-    func main() {
-        db, err := sql.Open("postgres", os.Getenv("PGDATABASE"))
-        if err != nil {
-            log.Fatal(err)
-        }
-        defer db.Close()
+- **Unpartitioned queues**: set `cleanup_ttl`/`cleanup_limit`, then run cron
+  cleanup (`cleanup_all_queues`).
+- **Partitioned queues**: same cleanup policy, plus partition provisioning and
+  detach/drop planning.
 
-        app, err := absurd.New(absurd.Options{DB: db, QueueName: "ops"})
-        if err != nil {
-            log.Fatal(err)
-        }
-        defer app.Close()
-
-        day := time.Now().UTC().Format("2006-01-02")
-
-        _, err = app.Spawn(
-            context.Background(),
-            "cleanup-retention",
-            CleanupParams{
-                TargetQueue: "default",
-                TTLDays:     30,
-                Limit:       1000,
-            },
-            absurd.SpawnOptions{
-                IdempotencyKey: fmt.Sprintf("cleanup:default:%s", day),
-            },
-        )
-        if err != nil {
-            log.Fatal(err)
-        }
-    }
-    ```
-
-Then run that enqueue script from cron:
-
-=== "TypeScript"
-
-    ```cron
-    PGDATABASE=postgresql://user:pass@db/app
-    17 3 * * * node /srv/app/bin/spawn-cleanup.js
-    ```
-
-=== "Python"
-
-    ```cron
-    PGDATABASE=postgresql://user:pass@db/app
-    17 3 * * * uv run /srv/app/bin/spawn-cleanup.py
-    ```
-
-=== "Go"
-
-    ```cron
-    PGDATABASE=postgresql://user:pass@db/app
-    17 3 * * * /srv/app/bin/spawn-cleanup
-    ```
-
-This example handles one cleanup batch per task run.  For steady-state daily
-retention that is often enough.  If you are draining a large backlog, prefer the
-SQL batching loop above or enqueue multiple cleanup tasks until the deleted
-counts reach zero.
-
-That gives you a nice hybrid:
-
-- cron decides **when** cleanup should happen
-- Absurd records **that** cleanup happened and retries it if needed
-
-## Which Approach Should You Pick?
-
-A good rule of thumb:
-
-- use **`absurdctl cleanup`** if you want the simplest operational setup
-- use the **SQL functions directly** if you need tighter batching or want to integrate with existing app/database tooling
-- use an **Absurd cleanup task** if you want retention work to be tracked and retried like any other task
-
-## Suggested Retention Strategy
-
-Different queues often deserve different TTLs.
-
-For example:
-
-- `default`: 30 days
-- `emails`: 90 days
-- `reports`: 14 days
-- agent/debug-heavy queues: longer, if you rely on history for investigation
-
-The important part is not choosing the perfect number on day one.  The important
-part is choosing **some** number and automating it.
+If you only need one-off deletion, `absurdctl cleanup` is fine.
+If you need stable production retention, use queue policy + Absurd-managed cron.

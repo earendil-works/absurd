@@ -340,9 +340,38 @@ Returns a `RetryTaskResult` with `task_id`, `run_id`, `attempt`, `created`.
 ## Queue Management
 
 ```python
+# Default storage mode is unpartitioned
 app.create_queue("emails")
+
+# Explicit partitioned queue
+app.create_queue("emails-part", storage_mode="partitioned")
+
+# Configure policy at creation time
+app.create_queue(
+    "retained",
+    storage_mode="partitioned",
+    cleanup_ttl="90 days",
+    cleanup_limit=2000,
+    partition_lookahead="42 days",
+    partition_lookback="2 days",
+    detach_mode="empty",
+    detach_min_age="30 days",
+)
+
+# Update/read policy later
+app.set_queue_policy("retained", cleanup_ttl="60 days")
+policy = app.get_queue_policy("retained")
+
 app.drop_queue("emails")
-queues = app.list_queues()  # ["default", "emails"]
+queues = app.list_queues()
+```
+
+Async client methods are identical, but `await`ed:
+
+```python
+await app.create_queue("emails-part", storage_mode="partitioned")
+await app.set_queue_policy("emails-part", cleanup_limit=500)
+policy = await app.get_queue_policy("emails-part")
 ```
 
 ## Starting a Worker

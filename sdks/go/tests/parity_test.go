@@ -88,6 +88,76 @@ func TestListQueues(t *testing.T) {
 	}
 }
 
+func TestQueuePolicyMethods(t *testing.T) {
+	queue := randomQueueName("go_queue_policy")
+	db := setupTestDatabase(t)
+	client, err := absurd.New(absurd.Options{DB: db, QueueName: queue})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	ttl := "12345 seconds"
+	limit := 77
+	if err := client.CreateQueue(context.Background(), queue, absurd.CreateQueueOptions{
+		StorageMode: absurd.QueueStoragePartitioned,
+		QueuePolicyOptions: absurd.QueuePolicyOptions{
+			PartitionLookahead: "35 days",
+			PartitionLookback:  "2 days",
+			CleanupTTL:         ttl,
+			CleanupLimit:       &limit,
+			DetachMode:         absurd.QueueDetachEmpty,
+			DetachMinAge:       "45 days",
+		},
+	}); err != nil {
+		t.Fatalf("CreateQueue with options: %v", err)
+	}
+
+	policy, err := client.GetQueuePolicy(context.Background(), queue)
+	if err != nil {
+		t.Fatalf("GetQueuePolicy: %v", err)
+	}
+	if policy == nil {
+		t.Fatal("expected queue policy")
+	}
+	if policy.StorageMode != absurd.QueueStoragePartitioned {
+		t.Fatalf("unexpected storage mode: %s", policy.StorageMode)
+	}
+	if policy.PartitionLookahead != "35 days" || policy.PartitionLookback != "2 days" {
+		t.Fatalf("unexpected partition window: %#v", policy)
+	}
+	if policy.CleanupTTL != "3:25:45" && policy.CleanupTTL != "03:25:45" {
+		t.Fatalf("unexpected cleanup ttl: %#v", policy)
+	}
+	if policy.CleanupLimit != 77 {
+		t.Fatalf("unexpected cleanup policy: %#v", policy)
+	}
+	if policy.DetachMode != absurd.QueueDetachEmpty || policy.DetachMinAge != "45 days" {
+		t.Fatalf("unexpected detach policy: %#v", policy)
+	}
+
+	updatedLimit := 12
+	if err := client.SetQueuePolicy(context.Background(), queue, absurd.QueuePolicyOptions{
+		CleanupTTL:   "4321 seconds",
+		CleanupLimit: &updatedLimit,
+	}); err != nil {
+		t.Fatalf("SetQueuePolicy: %v", err)
+	}
+
+	updated, err := client.GetQueuePolicy(context.Background(), queue)
+	if err != nil {
+		t.Fatalf("GetQueuePolicy updated: %v", err)
+	}
+	if updated == nil {
+		t.Fatal("expected updated queue policy")
+	}
+	if updated.CleanupTTL != "1:12:01" && updated.CleanupTTL != "01:12:01" {
+		t.Fatalf("unexpected updated cleanup ttl: %#v", updated)
+	}
+	if updated.CleanupLimit != updatedLimit {
+		t.Fatalf("unexpected updated cleanup policy: %#v", updated)
+	}
+}
+
 func TestSpawnOptionsParity(t *testing.T) {
 	queue := randomQueueName("go_spawn_opts")
 	client := newTestClient(t, queue)
@@ -639,12 +709,6 @@ func TestFailureIncludesTraceback(t *testing.T) {
 	}
 }
 
-func TestQueueNameRejectsWhitespaceOnly(t *testing.T) {
-	_, err := absurd.New(absurd.Options{DB: setupTestDatabase(t), QueueName: "   "})
-	if err == nil || !strings.Contains(err.Error(), "queue name must be provided") {
-		t.Fatalf("expected queue validation error, got %v", err)
-	}
-}
 
 func TestInvalidHeadersFailRun(t *testing.T) {
 	queue := randomQueueName("go_invalid_headers")

@@ -57,7 +57,7 @@ def queue_relation(prefix, queue_name):
 
 def validate_queue_name(value):
     """Validate queue names used in dynamic table/index names."""
-    if value is None or len(value.strip()) == 0:
+    if value is None or value == "":
         print("Error: Queue name must be provided.", file=sys.stderr)
         sys.exit(1)
 
@@ -69,6 +69,66 @@ def validate_queue_name(value):
         sys.exit(1)
 
     return value
+
+
+def normalize_partition_table_name(value):
+    """Normalize a partition table reference to an absurd-schema table name."""
+    if value is None:
+        print("Error: Partition table must be provided.", file=sys.stderr)
+        sys.exit(1)
+
+    partition_table = value.strip()
+    if not partition_table:
+        print("Error: Partition table must be provided.", file=sys.stderr)
+        sys.exit(1)
+
+    lower_partition_table = partition_table.lower()
+    if lower_partition_table.startswith("absurd."):
+        partition_table = partition_table[len("absurd.") :]
+    elif lower_partition_table.startswith('"absurd".'):
+        partition_table = partition_table[len('"absurd".') :]
+
+    if partition_table.startswith('"') and partition_table.endswith('"'):
+        partition_table = partition_table[1:-1].replace('""', '"')
+
+    if not partition_table:
+        print("Error: Partition table must be provided.", file=sys.stderr)
+        sys.exit(1)
+
+    return partition_table
+
+
+def build_drop_partition_sql(partition_table):
+    return f"drop table if exists absurd.{quote_ident(partition_table)}"
+
+
+def build_detach_partition_sql(config, parent_table, partition_table):
+    has_default = run_psql(
+        config,
+        """
+        select exists (
+          select 1
+          from pg_class parent
+          join pg_namespace pn on pn.oid = parent.relnamespace
+          join pg_inherits inh on inh.inhparent = parent.oid
+          join pg_class child on child.oid = inh.inhrelid
+          where pn.nspname = 'absurd'
+            and parent.relname = :'parent_table'
+            and pg_get_expr(child.relpartbound, child.oid) = 'DEFAULT'
+        )
+        """,
+        tuples_only=True,
+        no_align=True,
+        variables={"parent_table": parent_table},
+    ).strip()
+
+    sql = (
+        f"alter table absurd.{quote_ident(parent_table)} "
+        f"detach partition absurd.{quote_ident(partition_table)}"
+    )
+    if has_default != "t":
+        sql += " concurrently"
+    return sql
 
 
 class RemoteMigrationDiscoveryError(Exception):
@@ -895,9 +955,22 @@ def cmd_create_queue(args):
     """Create a new Absurd queue."""
     usage = "usage: %prog create-queue [options] QUEUE_NAME"
     parser = build_command_parser(usage)
+    parser.add_option(
+        "--storage-mode",
+        dest="storage_mode",
+        type="choice",
+        choices=["unpartitioned", "partitioned"],
+        default="unpartitioned",
+        help="Queue storage mode (default: unpartitioned)",
+    )
 
     options, args = parse_args_with_help(
-        parser, args, ["absurdctl create-queue myqueue"]
+        parser,
+        args,
+        [
+            "absurdctl create-queue myqueue",
+            "absurdctl create-queue jobs --storage-mode partitioned",
+        ],
     )
 
     if len(args) != 1:
@@ -910,12 +983,27 @@ def cmd_create_queue(args):
 
     print_verbose_configuration(
         options.verbose,
-        [("Queue", queue_name)] + get_common_db_details(config),
+        [("Queue", queue_name), ("Storage mode", options.storage_mode)]
+        + get_common_db_details(config),
     )
     if options.verbose:
         print(f"Creating queue '{queue_name}'...")
 
-    run_psql(config, "SELECT absurd.create_queue(:'queue_name');", variables={"queue_name": queue_name})
+    if options.storage_mode == "unpartitioned":
+        run_psql(
+            config,
+            "SELECT absurd.create_queue(:'queue_name');",
+            variables={"queue_name": queue_name},
+        )
+    else:
+        run_psql(
+            config,
+            "SELECT absurd.create_queue(:'queue_name', :'storage_mode');",
+            variables={
+                "queue_name": queue_name,
+                "storage_mode": options.storage_mode,
+            },
+        )
     print(f"Queue '{queue_name}' created successfully")
 
 
@@ -983,6 +1071,502 @@ def cmd_list_queues(args):
     ).strip()
     if result:
         print(result)
+
+
+def _fetch_queue_policy(config, queue_name):
+    rows = run_psql_csv(
+        config,
+        """
+        SELECT
+          queue_name,
+          storage_mode,
+          default_partition,
+          partition_lookahead::text,
+          partition_lookback::text,
+          cleanup_ttl::text,
+          cleanup_limit,
+          detach_mode,
+          detach_min_age::text
+        FROM absurd.get_queue_policy(:'queue_name')
+        """,
+        variables={"queue_name": queue_name},
+    )
+    if not rows:
+        return None
+
+    parts = rows[0]
+    if len(parts) < 9:
+        return None
+
+    return {
+        "queue_name": parts[0],
+        "storage_mode": parts[1],
+        "default_partition": parts[2],
+        "partition_lookahead": parts[3],
+        "partition_lookback": parts[4],
+        "cleanup_ttl": parts[5],
+        "cleanup_limit": parts[6],
+        "detach_mode": parts[7],
+        "detach_min_age": parts[8],
+    }
+
+
+def _print_queue_policy(policy):
+    print(f"Queue policy for '{policy['queue_name']}':")
+    print(f"  storage_mode: {policy['storage_mode']}")
+    print(f"  default_partition: {policy['default_partition']}")
+    print(f"  partition_lookahead: {policy['partition_lookahead']}")
+    print(f"  partition_lookback: {policy['partition_lookback']}")
+    print(f"  cleanup_ttl: {policy['cleanup_ttl']}")
+    print(f"  cleanup_limit: {policy['cleanup_limit']}")
+    print(f"  detach_mode: {policy['detach_mode']}")
+    print(f"  detach_min_age: {policy['detach_min_age']}")
+
+
+def cmd_queue_policy(args):
+    """Get or update queue maintenance policy."""
+    usage = "usage: %prog queue-policy [options] QUEUE_NAME"
+    parser = build_command_parser(usage)
+    parser.add_option(
+        "--default-partition",
+        dest="default_partition",
+        type="choice",
+        choices=["enabled", "disabled"],
+        metavar="MODE",
+        help="Default partition mode for partitioned queues (enabled or disabled)",
+    )
+    parser.add_option(
+        "--partition-lookahead",
+        dest="partition_lookahead",
+        metavar="INTERVAL",
+        help="Policy partition lookahead interval (for example: '28 days')",
+    )
+    parser.add_option(
+        "--partition-lookback",
+        dest="partition_lookback",
+        metavar="INTERVAL",
+        help="Policy partition lookback interval (for example: '1 day')",
+    )
+    parser.add_option(
+        "--cleanup-ttl",
+        dest="cleanup_ttl",
+        metavar="INTERVAL",
+        help="Cleanup retention interval (for example: '30 days')",
+    )
+    parser.add_option(
+        "--cleanup-limit",
+        dest="cleanup_limit",
+        type="int",
+        metavar="N",
+        help="Cleanup batch size",
+    )
+    parser.add_option(
+        "--detach-mode",
+        dest="detach_mode",
+        type="choice",
+        choices=["none", "empty"],
+        metavar="MODE",
+        help="Detach mode (none or empty)",
+    )
+    parser.add_option(
+        "--detach-min-age",
+        dest="detach_min_age",
+        metavar="INTERVAL",
+        help="Minimum partition age before detach consideration",
+    )
+
+    examples = [
+        "absurdctl queue-policy myqueue",
+        "absurdctl queue-policy myqueue --cleanup-ttl '30 days' --cleanup-limit 2000",
+        "absurdctl queue-policy myqueue --default-partition disabled",
+        "absurdctl queue-policy myqueue --partition-lookahead '42 days' --partition-lookback '2 days'",
+        "absurdctl queue-policy myqueue --detach-mode empty --detach-min-age '30 days'",
+    ]
+
+    options, args = parse_args_with_help(parser, args, examples)
+
+    if len(args) != 1:
+        print("Error: Missing required argument QUEUE_NAME", file=sys.stderr)
+        parser.print_help()
+        sys.exit(1)
+
+    queue_name = validate_queue_name(args[0])
+    config = config_from_options(options)
+    ensure_queue_exists(config, queue_name)
+
+    policy_payload = {}
+    if options.default_partition is not None:
+        policy_payload["default_partition"] = options.default_partition
+    if options.partition_lookahead is not None:
+        policy_payload["partition_lookahead"] = options.partition_lookahead
+    if options.partition_lookback is not None:
+        policy_payload["partition_lookback"] = options.partition_lookback
+    if options.cleanup_ttl is not None:
+        policy_payload["cleanup_ttl"] = options.cleanup_ttl
+    if options.cleanup_limit is not None:
+        if options.cleanup_limit < 1:
+            print("Error: --cleanup-limit must be at least 1", file=sys.stderr)
+            sys.exit(1)
+        policy_payload["cleanup_limit"] = options.cleanup_limit
+    if options.detach_mode is not None:
+        policy_payload["detach_mode"] = options.detach_mode
+    if options.detach_min_age is not None:
+        policy_payload["detach_min_age"] = options.detach_min_age
+
+    print_verbose_configuration(
+        options.verbose,
+        [("Queue", queue_name)] + get_common_db_details(config),
+    )
+
+    if policy_payload:
+        if options.verbose:
+            print(f"Updating queue policy for '{queue_name}'...")
+        run_psql(
+            config,
+            "SELECT absurd.set_queue_policy(:'queue_name', :'policy_json'::jsonb);",
+            variables={
+                "queue_name": queue_name,
+                "policy_json": json.dumps(policy_payload),
+            },
+        )
+
+    policy = _fetch_queue_policy(config, queue_name)
+    if policy is None:
+        print(f"Queue '{queue_name}' does not have a policy record", file=sys.stderr)
+        sys.exit(1)
+
+    _print_queue_policy(policy)
+
+
+def cmd_cron(args):
+    """Enable or disable Absurd-managed pg_cron jobs."""
+    usage = "usage: %prog cron [options]"
+    parser = build_command_parser(usage)
+    parser.add_option(
+        "--enable",
+        dest="enable",
+        action="store_true",
+        default=False,
+        help="Enable Absurd cron jobs",
+    )
+    parser.add_option(
+        "--disable",
+        dest="disable",
+        action="store_true",
+        default=False,
+        help="Disable Absurd cron jobs",
+    )
+    parser.add_option(
+        "-q",
+        "--queue",
+        dest="queue",
+        metavar="NAME",
+        help="Queue scope (omit for global/all queues scope)",
+    )
+    parser.add_option(
+        "--partition-schedule",
+        dest="partition_schedule",
+        default="5 * * * *",
+        metavar="CRON",
+        help="Cron schedule for partition provisioning (default: '5 * * * *')",
+    )
+    parser.add_option(
+        "--cleanup-schedule",
+        dest="cleanup_schedule",
+        default="17 * * * *",
+        metavar="CRON",
+        help="Cron schedule for cleanup maintenance (default: '17 * * * *')",
+    )
+    parser.add_option(
+        "--detach-schedule",
+        dest="detach_schedule",
+        default="29 * * * *",
+        metavar="CRON",
+        help="Cron schedule for detach planning (default: '29 * * * *')",
+    )
+
+    examples = [
+        "absurdctl cron --enable",
+        "absurdctl cron --enable --queue myqueue",
+        "absurdctl cron --enable --queue myqueue --partition-schedule '*/15 * * * *'",
+        "absurdctl cron --disable",
+        "absurdctl cron --disable --queue myqueue",
+    ]
+
+    options, args = parse_args_with_help(parser, args, examples)
+
+    if args:
+        print("Error: cron does not accept positional arguments", file=sys.stderr)
+        parser.print_help()
+        sys.exit(1)
+
+    if options.enable == options.disable:
+        print("Error: Provide exactly one of --enable or --disable", file=sys.stderr)
+        parser.print_help()
+        sys.exit(1)
+
+    config = config_from_options(options)
+
+    if options.queue is not None:
+        options.queue = validate_queue_name(options.queue)
+
+    print_verbose_configuration(
+        options.verbose,
+        [
+            ("Action", "enable" if options.enable else "disable"),
+            ("Queue", options.queue or "all"),
+            ("Partition schedule", options.partition_schedule),
+            ("Cleanup schedule", options.cleanup_schedule),
+            ("Detach schedule", options.detach_schedule),
+        ]
+        + get_common_db_details(config),
+    )
+
+    if options.enable:
+        if options.queue is None:
+            query = """
+                SELECT job_name, job_id
+                FROM absurd.enable_cron(
+                  null::text,
+                  :'partition_schedule',
+                  :'cleanup_schedule',
+                  :'detach_schedule'
+                )
+                ORDER BY job_name
+            """
+            variables = {
+                "partition_schedule": options.partition_schedule,
+                "cleanup_schedule": options.cleanup_schedule,
+                "detach_schedule": options.detach_schedule,
+            }
+        else:
+            query = """
+                SELECT job_name, job_id
+                FROM absurd.enable_cron(
+                  :'queue_name',
+                  :'partition_schedule',
+                  :'cleanup_schedule',
+                  :'detach_schedule'
+                )
+                ORDER BY job_name
+            """
+            variables = {
+                "queue_name": options.queue,
+                "partition_schedule": options.partition_schedule,
+                "cleanup_schedule": options.cleanup_schedule,
+                "detach_schedule": options.detach_schedule,
+            }
+
+        rows = run_psql_csv(config, query, variables=variables)
+        if rows:
+            print("Enabled cron jobs:")
+            for row in rows:
+                if len(row) >= 2:
+                    print(f"  {row[0]} (job_id={row[1]})")
+        else:
+            print("No cron jobs were created")
+    else:
+        if options.queue is None:
+            query = """
+                SELECT job_name, job_id
+                FROM absurd.disable_cron(null::text)
+                ORDER BY job_name
+            """
+            variables = None
+        else:
+            query = """
+                SELECT job_name, job_id
+                FROM absurd.disable_cron(:'queue_name')
+                ORDER BY job_name
+            """
+            variables = {"queue_name": options.queue}
+
+        rows = run_psql_csv(config, query, variables=variables)
+        if rows:
+            print("Disabled cron jobs:")
+            for row in rows:
+                if len(row) >= 2:
+                    print(f"  {row[0]} (job_id={row[1]})")
+        else:
+            print("No matching cron jobs found")
+
+
+def cmd_list_detach_candidates(args):
+    """List partition detach candidates."""
+    usage = "usage: %prog list-detach-candidates [options]"
+    parser = build_command_parser(usage)
+    parser.add_option(
+        "-q",
+        "--queue",
+        dest="queue",
+        metavar="NAME",
+        help="Queue scope (optional)",
+    )
+    parser.add_option(
+        "--show-sql",
+        dest="show_sql",
+        action="store_true",
+        default=False,
+        help="Include raw detach/drop SQL in output",
+    )
+
+    examples = [
+        "absurdctl list-detach-candidates",
+        "absurdctl list-detach-candidates --queue myqueue",
+        "absurdctl list-detach-candidates --show-sql",
+    ]
+
+    options, args = parse_args_with_help(parser, args, examples)
+
+    if args:
+        print("Error: list-detach-candidates does not accept positional arguments", file=sys.stderr)
+        parser.print_help()
+        sys.exit(1)
+
+    config = config_from_options(options)
+    variables = None
+    if options.queue is not None:
+        options.queue = validate_queue_name(options.queue)
+        variables = {"queue_name": options.queue}
+        query = """
+            SELECT
+              queue_name,
+              parent_table,
+              partition_table
+            FROM absurd.list_detach_candidates(:'queue_name')
+            ORDER BY queue_name, parent_table, partition_table
+        """
+    else:
+        query = """
+            SELECT
+              queue_name,
+              parent_table,
+              partition_table
+            FROM absurd.list_detach_candidates(null::text)
+            ORDER BY queue_name, parent_table, partition_table
+        """
+
+    rows = run_psql_csv(config, query, variables=variables)
+    if not rows:
+        print("No detach candidates found")
+        return
+
+    if not options.show_sql:
+        print("partition\tqueue\tparent")
+        for row in rows:
+            if len(row) >= 3:
+                print(f"{row[2]}\t{row[0]}\t{row[1]}")
+        return
+
+    for row in rows:
+        if len(row) < 3:
+            continue
+        detach_sql = build_detach_partition_sql(config, row[1], row[2])
+        drop_sql = build_drop_partition_sql(row[2])
+        print(f"  queue: {row[0]}")
+        print(f"  parent: {row[1]}")
+        print(f"  partition: {row[2]}")
+        print(f"  detach_sql: {detach_sql}")
+        print(f"  drop_sql: {drop_sql}")
+        print()
+
+
+def cmd_detach_candidate(args):
+    """Detach a specific candidate partition manually."""
+    usage = "usage: %prog detach-candidate [options] PARTITION_TABLE"
+    parser = build_command_parser(usage)
+    parser.add_option(
+        "-q",
+        "--queue",
+        dest="queue",
+        metavar="NAME",
+        help="Queue scope (optional)",
+    )
+    parser.add_option(
+        "--drop",
+        dest="drop",
+        action="store_true",
+        default=False,
+        help="Attempt immediate drop after detach via absurd.drop_detached_partition",
+    )
+
+    examples = [
+        "absurdctl detach-candidate t_myqueue_2414",
+        "absurdctl detach-candidate --queue myqueue t_myqueue_2414 --drop",
+    ]
+
+    options, args = parse_args_with_help(parser, args, examples)
+
+    if len(args) != 1:
+        print("Error: Missing required argument PARTITION_TABLE", file=sys.stderr)
+        parser.print_help()
+        sys.exit(1)
+
+    partition_table = normalize_partition_table_name(args[0])
+
+    config = config_from_options(options)
+    variables = {"partition_table": partition_table}
+    if options.queue is not None:
+        options.queue = validate_queue_name(options.queue)
+        variables["queue_name"] = options.queue
+        query = """
+            SELECT
+              queue_name,
+              parent_table,
+              partition_table
+            FROM absurd.list_detach_candidates(:'queue_name')
+            WHERE partition_table = :'partition_table'
+            ORDER BY queue_name, parent_table, partition_table
+        """
+    else:
+        query = """
+            SELECT
+              queue_name,
+              parent_table,
+              partition_table
+            FROM absurd.list_detach_candidates(null::text)
+            WHERE partition_table = :'partition_table'
+            ORDER BY queue_name, parent_table, partition_table
+        """
+
+    rows = run_psql_csv(config, query, variables=variables)
+    if not rows:
+        print(f"No detach candidate found for partition {partition_table}", file=sys.stderr)
+        sys.exit(1)
+
+    if len(rows) > 1:
+        print(
+            "Error: Partition table is ambiguous across queues; rerun with --queue",
+            file=sys.stderr,
+        )
+        for row in rows:
+            if len(row) >= 3:
+                print(f"  {row[0]} {row[1]} {row[2]}", file=sys.stderr)
+        sys.exit(1)
+
+    row = rows[0]
+    queue_name, parent_table, partition_table = row
+    detach_sql = build_detach_partition_sql(config, parent_table, partition_table)
+
+    print(f"Detaching partition {partition_table}:")
+    print(f"  queue: {queue_name}")
+    print(f"  parent: {parent_table}")
+    print(f"  partition: {partition_table}")
+    run_psql(config, detach_sql + ";")
+    print("Detach succeeded")
+
+    if options.drop:
+        dropped = run_psql(
+            config,
+            "SELECT absurd.drop_detached_partition(:'partition_table');",
+            tuples_only=True,
+            no_align=True,
+            variables={"partition_table": partition_table},
+        )
+        if dropped.strip() == "t":
+            print("Drop succeeded")
+        else:
+            print("Partition detached but not dropped yet")
 
 
 def cmd_init(args):
@@ -1601,7 +2185,7 @@ def cmd_list_tasks(args):
         print("No queues found in the database", file=sys.stderr)
         sys.exit(0)
 
-    queues = [q for q in queues_result.strip().split("\n") if q]
+    queues = [q for q in queues_result.splitlines() if q != ""]
 
     # Filter to specific queue if requested
     if options.queue:
@@ -1862,7 +2446,7 @@ def cmd_dump_task(args):
         print("No queues found in the database", file=sys.stderr)
         sys.exit(1)
 
-    queues = [q for q in queues_result.strip().split("\n") if q]
+    queues = [q for q in queues_result.splitlines() if q != ""]
 
     # Find which queue contains the task/run
     target_queue = None
@@ -2339,6 +2923,10 @@ Commands:
   schema-version  Show the recorded Absurd schema version
   cleanup         Clean up old completed, failed, or cancelled tasks and events
   create-queue    Create a new queue
+  queue-policy    Get or update queue maintenance policy
+  cron            Enable or disable Absurd-managed pg_cron jobs
+  list-detach-candidates  List eligible partition detach candidates
+  detach-candidate        Detach one candidate partition manually
   drop-queue      Drop an existing queue
   list-queues     List all existing queues
   spawn-task      Spawn a new task
@@ -2366,7 +2954,11 @@ Examples:
   absurdctl migrate
   absurdctl schema-version
   absurdctl cleanup myqueue 30
-  absurdctl create-queue myqueue
+  absurdctl create-queue myqueue --storage-mode partitioned
+  absurdctl queue-policy myqueue --cleanup-ttl '7 days'
+  absurdctl cron --enable --queue myqueue
+  absurdctl list-detach-candidates --queue myqueue
+  absurdctl detach-candidate --queue myqueue t_myqueue_2414 --drop
   absurdctl drop-queue myqueue --yes
   absurdctl list-queues
   absurdctl spawn-task my-task -P foo=bar -P count:=42
@@ -2396,6 +2988,14 @@ def main():
         cmd_schema_version(args)
     elif command == "create-queue":
         cmd_create_queue(args)
+    elif command == "queue-policy":
+        cmd_queue_policy(args)
+    elif command == "cron":
+        cmd_cron(args)
+    elif command == "list-detach-candidates":
+        cmd_list_detach_candidates(args)
+    elif command == "detach-candidate":
+        cmd_detach_candidate(args)
     elif command == "drop-queue":
         cmd_drop_queue(args)
     elif command == "list-queues":

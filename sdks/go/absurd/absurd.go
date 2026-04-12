@@ -102,6 +102,48 @@ type SpawnOptions struct {
 	IdempotencyKey string
 }
 
+type QueueStorageMode string
+
+const (
+	QueueStorageUnpartitioned QueueStorageMode = "unpartitioned"
+	QueueStoragePartitioned   QueueStorageMode = "partitioned"
+)
+
+type QueueDetachMode string
+
+const (
+	QueueDetachNone  QueueDetachMode = "none"
+	QueueDetachEmpty QueueDetachMode = "empty"
+)
+
+// QueuePolicyOptions configure queue maintenance policy updates.
+type QueuePolicyOptions struct {
+	PartitionLookahead string
+	PartitionLookback  string
+	CleanupTTL         string
+	CleanupLimit       *int
+	DetachMode         QueueDetachMode
+	DetachMinAge       string
+}
+
+// CreateQueueOptions configure queue creation mode and policy.
+type CreateQueueOptions struct {
+	StorageMode QueueStorageMode
+	QueuePolicyOptions
+}
+
+// QueuePolicy is the persisted maintenance policy metadata for a queue.
+type QueuePolicy struct {
+	QueueName          string
+	StorageMode        QueueStorageMode
+	PartitionLookahead string
+	PartitionLookback  string
+	CleanupTTL         string
+	CleanupLimit       int
+	DetachMode         QueueDetachMode
+	DetachMinAge       string
+}
+
 // RetryTaskOptions configure retrying a failed task.
 type RetryTaskOptions struct {
 	MaxAttempts int
@@ -381,7 +423,7 @@ func New(options Options) (*Client, error) {
 	if options.DB != nil {
 		db = options.DB
 	} else {
-		driverName := strings.TrimSpace(options.DriverName)
+		driverName := options.DriverName
 		if driverName == "" {
 			driverName = defaultDriverName
 		}
@@ -441,13 +483,105 @@ func (c *Client) MustRegister(task taskRegistration) {
 	}
 }
 
-func (c *Client) CreateQueue(ctx context.Context, queueName string) error {
+func (c *Client) CreateQueue(ctx context.Context, queueName string, options ...CreateQueueOptions) error {
+	if queueName == "" {
+		queueName = c.queueName
+	}
 	validated, err := validateQueueName(queueName)
 	if err != nil {
 		return err
 	}
-	_, err = c.db.ExecContext(ctx, `SELECT absurd.create_queue($1)`, validated)
+
+	opts := first(options)
+	storageMode := string(opts.StorageMode)
+	if storageMode == "" {
+		storageMode = string(QueueStorageUnpartitioned)
+	}
+	if storageMode != string(QueueStorageUnpartitioned) && storageMode != string(QueueStoragePartitioned) {
+		return fmt.Errorf("invalid queue storage mode: %s", storageMode)
+	}
+
+	if storageMode == string(QueueStorageUnpartitioned) {
+		if _, err := c.db.ExecContext(ctx, `SELECT absurd.create_queue($1)`, validated); err != nil {
+			return err
+		}
+	} else {
+		if _, err := c.db.ExecContext(ctx, `SELECT absurd.create_queue($1, $2)`, validated, storageMode); err != nil {
+			return err
+		}
+	}
+
+	return c.SetQueuePolicy(ctx, validated, opts.QueuePolicyOptions)
+}
+
+func (c *Client) SetQueuePolicy(ctx context.Context, queueName string, options QueuePolicyOptions) error {
+	if queueName == "" {
+		queueName = c.queueName
+	}
+	validated, err := validateQueueName(queueName)
+	if err != nil {
+		return err
+	}
+
+	payload, err := queuePolicyPayload(options)
+	if err != nil {
+		return err
+	}
+	if len(payload) == 0 {
+		return nil
+	}
+
+	raw, err := marshalJSON(payload)
+	if err != nil {
+		return err
+	}
+
+	_, err = c.db.ExecContext(ctx, `SELECT absurd.set_queue_policy($1, $2::jsonb)`, validated, string(raw))
 	return err
+}
+
+func (c *Client) GetQueuePolicy(ctx context.Context, queueName string) (*QueuePolicy, error) {
+	if queueName == "" {
+		queueName = c.queueName
+	}
+	validated, err := validateQueueName(queueName)
+	if err != nil {
+		return nil, err
+	}
+
+	row := c.db.QueryRowContext(ctx, `SELECT
+      queue_name,
+      storage_mode,
+      partition_lookahead::text,
+      partition_lookback::text,
+      cleanup_ttl::text,
+      cleanup_limit,
+      detach_mode,
+      detach_min_age::text
+    FROM absurd.get_queue_policy($1)`, validated)
+
+	var policy QueuePolicy
+	var storageMode string
+	var detachMode string
+	if err := row.Scan(
+		&policy.QueueName,
+		&storageMode,
+		&policy.PartitionLookahead,
+		&policy.PartitionLookback,
+		&policy.CleanupTTL,
+		&policy.CleanupLimit,
+		&detachMode,
+		&policy.DetachMinAge,
+	); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	policy.StorageMode = QueueStorageMode(storageMode)
+	policy.DetachMode = QueueDetachMode(detachMode)
+	return &policy, nil
 }
 
 func (c *Client) DropQueue(ctx context.Context, queueName string) error {
@@ -725,7 +859,7 @@ func failTaskRunWithTraceback(ctx context.Context, db *sql.DB, queueName string,
 // Utility functions
 
 func validateQueueName(queueName string) (string, error) {
-	if strings.TrimSpace(queueName) == "" {
+	if queueName == "" {
 		return "", fmt.Errorf("queue name must be provided")
 	}
 	if len([]byte(queueName)) > maxQueueNameLength {
@@ -790,6 +924,29 @@ func first[T any](values []T) T {
 	default:
 		panic(fmt.Sprintf("absurd: expected 0 or 1 optional arguments, got %d", len(values)))
 	}
+}
+
+func queuePolicyPayload(options QueuePolicyOptions) (map[string]any, error) {
+	payload := map[string]any{}
+	if options.PartitionLookahead != "" {
+		payload["partition_lookahead"] = options.PartitionLookahead
+	}
+	if options.PartitionLookback != "" {
+		payload["partition_lookback"] = options.PartitionLookback
+	}
+	if options.CleanupTTL != "" {
+		payload["cleanup_ttl"] = options.CleanupTTL
+	}
+	if options.CleanupLimit != nil {
+		payload["cleanup_limit"] = *options.CleanupLimit
+	}
+	if options.DetachMode != "" {
+		payload["detach_mode"] = string(options.DetachMode)
+	}
+	if options.DetachMinAge != "" {
+		payload["detach_min_age"] = options.DetachMinAge
+	}
+	return payload, nil
 }
 
 func orString(value, fallback string) string {

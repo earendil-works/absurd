@@ -191,6 +191,7 @@ them race-free.
 
 - **[Quickstart](./quickstart.md)** — install the schema, create a queue, run your first task
 - **[Concepts](./concepts.md)** — what durable execution is, plus tasks, steps, runs, events, and retry semantics
+- **[Storage](./storage.md)** — choose unpartitioned vs partitioned queues and automate partition lifecycle
 - **[Cleanup and Retention](./cleanup.md)** — set retention policies and automate cleanup with SQL, `absurdctl`, or cron
 - **[Comparison](./comparison.md)** — where Absurd fits relative to PGMQ, Cadence, Temporal, Inngest, and DBOS
 - **[Patterns](./patterns/)** — practical recipes for common workflow and scheduling setups
