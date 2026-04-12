@@ -45,6 +45,18 @@ def test_sync_worker_processes_task(conn, queue_name):
     assert seen == [{"user_id": 42}]
 
 
+def test_sync_worker_rejects_concurrency_above_one(conn, queue_name):
+    queue = queue_name("sync_single")
+    client = Absurd(conn, queue_name=queue)
+
+    try:
+        client.start_worker(concurrency=2)
+    except ValueError as exc:
+        assert "runs sequentially" in str(exc)
+    else:
+        raise AssertionError("expected ValueError for concurrency > 1")
+
+
 def test_sync_worker_suspends_until_alarm(conn, queue_name):
     queue = queue_name("reminders")
     client = Absurd(conn, queue_name=queue)

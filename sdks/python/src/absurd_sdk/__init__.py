@@ -1625,7 +1625,17 @@ class Absurd(_AbsurdBase):
         batch_size: Optional[int] = None,
         poll_interval: float = 0.25,
     ) -> None:
-        """Start a synchronous worker that continuously polls for tasks"""
+        """Start a synchronous worker that continuously polls for tasks.
+
+        The synchronous worker executes tasks sequentially on a single connection.
+        Use ``AsyncAbsurd.start_worker`` for concurrent task execution.
+        """
+        if concurrency != 1:
+            raise ValueError(
+                "Absurd.start_worker() runs sequentially; "
+                "use concurrency=1 or AsyncAbsurd.start_worker() for concurrency"
+            )
+
         if worker_id is None:
             worker_id = f"{socket.gethostname()}:{os.getpid()}"
 
