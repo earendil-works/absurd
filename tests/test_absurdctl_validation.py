@@ -283,7 +283,9 @@ def test_queue_policy_set_uses_parameterized_json_payload(monkeypatch):
     )
 
 
-def test_queue_policy_set_default_partition_uses_parameterized_json_payload(monkeypatch):
+def test_queue_policy_set_default_partition_uses_parameterized_json_payload(
+    monkeypatch,
+):
     captured = {}
 
     def fake_run_psql(config, query=None, **kwargs):
@@ -415,7 +417,9 @@ def test_detach_candidate_executes_detach_then_drop(monkeypatch):
     assert csv_calls["variables"]["partition_table"] == "t_jobs_401"
 
     assert len(psql_calls) >= 3
-    assert any("pg_get_expr(child.relpartbound" in (call[0] or "") for call in psql_calls)
+    assert any(
+        "pg_get_expr(child.relpartbound" in (call[0] or "") for call in psql_calls
+    )
     assert any("detach partition" in (call[0] or "") for call in psql_calls)
     assert any(
         (call[0] or "") == "SELECT absurd.drop_detached_partition(:'partition_table');"
@@ -424,7 +428,8 @@ def test_detach_candidate_executes_detach_then_drop(monkeypatch):
     drop_call = [
         call
         for call in psql_calls
-        if (call[0] or "") == "SELECT absurd.drop_detached_partition(:'partition_table');"
+        if (call[0] or "")
+        == "SELECT absurd.drop_detached_partition(:'partition_table');"
     ][0]
     assert drop_call[1]["variables"]["partition_table"] == "t_jobs_401"
 
