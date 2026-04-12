@@ -63,6 +63,9 @@ _current_task_context: contextvars.ContextVar[
     Optional[Union["TaskContext", "AsyncTaskContext"]]
 ] = contextvars.ContextVar("current_task_context", default=None)
 
+_UNKNOWN_TASK_DEFER_BASE_SECONDS = 15
+_UNKNOWN_TASK_DEFER_JITTER_SECONDS = 15
+
 
 def get_current_context() -> Optional[Union["TaskContext", "AsyncTaskContext"]]:
     """Get the current task context if running inside a task handler.
@@ -1669,13 +1672,27 @@ class Absurd(_AbsurdBase):
         registration = self._registry.get(task["task_name"])
 
         if not registration:
-            _fail_task_run(
-                self._conn,
-                self._queue_name,
-                task["run_id"],
-                Exception("Unknown task"),
-            )
-            return
+            try:
+                defer_seconds = _UNKNOWN_TASK_DEFER_BASE_SECONDS
+                if _UNKNOWN_TASK_DEFER_JITTER_SECONDS > 0:
+                    seed = str(task["run_id"])
+                    jitter = sum(ord(ch) for ch in seed) % (
+                        _UNKNOWN_TASK_DEFER_JITTER_SECONDS + 1
+                    )
+                    defer_seconds = defer_seconds + jitter
+                self._conn.cursor().execute(
+                    "SELECT absurd.schedule_run(%s, %s, absurd.current_time() + make_interval(secs => %s::int))",
+                    (self._queue_name, task["run_id"], defer_seconds),
+                )
+                return
+            except Exception as defer_err:
+                _fail_task_run(
+                    self._conn,
+                    self._queue_name,
+                    task["run_id"],
+                    defer_err,
+                )
+                return
 
         queue_name = registration["queue"]
 
@@ -2145,13 +2162,27 @@ class AsyncAbsurd(_AbsurdBase):
         registration = self._registry.get(task["task_name"])
 
         if not registration:
-            await _fail_task_run_async(
-                self._conn,
-                self._queue_name,
-                task["run_id"],
-                Exception("Unknown task"),
-            )
-            return
+            try:
+                defer_seconds = _UNKNOWN_TASK_DEFER_BASE_SECONDS
+                if _UNKNOWN_TASK_DEFER_JITTER_SECONDS > 0:
+                    seed = str(task["run_id"])
+                    jitter = sum(ord(ch) for ch in seed) % (
+                        _UNKNOWN_TASK_DEFER_JITTER_SECONDS + 1
+                    )
+                    defer_seconds = defer_seconds + jitter
+                await self._conn.cursor().execute(
+                    "SELECT absurd.schedule_run(%s, %s, absurd.current_time() + make_interval(secs => %s::int))",
+                    (self._queue_name, task["run_id"], defer_seconds),
+                )
+                return
+            except Exception as defer_err:
+                await _fail_task_run_async(
+                    self._conn,
+                    self._queue_name,
+                    task["run_id"],
+                    defer_err,
+                )
+                return
 
         queue_name = registration["queue"]
 

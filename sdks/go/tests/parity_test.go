@@ -327,10 +327,14 @@ func TestUnknownTaskRequiresExplicitQueueAtSpawn(t *testing.T) {
 	}
 }
 
-func TestUnknownTaskWithExplicitQueueFailsClaimedRunImmediately(t *testing.T) {
+func TestUnknownTaskWithExplicitQueueDefersClaimedRun(t *testing.T) {
 	queue := randomQueueName("go_unknown_explicit")
 	db := setupTestDatabase(t)
 	client := newTestClient(t, queue)
+
+	base := time.Date(2024, time.April, 1, 10, 0, 0, 0, time.UTC)
+	setFakeNow(t, db, &base)
+	defer setFakeNow(t, db, nil)
 
 	spawned, err := client.Spawn(context.Background(), "ghost-task", map[string]any{"value": 1}, absurd.SpawnOptions{QueueName: queue, MaxAttempts: 1})
 	if err != nil {
@@ -341,13 +345,25 @@ func TestUnknownTaskWithExplicitQueueFailsClaimedRunImmediately(t *testing.T) {
 	}
 
 	state, attempts, _, _, _, _ := fetchTaskRow(t, db, queue, spawned.TaskID)
-	if state != string(absurd.TaskFailed) || attempts != 1 {
+	if state != string(absurd.TaskSleeping) || attempts != 1 {
 		t.Fatalf("unexpected task state=%s attempts=%d", state, attempts)
 	}
-	failure := fetchFailure(t, db, queue, spawned.RunID)
-	message, _ := failure["message"].(string)
-	if !strings.Contains(message, `unknown task "ghost-task"`) {
-		t.Fatalf("unexpected failure payload: %#v", failure)
+
+	query := fmt.Sprintf(`select state, available_at, failure_reason from absurd.r_%s where run_id = $1`, queue)
+	var runState string
+	var availableAt time.Time
+	var failureReason []byte
+	if err := db.QueryRow(query, spawned.RunID).Scan(&runState, &availableAt, &failureReason); err != nil {
+		t.Fatalf("fetch run row: %v", err)
+	}
+	if runState != "sleeping" {
+		t.Fatalf("unexpected run state=%s", runState)
+	}
+	if !availableAt.After(base) {
+		t.Fatalf("expected available_at after base time: base=%s available_at=%s", base, availableAt)
+	}
+	if len(failureReason) != 0 {
+		t.Fatalf("expected no failure reason, got: %s", string(failureReason))
 	}
 }
 
@@ -708,7 +724,6 @@ func TestFailureIncludesTraceback(t *testing.T) {
 		t.Fatalf("expected failure name in payload, got %#v", failure)
 	}
 }
-
 
 func TestInvalidHeadersFailRun(t *testing.T) {
 	queue := randomQueueName("go_invalid_headers")

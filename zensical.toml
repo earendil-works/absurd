@@ -46,6 +46,7 @@ nav = [
     {"Patterns" = [
         {"Overview" = "patterns/index.md"},
         {"Cron Jobs" = "patterns/cron.md"},
+        {"Deploying" = "patterns/deployments.md"},
         {"Living with Code Changes" = "patterns/living-with-code-changes.md"},
         {"Pi AI Agent" = "patterns/pi-ai-agent.md"},
     ]},

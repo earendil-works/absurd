@@ -4,10 +4,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"os"
 	"runtime/debug"
 	"sync"
 	"time"
+)
+
+const (
+	unknownTaskDeferBaseDelay    = 15 * time.Second
+	unknownTaskDeferJitterWindow = 15 * time.Second
 )
 
 type workerConfig struct {
@@ -77,6 +83,28 @@ func waitCapacityOrPoll(ctx context.Context, capacityReleased <-chan struct{}, d
 	case <-timer.C:
 		return nil
 	}
+}
+
+func unknownTaskDeferDelay(runID string) time.Duration {
+	if unknownTaskDeferJitterWindow <= 0 {
+		return unknownTaskDeferBaseDelay
+	}
+	hasher := fnv.New32a()
+	_, _ = hasher.Write([]byte(runID))
+	maxJitterSeconds := int(unknownTaskDeferJitterWindow / time.Second)
+	jitter := time.Duration(hasher.Sum32()%uint32(maxJitterSeconds+1)) * time.Second
+	return unknownTaskDeferBaseDelay + jitter
+}
+
+func (c *Client) deferClaimedRun(ctx context.Context, runID string, delay time.Duration) error {
+	_, err := c.db.ExecContext(
+		ctx,
+		`SELECT absurd.schedule_run($1, $2, absurd.current_time() + make_interval(secs => $3))`,
+		c.queueName,
+		runID,
+		durationSeconds(delay),
+	)
+	return err
 }
 
 func (c *Client) claimTasks(ctx context.Context, options WorkBatchOptions) ([]claimedTask, error) {
@@ -295,9 +323,14 @@ func (c *Client) executeTask(ctx context.Context, task claimedTask, claimTimeout
 
 	registration, ok := c.getRegistration(task.TaskName)
 	if !ok {
-		err := fmt.Errorf("unknown task %q", task.TaskName)
-		c.logger.Printf("[absurd] %v", err)
-		return failTaskRun(completionCtx, c.db, c.queueName, task.RunID, err)
+		delay := unknownTaskDeferDelay(task.RunID)
+		if err := c.deferClaimedRun(completionCtx, task.RunID, delay); err != nil {
+			c.logger.Printf("[absurd] failed to defer unknown task %q (%s): %v", task.TaskName, task.TaskID, err)
+			deferErr := fmt.Errorf("failed to defer unknown task %q (%s): %w", task.TaskName, task.TaskID, err)
+			return failTaskRun(completionCtx, c.db, c.queueName, task.RunID, deferErr)
+		}
+		c.logger.Printf("[absurd] claimed unknown task %q (%s); deferred run %s by %s", task.TaskName, task.TaskID, task.RunID, delay)
+		return nil
 	}
 	if registration.queueName != c.queueName {
 		err := fmt.Errorf("misconfigured task %q (queue mismatch)", task.TaskName)

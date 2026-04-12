@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 from psycopg import sql
 import psycopg
 
+import absurd_sdk
 from absurd_sdk import Absurd, AsyncAbsurd
 
 
@@ -21,6 +22,14 @@ def _fetch_task(conn, queue, task_id):
         "select state, attempts, completed_payload from absurd.{table} where task_id = %s"
     ).format(table=sql.Identifier(f"t_{queue}"))
     return conn.execute(query, (task_id,)).fetchone()
+
+
+def _fetch_run_with_failure(conn, queue, run_id):
+    query = sql.SQL(
+        "select state, nullif(available_at, 'infinity'::timestamptz) as available_at, failure_reason "
+        "from absurd.{table} where run_id = %s"
+    ).format(table=sql.Identifier(f"r_{queue}"))
+    return conn.execute(query, (run_id,)).fetchone()
 
 
 def test_sync_worker_processes_task(conn, queue_name):
@@ -72,6 +81,66 @@ def test_sync_worker_suspends_until_alarm(conn, queue_name):
     assert result == {"status": "done"}
 
 
+def test_unknown_task_is_deferred_not_failed(conn, queue_name):
+    queue = queue_name("unknown")
+    client = Absurd(conn, queue_name=queue)
+    client.create_queue()
+
+    base_time = datetime(2024, 4, 1, 10, 0, tzinfo=timezone.utc)
+    conn.execute(
+        "SELECT set_config('absurd.fake_now', %s, false)",
+        (base_time.isoformat(),),
+    )
+
+    spawned = client.spawn(
+        "ghost-task",
+        {"value": 1},
+        queue=queue,
+        max_attempts=1,
+    )
+
+    client.work_batch(worker_id="unknown-worker")
+
+    task_state, task_attempts, _ = _fetch_task(conn, queue, spawned["task_id"])
+    assert task_state == "sleeping"
+    assert task_attempts == 1
+
+    run_state, available_at, failure_reason = _fetch_run_with_failure(
+        conn, queue, spawned["run_id"]
+    )
+    assert run_state == "sleeping"
+    assert failure_reason is None
+    assert available_at is not None and available_at > base_time
+
+
+def test_unknown_task_defer_failure_preserves_error_context(conn, queue_name, monkeypatch):
+    queue = queue_name("unknown_defer_fail")
+    client = Absurd(conn, queue_name=queue)
+    client.create_queue()
+
+    monkeypatch.setattr(absurd_sdk, "_UNKNOWN_TASK_DEFER_BASE_SECONDS", "oops")
+    monkeypatch.setattr(absurd_sdk, "_UNKNOWN_TASK_DEFER_JITTER_SECONDS", -1)
+
+    spawned = client.spawn(
+        "ghost-task",
+        {"value": 1},
+        queue=queue,
+        max_attempts=1,
+    )
+
+    client.work_batch(worker_id="unknown-worker")
+
+    task_state, task_attempts, _ = _fetch_task(conn, queue, spawned["task_id"])
+    assert task_state == "failed"
+    assert task_attempts == 1
+
+    run_state, _, failure_reason = _fetch_run_with_failure(conn, queue, spawned["run_id"])
+    assert run_state == "failed"
+    assert failure_reason is not None
+    assert failure_reason["name"] == "InvalidTextRepresentation"
+    assert "invalid input syntax for type integer" in failure_reason["message"]
+
+
 def test_async_absurd_round_trip(db_dsn, queue_name):
     queue = queue_name("uploads")
 
@@ -106,6 +175,82 @@ def test_async_absurd_round_trip(db_dsn, queue_name):
         run_state, available_at, result = _fetch_run(check_conn, queue, spawned["run_id"])
         assert run_state == "completed"
         assert result == {"processed": 6}
+
+
+def test_async_unknown_task_is_deferred_not_failed(db_dsn, queue_name):
+    queue = queue_name("unknown_async")
+
+    with psycopg.connect(db_dsn, autocommit=True) as setup_conn:
+        Absurd(setup_conn, queue_name=queue).create_queue()
+
+    async def run():
+        client = AsyncAbsurd(db_dsn, queue_name=queue)
+        spawned = await client.spawn(
+            "ghost-task",
+            {"value": 1},
+            queue=queue,
+            max_attempts=1,
+        )
+        await client.work_batch(worker_id="unknown-worker")
+        if client._conn is not None:
+            await client._conn.commit()
+        await client.close()
+        return spawned
+
+    spawned = asyncio.run(run())
+
+    with psycopg.connect(db_dsn, autocommit=True) as check_conn:
+        task_state, task_attempts, _ = _fetch_task(check_conn, queue, spawned["task_id"])
+        assert task_state == "sleeping"
+        assert task_attempts == 1
+
+        run_state, available_at, failure_reason = _fetch_run_with_failure(
+            check_conn, queue, spawned["run_id"]
+        )
+        assert run_state == "sleeping"
+        assert failure_reason is None
+        assert available_at is not None
+
+
+def test_async_unknown_task_defer_failure_preserves_error_context(
+    db_dsn, queue_name, monkeypatch
+):
+    queue = queue_name("unknown_async_defer_fail")
+
+    with psycopg.connect(db_dsn, autocommit=True) as setup_conn:
+        Absurd(setup_conn, queue_name=queue).create_queue()
+
+    monkeypatch.setattr(absurd_sdk, "_UNKNOWN_TASK_DEFER_BASE_SECONDS", "oops")
+    monkeypatch.setattr(absurd_sdk, "_UNKNOWN_TASK_DEFER_JITTER_SECONDS", -1)
+
+    async def run():
+        client = AsyncAbsurd(db_dsn, queue_name=queue)
+        spawned = await client.spawn(
+            "ghost-task",
+            {"value": 1},
+            queue=queue,
+            max_attempts=1,
+        )
+        await client.work_batch(worker_id="unknown-worker")
+        if client._conn is not None:
+            await client._conn.commit()
+        await client.close()
+        return spawned
+
+    spawned = asyncio.run(run())
+
+    with psycopg.connect(db_dsn, autocommit=True) as check_conn:
+        task_state, task_attempts, _ = _fetch_task(check_conn, queue, spawned["task_id"])
+        assert task_state == "failed"
+        assert task_attempts == 1
+
+        run_state, _, failure_reason = _fetch_run_with_failure(
+            check_conn, queue, spawned["run_id"]
+        )
+        assert run_state == "failed"
+        assert failure_reason is not None
+        assert failure_reason["name"] == "InvalidTextRepresentation"
+        assert "invalid input syntax for type integer" in failure_reason["message"]
 
 
 def test_async_begin_complete_step_is_cached_on_retry(db_dsn, queue_name):

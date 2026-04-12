@@ -1286,7 +1286,7 @@ export class Absurd {
       log: this.log,
       taskID: task.task_id,
       con: this.con,
-      queueName: registration?.queue ?? "unknown",
+      queueName: this.queueName,
       task: task,
       claimTimeout,
       onLeaseExtended: scheduleLeaseTimers,
@@ -1295,7 +1295,25 @@ export class Absurd {
 
     try {
       if (!registration) {
-        throw new Error("Unknown task");
+        try {
+          const deferSeconds = await deferClaimedRun(
+            this.con,
+            this.queueName,
+            task.run_id,
+            task.run_id,
+          );
+          this.log.warn(
+            `claimed unknown task "${task.task_name}" (${task.task_id}); deferred run ${task.run_id} by ${deferSeconds}s`,
+          );
+          return;
+        } catch (deferErr) {
+          this.log.error(
+            `failed to defer unknown task "${task.task_name}" (${task.task_id}); failing run`,
+            deferErr,
+          );
+          await failTaskRun(this.con, this.queueName, task.run_id, deferErr);
+          return;
+        }
       } else if (registration.queue !== this.queueName) {
         throw new Error("Misconfigured task (queue mismatch)");
       }
@@ -1328,6 +1346,8 @@ export class Absurd {
 }
 
 const MAX_QUEUE_NAME_LENGTH = 57;
+const UNKNOWN_TASK_DEFER_BASE_SECONDS = 15;
+const UNKNOWN_TASK_DEFER_JITTER_SECONDS = 15;
 
 function validateQueueName(queueName: string): string {
   if (!queueName) {
@@ -1385,6 +1405,37 @@ async function failTaskRun(
     JSON.stringify(serializeError(err)),
     null,
   ]);
+}
+
+async function deferClaimedRun(
+  con: Queryable,
+  queueName: string,
+  runID: string,
+  jitterSeed: string,
+): Promise<number> {
+  const deferSeconds =
+    UNKNOWN_TASK_DEFER_BASE_SECONDS +
+    deterministicJitterSeconds(jitterSeed, UNKNOWN_TASK_DEFER_JITTER_SECONDS);
+  await con.query(
+    `SELECT absurd.schedule_run($1, $2, absurd.current_time() + make_interval(secs => $3))`,
+    [queueName, runID, deferSeconds],
+  );
+  return deferSeconds;
+}
+
+function deterministicJitterSeconds(
+  seed: string,
+  maxJitterSeconds: number,
+): number {
+  if (maxJitterSeconds <= 0) {
+    return 0;
+  }
+  let hash = 2166136261;
+  for (let i = 0; i < seed.length; i += 1) {
+    hash ^= seed.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return Math.abs(hash) % (maxJitterSeconds + 1);
 }
 
 async function fetchTaskResultSnapshot(

@@ -195,5 +195,6 @@ them race-free.
 - **[Cleanup and Retention](./cleanup.md)** — set retention policies and automate cleanup with SQL, `absurdctl`, or cron
 - **[Comparison](./comparison.md)** — where Absurd fits relative to PGMQ, Cadence, Temporal, Inngest, and DBOS
 - **[Patterns](./patterns/)** — practical recipes for common workflow and scheduling setups
+- **[Deploying and Rolling Rollouts](./patterns/deployments.md)** — safely introduce new task names during rolling deploys
 - **[SDKs](./sdks/)** — available language SDKs
 - **[Tools Overview](./tools/)** — utility tools

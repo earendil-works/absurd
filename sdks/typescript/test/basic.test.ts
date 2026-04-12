@@ -187,6 +187,72 @@ describe("Basic SDK Operations", () => {
         `Task "${taskName}" is registered for queue "${ctx.queueName}" but spawn requested queue "${otherQueue}".`,
       );
     });
+
+    test("defers unknown claimed task instead of failing it", async () => {
+      const baseTime = new Date("2024-04-01T10:00:00Z");
+      await ctx.setFakeNow(baseTime);
+
+      const spawned = await absurd.spawn(
+        "ghost-task",
+        { value: 1 },
+        { queue: ctx.queueName, maxAttempts: 1 },
+      );
+
+      await absurd.workBatch("worker-unknown", 60, 1);
+
+      const task = await ctx.getTask(spawned.taskID);
+      expect(task).toMatchObject({
+        state: "sleeping",
+        attempts: 1,
+      });
+
+      const run = await ctx.getRun(spawned.runID);
+      assert.ok(run);
+      expect(run.state).toBe("sleeping");
+      expect(run.failure_reason).toBeNull();
+      expect(run.available_at.getTime()).toBeGreaterThan(baseTime.getTime());
+    });
+
+    test("unknown-task defer failure preserves defer error payload", async () => {
+      const spawned = await absurd.spawn(
+        "ghost-task",
+        { value: 1 },
+        { queue: ctx.queueName, maxAttempts: 1 },
+      );
+
+      const poolAny = ctx.pool as any;
+      const originalQuery = poolAny.query.bind(ctx.pool);
+      poolAny.query = (text: any, values?: any) => {
+        const sqlText = typeof text === "string" ? text : text?.text;
+        if (
+          typeof sqlText === "string" &&
+          sqlText.includes("SELECT absurd.schedule_run(")
+        ) {
+          throw new Error("simulated defer scheduling failure");
+        }
+        return originalQuery(text, values);
+      };
+
+      try {
+        await absurd.workBatch("worker-unknown", 60, 1);
+      } finally {
+        poolAny.query = originalQuery;
+      }
+
+      const task = await ctx.getTask(spawned.taskID);
+      expect(task).toMatchObject({
+        state: "failed",
+        attempts: 1,
+      });
+
+      const run = await ctx.getRun(spawned.runID);
+      assert.ok(run);
+      expect(run.state).toBe("failed");
+      expect((run.failure_reason as any)?.name).toBe("Error");
+      expect((run.failure_reason as any)?.message).toContain(
+        "simulated defer scheduling failure",
+      );
+    });
   });
 
   describe("Task claiming", () => {
