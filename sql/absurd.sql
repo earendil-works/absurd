@@ -168,7 +168,7 @@ begin
         event_name text not null,
         timeout_at timestamptz,
         created_at timestamptz not null default absurd.current_time(),
-        primary key (run_id, step_name)
+        primary key (run_id, step_name, event_name)
      )',
     'w_' || p_queue_name
   );
@@ -1335,7 +1335,7 @@ begin
   execute format(
     'insert into absurd.%I (task_id, run_id, step_name, event_name, timeout_at, created_at)
      values ($1, $2, $3, $4, $5, $6)
-     on conflict (run_id, step_name)
+     on conflict (run_id, step_name, event_name)
      do update set event_name = excluded.event_name,
                    timeout_at = excluded.timeout_at,
                    created_at = excluded.created_at',
@@ -1363,6 +1363,207 @@ begin
 
   return query select true, null::jsonb;
   return;
+end;
+$$;
+
+create or replace function absurd.await_any_event(
+    p_queue_name text,
+    p_task_id uuid,
+    p_run_id uuid,
+    p_step_name text,
+    p_event_names text[],
+    p_timeout integer default null
+)
+    returns table
+            (
+                should_suspend boolean,
+                event_name     text,
+                payload        jsonb
+            )
+    language plpgsql
+as
+$$
+declare
+    v_run_state          text;
+    v_existing_payload   jsonb;
+    v_event_payload      jsonb;
+    v_checkpoint_payload jsonb;
+    v_resolved_payload   jsonb;
+    v_timeout_at         timestamptz;
+    v_available_at       timestamptz;
+    v_now                timestamptz := absurd.current_time();
+    v_task_state         text;
+    v_wake_event         text;
+    v_winning_event      text;
+begin
+    if p_event_names is null or array_length(p_event_names, 1) = 0 then
+        raise exception 'event_names must be provided';
+    end if;
+
+    if exists (select 1 from unnest(p_event_names) as e where trim(e) = '') then
+        raise exception 'event_names must not contain empty strings';
+    end if;
+
+    if p_timeout is not null then
+        if p_timeout < 0 then
+            raise exception 'timeout must be non-negative';
+        end if;
+        v_timeout_at := v_now + (p_timeout::double precision * interval '1 second');
+    end if;
+
+    v_available_at := coalesce(v_timeout_at, 'infinity'::timestamptz);
+
+    execute format(
+            'select state
+               from absurd.%I
+              where task_id = $1
+                and checkpoint_name = $2',
+            'c_' || p_queue_name
+            )
+        into v_checkpoint_payload
+        using p_task_id, p_step_name;
+
+    if v_checkpoint_payload is not null then
+        return query select false, v_checkpoint_payload->>'event_name', v_checkpoint_payload->'payload';
+        return;
+    end if;
+
+    -- Ensure a row exists for each event so we can take a row-level lock.
+    --
+    -- We use payload IS NULL as the sentinel for "not emitted yet".  emit_event
+    -- always writes a non-NULL payload (at minimum JSON null).
+    --
+    -- Lock ordering is important to avoid deadlocks: await_event locks the event
+    -- rows first (sorted by name, FOR SHARE) and then the run row (FOR UPDATE).
+    -- emit_event naturally locks the event row via its UPSERT before touching waits/runs.
+    select array_agg(e order by e) into p_event_names from unnest(p_event_names) as e;
+    execute format(
+            'insert into absurd.%I (event_name, payload, emitted_at)
+             select e, null, ''epoch''::timestamptz from unnest($1::text[]) as e
+             on conflict (event_name) do nothing',
+            'e_' || p_queue_name
+            ) using p_event_names;
+
+    execute format(
+            'select 1
+               from absurd.%I
+              where event_name = any($1::text[])
+              for share',
+            'e_' || p_queue_name
+            ) using p_event_names;
+
+    execute format(
+            'select r.state, r.event_payload, r.wake_event, t.state
+               from absurd.%I r
+               join absurd.%I t on t.task_id = r.task_id
+              where r.run_id = $1
+              for update',
+            'r_' || p_queue_name,
+            't_' || p_queue_name
+            )
+        into v_run_state, v_existing_payload, v_wake_event, v_task_state
+        using p_run_id;
+
+    if v_run_state is null then
+        raise exception 'Run "%" not found while awaiting event', p_run_id;
+    end if;
+
+    if v_task_state = 'cancelled' then
+        raise exception sqlstate 'AB001' using message = 'Task has been cancelled';
+    end if;
+
+    -- select the first event that was emitted
+    -- in case of multiple events were already emitted, take the one that was emitted first
+    -- event_name as tie braker
+    execute format(
+            'select event_name, payload
+               from absurd.%I
+              where event_name = any($1)
+                and payload is not null
+              order by emitted_at, event_name
+              limit 1',
+            'e_' || p_queue_name
+            )
+        into v_winning_event, v_event_payload
+        using p_event_names;
+
+    if v_existing_payload is not null then
+        execute format(
+                'update absurd.%I
+                    set event_payload = null
+                  where run_id = $1',
+                'r_' || p_queue_name
+                ) using p_run_id;
+
+        if v_event_payload is not null and v_event_payload = v_existing_payload then
+            v_resolved_payload := v_existing_payload;
+        end if;
+    end if;
+
+    if v_run_state <> 'running' then
+        raise exception 'Run "%" must be running to await events', p_run_id;
+    end if;
+
+    if v_resolved_payload is null and v_event_payload is not null then
+        v_resolved_payload := v_event_payload;
+    end if;
+
+    if v_resolved_payload is not null then
+        execute format(
+                'insert into absurd.%I (task_id, checkpoint_name, state, status, owner_run_id, updated_at)
+                 values ($1, $2, $3, ''committed'', $4, $5)
+                 on conflict (task_id, checkpoint_name)
+                 do update set state = excluded.state,
+                               status = excluded.status,
+                               owner_run_id = excluded.owner_run_id,
+                               updated_at = excluded.updated_at',
+                'c_' || p_queue_name
+                ) using p_task_id, p_step_name, jsonb_build_object('event_name', v_winning_event, 'payload', v_resolved_payload), p_run_id, v_now;
+        return query select false, v_winning_event, v_resolved_payload;
+        return;
+    end if;
+
+    -- Detect if we resumed due to timeout: wake_event matches and payload is null
+    if v_resolved_payload is null and v_wake_event = any(p_event_names) and v_existing_payload is null then
+        -- Resumed due to timeout; don't re-sleep and don't create a new wait
+        execute format(
+                'update absurd.%I set wake_event = null where run_id = $1',
+                'r_' || p_queue_name
+                ) using p_run_id;
+        return query select false, null::text, null::jsonb;
+        return;
+    end if;
+
+    execute format(
+            'insert into absurd.%I (task_id, run_id, step_name, event_name, timeout_at, created_at)
+             select $1, $2, $3, e, $5, $6 from unnest($4::text[]) as e
+             on conflict (run_id, step_name, event_name) do update set
+                 timeout_at = excluded.timeout_at,
+                 created_at = excluded.created_at',
+            'w_' || p_queue_name
+            ) using p_task_id, p_run_id, p_step_name, p_event_names, v_timeout_at, v_now;
+
+    execute format(
+            'update absurd.%I
+                set state = ''sleeping'',
+                    claimed_by = null,
+                    claim_expires_at = null,
+                    available_at = $3,
+                    wake_event = $2,
+                    event_payload = null
+              where run_id = $1',
+            'r_' || p_queue_name
+            ) using p_run_id, p_event_names[1], v_available_at;
+
+    execute format(
+            'update absurd.%I
+                set state = ''sleeping''
+              where task_id = $1',
+            't_' || p_queue_name
+            ) using p_task_id;
+
+    return query select true, null::text, null::jsonb;
+    return;
 end;
 $$;
 
@@ -1414,10 +1615,13 @@ begin
          returning w.run_id
      ),
      affected as (
-        select run_id, task_id, step_name
-          from absurd.%1$I
-         where event_name = $1
-           and (timeout_at is null or timeout_at > $2)
+         select run_id, task_id, step_name,
+                (select count(*) from absurd.%1$I w2
+                  where w2.run_id = w.run_id
+                    and w2.step_name = w.step_name) > 1 as is_multi
+           from absurd.%1$I w
+          where event_name = $1
+            and (timeout_at is null or timeout_at > $2)
      ),
      updated_runs as (
         update absurd.%2$I r
@@ -1433,7 +1637,12 @@ begin
      ),
      checkpoint_upd as (
         insert into absurd.%3$I (task_id, checkpoint_name, state, status, owner_run_id, updated_at)
-        select a.task_id, a.step_name, $3, ''committed'', a.run_id, $2
+        select a.task_id, a.step_name,
+         case when a.is_multi
+              then jsonb_build_object(''event_name'', $1, ''payload'', $3)
+              else $3
+         end,
+         ''committed'', a.run_id, $2
           from affected a
           join updated_runs ur on ur.run_id = a.run_id
         on conflict (task_id, checkpoint_name)
@@ -1449,8 +1658,8 @@ begin
          returning task_id
      )
      delete from absurd.%5$I w
-      where w.event_name = $1
-        and w.run_id in (select run_id from updated_runs)',
+         where w.run_id in (select run_id from updated_runs)
+           and w.step_name in (select step_name from affected)',
     'w_' || p_queue_name,
     'r_' || p_queue_name,
     'c_' || p_queue_name,
