@@ -5,6 +5,7 @@ Absurd SDK for Python
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import contextvars
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -1630,26 +1631,81 @@ class Absurd(_AbsurdBase):
         batch_size: Optional[int] = None,
         poll_interval: float = 0.25,
     ) -> None:
-        """Start a synchronous worker that continuously polls for tasks"""
+        """Start a synchronous worker that continuously polls for tasks.
+
+        If ``concurrency`` is greater than ``1``, tasks are executed in a
+        thread pool up to the configured concurrency limit.
+        """
         if worker_id is None:
             worker_id = f"{socket.gethostname()}:{os.getpid()}"
 
         effective_batch_size = batch_size or concurrency
         self._worker_running = True
 
-        while self._worker_running:
+        def _sleep_poll_interval() -> None:
+            time.sleep(poll_interval)
+
+        def _claim_or_wait(
+            claim_batch_size: int, on_idle: Callable[[], None]
+        ) -> Optional[List[ClaimedTask]]:
             tasks = self.claim_tasks(
-                batch_size=effective_batch_size,
+                batch_size=claim_batch_size,
                 claim_timeout=claim_timeout,
                 worker_id=worker_id,
             )
+            if tasks:
+                return tasks
+            on_idle()
 
-            if not tasks:
-                time.sleep(poll_interval)
-                continue
+        if concurrency <= 1:
+            while self._worker_running:
+                tasks = _claim_or_wait(effective_batch_size, _sleep_poll_interval)
+                for task in tasks or ():
+                    self._execute_task(task, claim_timeout)
+            return
 
-            for task in tasks:
-                self._execute_task(task, claim_timeout)
+        executing: set[concurrent.futures.Future[None]] = set()
+
+        def _drain_done(done: set[concurrent.futures.Future[None]]) -> None:
+            for completed in done:
+                executing.discard(completed)
+                completed.result()
+
+        def _drain_completed_nonblocking() -> None:
+            done = {future for future in executing if future.done()}
+            _drain_done(done)
+
+        def _wait_for_progress() -> None:
+            if not executing:
+                _sleep_poll_interval()
+                return
+            done, _ = concurrent.futures.wait(
+                executing,
+                timeout=poll_interval,
+                return_when=concurrent.futures.FIRST_COMPLETED,
+            )
+            _drain_done(done)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as pool:
+            while self._worker_running:
+                _drain_completed_nonblocking()
+
+                available_capacity = concurrency - len(executing)
+                if available_capacity <= 0:
+                    _wait_for_progress()
+                    continue
+
+                to_claim = min(effective_batch_size, available_capacity)
+                tasks = _claim_or_wait(to_claim, _wait_for_progress)
+                if tasks is None:
+                    continue
+
+                for task in tasks:
+                    executing.add(pool.submit(self._execute_task, task, claim_timeout))
+
+            _drain_completed_nonblocking()
+            for completed in concurrent.futures.as_completed(executing):
+                completed.result()
 
     def stop_worker(self) -> None:
         """Stop the running worker"""

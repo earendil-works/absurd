@@ -1,4 +1,5 @@
 import asyncio
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -79,6 +80,127 @@ def test_sync_worker_suspends_until_alarm(conn, queue_name):
     run_state, available_at, result = _fetch_run(conn, queue, spawned["run_id"])
     assert run_state == "completed"
     assert result == {"status": "done"}
+
+
+def test_sync_start_worker_uses_threads_for_concurrency(conn, queue_name):
+    queue = queue_name("threaded")
+    client = Absurd(conn, queue_name=queue)
+    client.create_queue()
+
+    lock = threading.Lock()
+    release = threading.Event()
+    both_started = threading.Event()
+    running = 0
+    max_running = 0
+
+    @client.register_task("threaded-task")
+    def threaded_task(params, ctx):
+        nonlocal running, max_running
+        with lock:
+            running += 1
+            max_running = max(max_running, running)
+            if running >= 2:
+                both_started.set()
+
+        release.wait(timeout=5)
+
+        with lock:
+            running -= 1
+        return params
+
+    first = client.spawn("threaded-task", {"idx": 1})
+    second = client.spawn("threaded-task", {"idx": 2})
+
+    worker_thread = threading.Thread(
+        target=client.start_worker,
+        kwargs={
+            "worker_id": "sync-threaded-worker",
+            "claim_timeout": 120,
+            "concurrency": 2,
+            "poll_interval": 0.01,
+        },
+        daemon=True,
+    )
+    worker_thread.start()
+
+    try:
+        assert both_started.wait(timeout=3)
+        release.set()
+
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            first_state = _fetch_task(conn, queue, first["task_id"])[0]
+            second_state = _fetch_task(conn, queue, second["task_id"])[0]
+            if first_state == "completed" and second_state == "completed":
+                break
+            time.sleep(0.05)
+
+        assert _fetch_task(conn, queue, first["task_id"])[0] == "completed"
+        assert _fetch_task(conn, queue, second["task_id"])[0] == "completed"
+        assert max_running >= 2
+    finally:
+        release.set()
+        client.stop_worker()
+        worker_thread.join(timeout=5)
+
+    assert not worker_thread.is_alive()
+
+
+def test_sync_start_worker_keeps_claiming_while_slow_task_runs(conn, queue_name):
+    queue = queue_name("threaded_slow")
+    client = Absurd(conn, queue_name=queue)
+    client.create_queue()
+
+    slow_started = threading.Event()
+    release_slow = threading.Event()
+    two_fast_done = threading.Event()
+    fast_completed = 0
+    lock = threading.Lock()
+
+    @client.register_task("mixed-speed-task")
+    def mixed_speed_task(params, ctx):
+        nonlocal fast_completed
+        if params["kind"] == "slow":
+            slow_started.set()
+            release_slow.wait(timeout=5)
+            return params
+
+        with lock:
+            fast_completed += 1
+            if fast_completed >= 2:
+                two_fast_done.set()
+        return params
+
+    slow = client.spawn("mixed-speed-task", {"kind": "slow", "idx": 0})
+
+    worker_thread = threading.Thread(
+        target=client.start_worker,
+        kwargs={
+            "worker_id": "sync-threaded-slow-worker",
+            "claim_timeout": 120,
+            "concurrency": 2,
+            "poll_interval": 0.01,
+        },
+        daemon=True,
+    )
+    worker_thread.start()
+
+    try:
+        assert slow_started.wait(timeout=3)
+
+        fast1 = client.spawn("mixed-speed-task", {"kind": "fast", "idx": 1})
+        fast2 = client.spawn("mixed-speed-task", {"kind": "fast", "idx": 2})
+
+        assert two_fast_done.wait(timeout=3)
+        assert _fetch_task(conn, queue, fast1["task_id"])[0] == "completed"
+        assert _fetch_task(conn, queue, fast2["task_id"])[0] == "completed"
+        assert _fetch_task(conn, queue, slow["task_id"])[0] == "running"
+    finally:
+        release_slow.set()
+        client.stop_worker()
+        worker_thread.join(timeout=5)
+
+    assert not worker_thread.is_alive()
 
 
 def test_unknown_task_is_deferred_not_failed(conn, queue_name):

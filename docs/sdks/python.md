@@ -376,6 +376,11 @@ policy = await app.get_queue_policy("emails-part")
 
 ## Starting a Worker
 
+How you start a worker depends on if you are using `Absurd` or `AsyncAbsurd`.
+
+Either way the recommended way to scale workers is to spawn multiple processes,
+regardless of if you are using a sync or async worker setup.
+
 ### Synchronous (Blocking)
 
 ```python
@@ -387,6 +392,9 @@ app.start_worker(
 )
 ```
 
+Set `concurrency > 1` to execute sync handlers in a worker thread pool.
+The worker refills free slots as tasks finish, so one slow task does not block
+new claims while capacity remains.
 Call `app.stop_worker()` from a signal handler for graceful shutdown.
 
 ### Asynchronous
