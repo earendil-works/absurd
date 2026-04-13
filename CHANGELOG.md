@@ -4,6 +4,14 @@ This contains the changes between releases.
 
 # Unreleased
 
+* Added a Go SDK.  #80
+* Added partitioned queue storage support.  #83
+* Changed workers in the Go, Python, and TypeScript SDKs to defer claimed unknown tasks back into the queue instead of immediately failing runs.
+* Fixed terminal run-state race handling across SQL and SDKs so cancellation/failure transitions are treated as terminal consistently.
+* Fixed the Python SDK's synchronous worker to honor configured `concurrency` and run tasks in parallel when `concurrency > 1`.
+* Improved Python SDK type annotations and hook handling for better static type-checking and async hook interoperability.
+* Fixed Go SDK spawn behavior to require an explicit queue when spawning unregistered tasks.
+
 # 0.3.0
 
 * Added task-result inspection and waiting APIs across SQL and SDKs, including `absurd.get_task_result()`, `app.fetchTaskResult()` / `app.awaitTaskResult()` in TypeScript, `fetch_task_result()` / `await_task_result()` in Python, and durable child-task waits from task contexts.
