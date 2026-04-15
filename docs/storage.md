@@ -22,7 +22,7 @@ For every queue, Absurd creates queue-local tables in the `absurd` schema:
 - `t_<queue>` tasks
 - `r_<queue>` runs
 - `c_<queue>` checkpoints
-- `e_<queue>` evente
+- `e_<queue>` events
 - `w_<queue>` waits
 
 For **partitioned** queues:
