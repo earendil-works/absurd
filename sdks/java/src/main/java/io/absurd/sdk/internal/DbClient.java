@@ -32,6 +32,33 @@ public class DbClient {
     }
     
     /**
+     * Validates that a string is valid JSON.
+     * 
+     * @param json the JSON string to validate
+     * @param parameterName the name of the parameter for error messages
+     * @throws IllegalArgumentException if the JSON is invalid
+     */
+    private void validateJson(String json, String parameterName) {
+        if (json == null) {
+            throw new IllegalArgumentException(parameterName + " cannot be null");
+        }
+        if (json.trim().isEmpty()) {
+            throw new IllegalArgumentException(parameterName + " cannot be empty");
+        }
+        // Basic JSON validation - check if it starts and ends with valid JSON delimiters
+        String trimmed = json.trim();
+        if (!trimmed.startsWith("{") && !trimmed.startsWith("[") && !trimmed.equals("null")) {
+            throw new IllegalArgumentException(parameterName + " must be valid JSON");
+        }
+        if (trimmed.startsWith("{") && !trimmed.endsWith("}")) {
+            throw new IllegalArgumentException(parameterName + " must be valid JSON object");
+        }
+        if (trimmed.startsWith("[") && !trimmed.endsWith("]")) {
+            throw new IllegalArgumentException(parameterName + " must be valid JSON array");
+        }
+    }
+    
+    /**
      * Helper record representing a claimed task.
      * 
      * @param runId the run ID of the claimed task
@@ -52,6 +79,19 @@ public class DbClient {
      * @throws AbsurdException if there's an error claiming tasks
      */
     public List<ClaimedTask> claimTasks(String queue, String workerId, int claimTimeout, int batchSize) throws AbsurdException {
+        if (queue == null || queue.trim().isEmpty()) {
+            throw new IllegalArgumentException("queue cannot be null or empty");
+        }
+        if (workerId == null || workerId.trim().isEmpty()) {
+            throw new IllegalArgumentException("workerId cannot be null or empty");
+        }
+        if (claimTimeout <= 0) {
+            throw new IllegalArgumentException("claimTimeout must be positive");
+        }
+        if (batchSize <= 0) {
+            throw new IllegalArgumentException("batchSize must be positive");
+        }
+        
         String sql = "CALL absurd.claim_tasks(?, ?, ?, ?)";
         
         try (Connection conn = dataSource.getConnection();
@@ -93,6 +133,14 @@ public class DbClient {
      * @throws AbsurdException if there's an error spawning the task
      */
     public String spawnTask(String queue, String taskName, String input, String metadata, String parentRunId, String cronSchedule) throws AbsurdException {
+        if (queue == null || queue.trim().isEmpty()) {
+            throw new IllegalArgumentException("queue cannot be null or empty");
+        }
+        if (taskName == null || taskName.trim().isEmpty()) {
+            throw new IllegalArgumentException("taskName cannot be null or empty");
+        }
+        validateJson(input, "input");
+        
         String sql = "SELECT absurd.spawn_task(?, ?, CAST(? AS jsonb), CAST(? AS jsonb), ?, ?)";
         
         try (Connection conn = dataSource.getConnection();
@@ -126,6 +174,14 @@ public class DbClient {
      * @throws AbsurdException if there's an error completing the task
      */
     public void completeTask(String queue, String runId, String output) throws AbsurdException {
+        if (queue == null || queue.trim().isEmpty()) {
+            throw new IllegalArgumentException("queue cannot be null or empty");
+        }
+        if (runId == null || runId.trim().isEmpty()) {
+            throw new IllegalArgumentException("runId cannot be null or empty");
+        }
+        validateJson(output, "output");
+        
         String sql = "CALL absurd.complete_task(?, ?, CAST(? AS jsonb))";
         
         try (Connection conn = dataSource.getConnection();
@@ -151,6 +207,16 @@ public class DbClient {
      * @throws AbsurdException if there's an error failing the task
      */
     public void failTask(String queue, String runId, String error) throws AbsurdException {
+        if (queue == null || queue.trim().isEmpty()) {
+            throw new IllegalArgumentException("queue cannot be null or empty");
+        }
+        if (runId == null || runId.trim().isEmpty()) {
+            throw new IllegalArgumentException("runId cannot be null or empty");
+        }
+        if (error == null || error.trim().isEmpty()) {
+            throw new IllegalArgumentException("error cannot be null or empty");
+        }
+        
         String sql = "CALL absurd.fail_task(?, ?, ?)";
         
         try (Connection conn = dataSource.getConnection();
@@ -176,6 +242,16 @@ public class DbClient {
      * @throws AbsurdException if there's an error cancelling the task
      */
     public void cancelTask(String queue, String runId, String reason) throws AbsurdException {
+        if (queue == null || queue.trim().isEmpty()) {
+            throw new IllegalArgumentException("queue cannot be null or empty");
+        }
+        if (runId == null || runId.trim().isEmpty()) {
+            throw new IllegalArgumentException("runId cannot be null or empty");
+        }
+        if (reason == null || reason.trim().isEmpty()) {
+            throw new IllegalArgumentException("reason cannot be null or empty");
+        }
+        
         String sql = "CALL absurd.cancel_task(?, ?, ?)";
         
         try (Connection conn = dataSource.getConnection();
@@ -201,6 +277,13 @@ public class DbClient {
      * @throws AbsurdException if there's an error getting the task state
      */
     public TaskState getTaskState(String queue, String runId) throws AbsurdException {
+        if (queue == null || queue.trim().isEmpty()) {
+            throw new IllegalArgumentException("queue cannot be null or empty");
+        }
+        if (runId == null || runId.trim().isEmpty()) {
+            throw new IllegalArgumentException("runId cannot be null or empty");
+        }
+        
         String sql = "SELECT absurd.get_task_state(?, ?)";
         
         try (Connection conn = dataSource.getConnection();
@@ -231,6 +314,13 @@ public class DbClient {
      * @throws AbsurdException if there's an error getting the task result
      */
     public String getTaskResult(String queue, String runId) throws AbsurdException {
+        if (queue == null || queue.trim().isEmpty()) {
+            throw new IllegalArgumentException("queue cannot be null or empty");
+        }
+        if (runId == null || runId.trim().isEmpty()) {
+            throw new IllegalArgumentException("runId cannot be null or empty");
+        }
+        
         String sql = "SELECT absurd.get_task_result(?, ?)";
         
         try (Connection conn = dataSource.getConnection();
@@ -260,6 +350,12 @@ public class DbClient {
      * @throws AbsurdException if there's an error creating the queue
      */
     public void createQueue(String queueName, String retryStrategyJson, String cancellationPolicyJson) throws AbsurdException {
+        if (queueName == null || queueName.trim().isEmpty()) {
+            throw new IllegalArgumentException("queueName cannot be null or empty");
+        }
+        validateJson(retryStrategyJson, "retryStrategyJson");
+        validateJson(cancellationPolicyJson, "cancellationPolicyJson");
+        
         String sql = "CALL absurd.create_queue(?, CAST(? AS jsonb), CAST(? AS jsonb))";
         
         try (Connection conn = dataSource.getConnection();
@@ -284,6 +380,13 @@ public class DbClient {
      * @throws AbsurdException if there's an error heartbeat the task
      */
     public void heartbeatTask(String queue, String runId) throws AbsurdException {
+        if (queue == null || queue.trim().isEmpty()) {
+            throw new IllegalArgumentException("queue cannot be null or empty");
+        }
+        if (runId == null || runId.trim().isEmpty()) {
+            throw new IllegalArgumentException("runId cannot be null or empty");
+        }
+        
         String sql = "CALL absurd.heartbeat_task(?, ?)";
         
         try (Connection conn = dataSource.getConnection();

@@ -24,6 +24,9 @@ public class DbClientManualTest {
         // Test 3: Basic method signatures
         testMethodSignatures();
         
+        // Test 4: Input validation
+        testValidation();
+        
         System.out.println("\n=== All DbClient Tests Passed ===");
     }
     
@@ -117,6 +120,94 @@ public class DbClientManualTest {
         } catch (NoSuchMethodException e) {
             throw new AssertionError("Method signature missing: " + e.getMessage());
         }
+    }
+    
+    private static void testValidation() {
+        System.out.println("Testing input validation...");
+        
+        DataSource mockDataSource = new MockDataSource();
+        DbClient dbClient = new DbClient(mockDataSource);
+        
+        // Test claimTasks validation
+        try {
+            dbClient.claimTasks(null, "worker1", 30000, 10);
+            throw new AssertionError("Expected IllegalArgumentException for null queue");
+        } catch (IllegalArgumentException e) {
+            if (e.getMessage().contains("queue cannot be null or empty")) {
+                System.out.println("✓ claimTasks validates null queue");
+            } else {
+                throw new AssertionError("Wrong error message: " + e.getMessage());
+            }
+        }
+        
+        try {
+            dbClient.claimTasks("test-queue", null, 30000, 10);
+            throw new AssertionError("Expected IllegalArgumentException for null workerId");
+        } catch (IllegalArgumentException e) {
+            if (e.getMessage().contains("workerId cannot be null or empty")) {
+                System.out.println("✓ claimTasks validates null workerId");
+            } else {
+                throw new AssertionError("Wrong error message: " + e.getMessage());
+            }
+        }
+        
+        try {
+            dbClient.claimTasks("test-queue", "worker1", 0, 10);
+            throw new AssertionError("Expected IllegalArgumentException for zero claimTimeout");
+        } catch (IllegalArgumentException e) {
+            if (e.getMessage().contains("claimTimeout must be positive")) {
+                System.out.println("✓ claimTasks validates positive claimTimeout");
+            } else {
+                throw new AssertionError("Wrong error message: " + e.getMessage());
+            }
+        }
+        
+        try {
+            dbClient.claimTasks("test-queue", "worker1", 30000, 0);
+            throw new AssertionError("Expected IllegalArgumentException for zero batchSize");
+        } catch (IllegalArgumentException e) {
+            if (e.getMessage().contains("batchSize must be positive")) {
+                System.out.println("✓ claimTasks validates positive batchSize");
+            } else {
+                throw new AssertionError("Wrong error message: " + e.getMessage());
+            }
+        }
+        
+        // Test spawnTask validation
+        try {
+            dbClient.spawnTask(null, "task1", "{}", "{}", null, null);
+            throw new AssertionError("Expected IllegalArgumentException for null queue");
+        } catch (IllegalArgumentException e) {
+            if (e.getMessage().contains("queue cannot be null or empty")) {
+                System.out.println("✓ spawnTask validates null queue");
+            } else {
+                throw new AssertionError("Wrong error message: " + e.getMessage());
+            }
+        }
+        
+        try {
+            dbClient.spawnTask("test-queue", null, "{}", "{}", null, null);
+            throw new AssertionError("Expected IllegalArgumentException for null taskName");
+        } catch (IllegalArgumentException e) {
+            if (e.getMessage().contains("taskName cannot be null or empty")) {
+                System.out.println("✓ spawnTask validates null taskName");
+            } else {
+                throw new AssertionError("Wrong error message: " + e.getMessage());
+            }
+        }
+        
+        try {
+            dbClient.spawnTask("test-queue", "task1", null, "{}", null, null);
+            throw new AssertionError("Expected IllegalArgumentException for null input");
+        } catch (IllegalArgumentException e) {
+            if (e.getMessage().contains("input cannot be null")) {
+                System.out.println("✓ spawnTask validates JSON input");
+            } else {
+                throw new AssertionError("Wrong error message: " + e.getMessage());
+            }
+        }
+        
+        System.out.println("✓ All validation tests passed");
     }
     
     /**
