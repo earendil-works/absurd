@@ -1,4 +1,4 @@
-.PHONY: format check check-python test test-core test-typescript test-python test-go build-absurdctl build-absurdctl-pypi docs serve-docs
+.PHONY: format check check-python test test-core test-typescript test-python test-go test-java build-absurdctl build-absurdctl-pypi docs serve-docs
 
 # Format all code
 format:
@@ -36,7 +36,7 @@ check-python:
 	@cd sdks/python && uv run --all-groups --with ty ty check
 
 # Run all tests
-test: test-core test-typescript test-python test-go
+test: test-core test-typescript test-python test-go test-java
 
 # Run core tests
 test-core:
@@ -59,3 +59,8 @@ test-go:
 	@cd sdks/go/absurd && go test ./...
 	@echo "Running Go SDK tests (integration module)"
 	@cd sdks/go/tests && go test ./...
+
+# Run Java SDK tests
+test-java:
+	@echo "Running Java SDK tests"
+	@cd sdks/java && ./gradlew test --no-daemon

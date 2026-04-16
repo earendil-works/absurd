@@ -4,3 +4,5 @@ node_modules
 dist/
 .build/
 site/
+sdks/java/.gradle/
+sdks/java/build/

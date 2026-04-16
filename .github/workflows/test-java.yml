@@ -1,0 +1,32 @@
+name: Test Java
+
+on:
+  push:
+    paths:
+      - 'sdks/java/**'
+      - 'sql/**'
+  pull_request:
+    paths:
+      - 'sdks/java/**'
+      - 'sql/**'
+
+jobs:
+  test-java:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Set up Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+          cache: 'gradle'
+          cache-dependency-path: |
+            sdks/java/*.gradle
+            sdks/java/gradle/wrapper/gradle-wrapper.properties
+
+      - name: Run Java SDK tests
+        run: make test-java

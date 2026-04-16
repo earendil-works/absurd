@@ -50,4 +50,4 @@ jobs:
           docker save absurd-test-postgres16-pgcron:16-1.6.7-faketime6 --output /tmp/absurd-test-postgres16-pgcron-16-1.6.7-faketime6.tar
 
       - name: Run tests
-        run: make test
+        run: make test-core test-typescript test-python test-go
