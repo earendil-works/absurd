@@ -20,12 +20,14 @@ public interface TaskDefinition<T, R> {
     /**
      * Gets the retry strategy for this task.
      * @return the retry strategy, or null if using default
+     * @see Absurd#getDefaultRetryStrategy() for default implementation
      */
     RetryStrategy getRetryStrategy();
     
     /**
      * Gets the cancellation policy for this task.
      * @return the cancellation policy, or null if using default
+     * @see Absurd#getDefaultCancellationPolicy() for default implementation
      */
     CancellationPolicy getCancellationPolicy();
 }

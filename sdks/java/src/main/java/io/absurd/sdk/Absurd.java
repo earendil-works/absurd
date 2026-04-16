@@ -54,6 +54,24 @@ public class Absurd {
     }
     
     /**
+     * Gets the default retry strategy used when task definitions don't specify one.
+     * 
+     * @return the default retry strategy
+     */
+    public RetryStrategy getDefaultRetryStrategy() {
+        return new RetryStrategy(3, 1000, 2.0);
+    }
+    
+    /**
+     * Gets the default cancellation policy used when task definitions don't specify one.
+     * 
+     * @return the default cancellation policy
+     */
+    public CancellationPolicy getDefaultCancellationPolicy() {
+        return new CancellationPolicy(30000, true);
+    }
+    
+    /**
      * Registers a task definition.
      * 
      * @param definition the task definition to register
@@ -148,6 +166,9 @@ public class Absurd {
         public Absurd build() {
             if (connectionString == null || connectionString.trim().isEmpty()) {
                 throw new IllegalStateException("Connection string must be specified");
+            }
+            if (taskDefinitions.isEmpty()) {
+                throw new IllegalStateException("At least one task definition must be registered");
             }
             return new Absurd(this);
         }

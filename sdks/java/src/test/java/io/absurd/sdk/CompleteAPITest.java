@@ -47,6 +47,29 @@ public class CompleteAPITest {
         assertEquals(1, absurd.getTaskDefinitions().size());
         assertNotNull(absurd.getHooks());
         
+        // Test default strategies
+        assertNotNull(absurd.getDefaultRetryStrategy());
+        assertTrue(absurd.getDefaultRetryStrategy().getMaxAttempts() == 3);
+        assertNotNull(absurd.getDefaultCancellationPolicy());
+        assertTrue(absurd.getDefaultCancellationPolicy().getTimeoutMs() == 30000);
+        
+        // Test builder validation
+        try {
+            Absurd.builder().build();
+            throw new AssertionError("Expected IllegalStateException for missing connection string");
+        } catch (IllegalStateException e) {
+            assertTrue(e.getMessage().contains("Connection string must be specified"));
+        }
+        
+        try {
+            Absurd.builder()
+                .connectionString("jdbc:postgresql://localhost:5432/test")
+                .build();
+            throw new AssertionError("Expected IllegalStateException for missing task definitions");
+        } catch (IllegalStateException e) {
+            assertTrue(e.getMessage().contains("At least one task definition must be registered"));
+        }
+        
         // Test builder pattern
         assertNotNull(Absurd.builder());
         
@@ -118,6 +141,23 @@ public class CompleteAPITest {
         assertEquals("parent-123", options.getParentRunId());
         assertEquals("* * * * *", options.getCronSchedule());
         
+        // Test builder validation
+        try {
+            SpawnOptions.builder().build();
+            throw new AssertionError("Expected IllegalStateException for missing queueName");
+        } catch (IllegalStateException e) {
+            assertTrue(e.getMessage().contains("queueName must be specified"));
+        }
+        
+        try {
+            SpawnOptions.builder()
+                .queueName("test-queue")
+                .build();
+            throw new AssertionError("Expected IllegalStateException for missing taskName");
+        } catch (IllegalStateException e) {
+            assertTrue(e.getMessage().contains("taskName must be specified"));
+        }
+        
         System.out.println("✓ SpawnOptions works correctly");
     }
     
@@ -137,6 +177,24 @@ public class CompleteAPITest {
         assertEquals(500, options.getPollIntervalMs());
         assertEquals(10000, options.getMaxPollIntervalMs());
         assertEquals(15000, options.getPollTimeoutMs());
+        
+        // Test builder validation
+        try {
+            WorkerOptions.builder().build();
+            throw new AssertionError("Expected IllegalStateException for missing queueName");
+        } catch (IllegalStateException e) {
+            assertTrue(e.getMessage().contains("queueName must be specified"));
+        }
+        
+        try {
+            WorkerOptions.builder()
+                .queueName("test-queue")
+                .concurrency(0)
+                .build();
+            throw new AssertionError("Expected IllegalStateException for invalid concurrency");
+        } catch (IllegalStateException e) {
+            assertTrue(e.getMessage().contains("concurrency must be positive"));
+        }
         
         System.out.println("✓ WorkerOptions works correctly");
     }
@@ -191,6 +249,14 @@ public class CompleteAPITest {
         assertEquals("test-queue", options.getQueueName());
         assertNotNull(options.getRetryStrategy());
         assertNotNull(options.getCancellationPolicy());
+        
+        // Test builder validation
+        try {
+            CreateQueueOptions.builder().build();
+            throw new AssertionError("Expected IllegalStateException for missing queueName");
+        } catch (IllegalStateException e) {
+            assertTrue(e.getMessage().contains("queueName must be specified"));
+        }
         
         System.out.println("✓ CreateQueueOptions works correctly");
     }

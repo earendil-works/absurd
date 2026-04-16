@@ -89,6 +89,12 @@ public class SpawnOptions {
         }
         
         public SpawnOptions build() {
+            if (queueName == null || queueName.trim().isEmpty()) {
+                throw new IllegalStateException("queueName must be specified");
+            }
+            if (taskName == null || taskName.trim().isEmpty()) {
+                throw new IllegalStateException("taskName must be specified");
+            }
             return new SpawnOptions(this);
         }
     }

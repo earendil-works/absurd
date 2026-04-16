@@ -75,6 +75,21 @@ public class WorkerOptions {
         }
         
         public WorkerOptions build() {
+            if (queueName == null || queueName.trim().isEmpty()) {
+                throw new IllegalStateException("queueName must be specified");
+            }
+            if (concurrency <= 0) {
+                throw new IllegalStateException("concurrency must be positive");
+            }
+            if (pollIntervalMs <= 0) {
+                throw new IllegalStateException("pollIntervalMs must be positive");
+            }
+            if (maxPollIntervalMs <= 0) {
+                throw new IllegalStateException("maxPollIntervalMs must be positive");
+            }
+            if (pollTimeoutMs <= 0) {
+                throw new IllegalStateException("pollTimeoutMs must be positive");
+            }
             return new WorkerOptions(this);
         }
     }

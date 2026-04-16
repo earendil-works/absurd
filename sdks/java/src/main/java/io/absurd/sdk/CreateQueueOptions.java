@@ -51,6 +51,9 @@ public class CreateQueueOptions {
         }
         
         public CreateQueueOptions build() {
+            if (queueName == null || queueName.trim().isEmpty()) {
+                throw new IllegalStateException("queueName must be specified");
+            }
             return new CreateQueueOptions(this);
         }
     }
