@@ -30,11 +30,10 @@ type TaskContext struct {
 	eventRaw        json.RawMessage
 	onLeaseExtended func(time.Duration)
 
-	mu                                sync.Mutex
-	headersCache                      map[string]any
-	checkpointCache                   map[string]json.RawMessage
-	stepNameCounter                   map[string]int
-	awaitEventTimedOutColumnSupported *bool
+	mu              sync.Mutex
+	headersCache    map[string]any
+	checkpointCache map[string]json.RawMessage
+	stepNameCounter map[string]int
 }
 
 var errInvalidTaskHeaders = errors.New("absurd: invalid task headers")
@@ -157,58 +156,6 @@ func (t *TaskContext) nextCheckpointName(name string) string {
 		return name
 	}
 	return fmt.Sprintf("%s#%d", name, count)
-}
-
-func (t *TaskContext) getAwaitEventTimedOutColumnSupport() (bool, bool) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	if t.awaitEventTimedOutColumnSupported == nil {
-		return false, false
-	}
-	return *t.awaitEventTimedOutColumnSupported, true
-}
-
-func (t *TaskContext) setAwaitEventTimedOutColumnSupport(value bool) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	v := value
-	t.awaitEventTimedOutColumnSupported = &v
-}
-
-func (t *TaskContext) ensureAwaitEventTimedOutColumnSupport(ctx context.Context) (bool, error) {
-	if cached, ok := t.getAwaitEventTimedOutColumnSupport(); ok {
-		return cached, nil
-	}
-
-	row := t.client.db.QueryRowContext(ctx, `SELECT EXISTS (
-			SELECT 1
-			  FROM pg_catalog.pg_proc p
-			  JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
-			  JOIN LATERAL unnest(p.proargmodes, p.proargnames)
-			    WITH ORDINALITY AS out_args(mode, name, ord) ON true
-			 WHERE n.nspname = 'absurd'
-			   AND p.proname = 'await_event'
-			   AND out_args.mode IN ('o', 't')
-			   AND out_args.name = 'timed_out'
-		) AS supported`)
-
-	var supported bool
-	if err := row.Scan(&supported); err != nil {
-		return false, err
-	}
-	t.setAwaitEventTimedOutColumnSupport(supported)
-	return supported, nil
-}
-
-func (t *TaskContext) consumeLegacyAwaitEventTimeout(eventName string) bool {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	if t.wakeEvent != eventName || t.eventRaw != nil {
-		return false
-	}
-	t.wakeEvent = ""
-	t.eventRaw = nil
-	return true
 }
 
 func (t *TaskContext) lookupCheckpoint(ctx context.Context, checkpointName string) (json.RawMessage, bool, error) {
@@ -435,15 +382,6 @@ func AwaitEvent[T any](ctx context.Context, eventName string, options ...AwaitEv
 		return value, nil
 	}
 
-	timedOutSupport, err := task.ensureAwaitEventTimedOutColumnSupport(ctx)
-	if err != nil {
-		return zero[T](), err
-	}
-
-	if !timedOutSupport && task.consumeLegacyAwaitEventTimeout(eventName) {
-		return zero[T](), newTimeoutError(`timed out waiting for event %q`, eventName)
-	}
-
 	var timeoutSeconds any = nil
 	if opts.Timeout > 0 {
 		timeoutSeconds = durationSeconds(opts.Timeout)
@@ -455,48 +393,50 @@ func AwaitEvent[T any](ctx context.Context, eventName string, options ...AwaitEv
 	var payload []byte
 	var timedOut bool
 
-	if timedOutSupport {
-		row := task.client.db.QueryRowContext(ctx, `SELECT should_suspend, payload, timed_out
+	rows, err := task.client.db.QueryContext(ctx, `SELECT *
         FROM absurd.await_event($1, $2, $3, $4, $5, $6)`,
-			task.queueName,
-			task.taskID,
-			task.runID,
-			checkpointName,
-			eventName,
-			timeoutSeconds,
-		)
-		if err := row.Scan(&shouldSuspend, &payload, &timedOut); err != nil {
-			return zero[T](), mapTaskStateError(err)
-		}
-	} else {
-		if task.consumeLegacyAwaitEventTimeout(eventName) {
-			return zero[T](), newTimeoutError(`timed out waiting for event %q`, eventName)
-		}
-
-		row := task.client.db.QueryRowContext(ctx, `SELECT should_suspend, payload
-        FROM absurd.await_event($1, $2, $3, $4, $5, $6)`,
-			task.queueName,
-			task.taskID,
-			task.runID,
-			checkpointName,
-			eventName,
-			timeoutSeconds,
-		)
-		if err := row.Scan(&shouldSuspend, &payload); err != nil {
-			return zero[T](), mapTaskStateError(err)
-		}
+		task.queueName,
+		task.taskID,
+		task.runID,
+		checkpointName,
+		eventName,
+		timeoutSeconds,
+	)
+	if err != nil {
+		return zero[T](), mapTaskStateError(err)
 	}
+	defer rows.Close()
+
+	columns, err := rows.Columns()
+	if err != nil {
+		return zero[T](), err
+	}
+
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return zero[T](), mapTaskStateError(err)
+		}
+		return zero[T](), fmt.Errorf("await_event returned no rows")
+	}
+
+	switch len(columns) {
+	case 2:
+		if err := rows.Scan(&shouldSuspend, &payload); err != nil {
+			return zero[T](), mapTaskStateError(err)
+		}
+		timedOut = false
+	case 3:
+		if err := rows.Scan(&shouldSuspend, &payload, &timedOut); err != nil {
+			return zero[T](), mapTaskStateError(err)
+		}
+	default:
+		return zero[T](), fmt.Errorf("await_event returned unexpected column count: %d", len(columns))
+	}
+
 	if shouldSuspend {
 		return zero[T](), errSuspend
 	}
-	if timedOut {
-		task.mu.Lock()
-		task.wakeEvent = ""
-		task.eventRaw = nil
-		task.mu.Unlock()
-		return zero[T](), newTimeoutError(`timed out waiting for event %q`, eventName)
-	}
-	if payload == nil {
+	if timedOut || payload == nil {
 		task.mu.Lock()
 		task.wakeEvent = ""
 		task.eventRaw = nil

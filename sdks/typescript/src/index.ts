@@ -271,7 +271,6 @@ export class TaskContext {
   private readonly checkpointCache: Map<string, JsonValue>;
   private readonly claimTimeout: number;
   private readonly onLeaseExtended: (leaseSeconds: number) => void;
-  private awaitEventTimedOutColumnSupported: boolean | null = null;
 
   private constructor(
     log: Log,
@@ -481,35 +480,6 @@ export class TaskContext {
     ]);
   }
 
-  private async ensureAwaitEventTimedOutColumnSupport(): Promise<boolean> {
-    if (this.awaitEventTimedOutColumnSupported !== null) {
-      return this.awaitEventTimedOutColumnSupported;
-    }
-
-    const result = await this.con.query<{ supported: boolean }>(
-      `SELECT EXISTS (
-         SELECT 1
-           FROM pg_catalog.pg_proc p
-           JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
-           JOIN LATERAL unnest(p.proargmodes, p.proargnames)
-             WITH ORDINALITY AS out_args(mode, name, ord) ON true
-          WHERE n.nspname = 'absurd'
-            AND p.proname = 'await_event'
-            AND out_args.mode IN ('o', 't')
-            AND out_args.name = 'timed_out'
-       ) AS supported`,
-    );
-
-    if (result.rows.length === 0) {
-      throw new Error(
-        "Failed to detect absurd.await_event timed_out support",
-      );
-    }
-
-    this.awaitEventTimedOutColumnSupported = Boolean(result.rows[0].supported);
-    return this.awaitEventTimedOutColumnSupported;
-  }
-
   /**
    * Waits for an event by name and returns its payload; optionally sets a custom step name and timeout (seconds).
    * @param eventName Event identifier to wait for.
@@ -537,60 +507,35 @@ export class TaskContext {
       return cached as JsonValue;
     }
 
-    const timedOutColumnSupported =
-      await this.ensureAwaitEventTimedOutColumnSupport();
-
-    const runLegacyTimeoutPath =
-      !timedOutColumnSupported &&
-      this.task.wake_event === eventName &&
-      (this.task.event_payload === null ||
-        this.task.event_payload === undefined);
-
-    if (runLegacyTimeoutPath) {
-      this.task.wake_event = null;
-      this.task.event_payload = null;
-      throw new TimeoutError(`Timed out waiting for event "${eventName}"`);
-    }
-
-    const result = timedOutColumnSupported
-      ? await this.queryWithTaskStateCheck(
-          `SELECT should_suspend, payload, timed_out
-             FROM absurd.await_event($1, $2, $3, $4, $5, $6)`,
-          [
-            this.queueName,
-            this.task.task_id,
-            this.task.run_id,
-            checkpointName,
-            eventName,
-            timeout,
-          ],
-        )
-      : await this.queryWithTaskStateCheck(
-          `SELECT should_suspend, payload
-             FROM absurd.await_event($1, $2, $3, $4, $5, $6)`,
-          [
-            this.queueName,
-            this.task.task_id,
-            this.task.run_id,
-            checkpointName,
-            eventName,
-            timeout,
-          ],
-        );
+    const result = await this.queryWithTaskStateCheck(
+      `SELECT *
+         FROM absurd.await_event($1, $2, $3, $4, $5, $6)`,
+      [
+        this.queueName,
+        this.task.task_id,
+        this.task.run_id,
+        checkpointName,
+        eventName,
+        timeout,
+      ],
+    );
 
     if (result.rows.length === 0) {
       throw new Error("Failed to await event");
     }
 
-    const { should_suspend, payload, timed_out } = result.rows[0];
+    const row = result.rows[0];
+    const shouldSuspend = row.should_suspend as boolean;
+    const payload = row.payload as JsonValue;
+    const timedOut = row.timed_out === true;
 
-    if (timed_out) {
+    if (timedOut) {
       this.task.wake_event = null;
       this.task.event_payload = null;
       throw new TimeoutError(`Timed out waiting for event "${eventName}"`);
     }
 
-    if (!should_suspend) {
+    if (!shouldSuspend) {
       this.checkpointCache.set(checkpointName, payload);
       this.task.event_payload = null;
       return payload;

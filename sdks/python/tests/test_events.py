@@ -4,7 +4,6 @@ from datetime import datetime, timezone, timedelta
 import psycopg
 from psycopg import sql
 
-import absurd_sdk
 from absurd_sdk import Absurd, TimeoutError
 
 
@@ -348,16 +347,8 @@ def test_await_event_timeout_checkpoint_preserves_progress_across_multiple_await
     assert wait_count_after == 0
 
 
-def test_await_event_legacy_fallback_works_in_transactional_connection(
-    db_dsn, queue_name, monkeypatch
-):
+def test_await_event_works_in_transactional_connection(db_dsn, queue_name):
     queue = queue_name("timeout_tx_fallback")
-
-    monkeypatch.setattr(
-        absurd_sdk.TaskContext,
-        "_ensure_await_event_timed_out_column_support",
-        lambda self: False,
-    )
 
     with psycopg.connect(db_dsn, autocommit=False) as tx_conn:
         tx_conn.execute("set timezone to 'UTC'")

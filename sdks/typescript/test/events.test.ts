@@ -80,10 +80,13 @@ describe("Event system", () => {
     const eventName = randomName("sentinel_payload_event");
     const payload = { $awaitEventTimeout: true };
 
-    absurd.registerTask({ name: "sentinel-payload-waiter" }, async (_params, ctx) => {
-      const received = await ctx.awaitEvent(eventName);
-      return { received };
-    });
+    absurd.registerTask(
+      { name: "sentinel-payload-waiter" },
+      async (_params, ctx) => {
+        const received = await ctx.awaitEvent(eventName);
+        return { received };
+      },
+    );
 
     await absurd.emitEvent(eventName, payload);
 
