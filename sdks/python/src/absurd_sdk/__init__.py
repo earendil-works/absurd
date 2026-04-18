@@ -641,6 +641,7 @@ def _create_task_context(
     ctx._checkpoint_cache = cache
     ctx._claim_timeout = claim_timeout
     ctx._step_name_counter = {}
+    ctx._await_event_timed_out_column_supported = None
     return ctx
 
 
@@ -668,6 +669,7 @@ async def _create_async_task_context(
     ctx._checkpoint_cache = cache
     ctx._claim_timeout = claim_timeout
     ctx._step_name_counter = {}
+    ctx._await_event_timed_out_column_supported = None
     return ctx
 
 
@@ -681,6 +683,7 @@ class TaskContext:
     _checkpoint_cache: Dict[str, JsonValue]
     _claim_timeout: int
     _step_name_counter: Dict[str, int]
+    _await_event_timed_out_column_supported: Optional[bool]
 
     def __init__(self):
         raise TypeError("Cannot create TaskContext instances")
@@ -802,33 +805,56 @@ class TaskContext:
         if cached is not _CHECKPOINT_NOT_FOUND:
             return cast(JsonValue, cached)
 
-        if (
-            self._task["wake_event"] == event_name
+        timed_out_column_supported = self._ensure_await_event_timed_out_column_support()
+
+        run_legacy_timeout_path = (
+            not timed_out_column_supported
+            and self._task["wake_event"] == event_name
             and self._task["event_payload"] is None
-        ):
+        )
+        if run_legacy_timeout_path:
             self._task["wake_event"] = None
             self._task["event_payload"] = None
             raise TimeoutError(f'Timed out waiting for event "{event_name}"')
 
         cursor = self._conn.cursor(row_factory=dict_row)
         with _task_state_exception_handling():
-            cursor.execute(
-                """SELECT should_suspend, payload
-                   FROM absurd.await_event(%s, %s, %s, %s, %s, %s)""",
-                (
-                    self._queue_name,
-                    self._task["task_id"],
-                    self._task["run_id"],
-                    checkpoint_name,
-                    event_name,
-                    timeout,
-                ),
-            )
+            if timed_out_column_supported:
+                cursor.execute(
+                    """SELECT should_suspend, payload, timed_out
+                       FROM absurd.await_event(%s, %s, %s, %s, %s, %s)""",
+                    (
+                        self._queue_name,
+                        self._task["task_id"],
+                        self._task["run_id"],
+                        checkpoint_name,
+                        event_name,
+                        timeout,
+                    ),
+                )
+            else:
+                cursor.execute(
+                    """SELECT should_suspend, payload
+                       FROM absurd.await_event(%s, %s, %s, %s, %s, %s)""",
+                    (
+                        self._queue_name,
+                        self._task["task_id"],
+                        self._task["run_id"],
+                        checkpoint_name,
+                        event_name,
+                        timeout,
+                    ),
+                )
 
         result = cursor.fetchone()
 
         if not result:
             raise Exception("Failed to await event")
+
+        if result.get("timed_out"):
+            self._task["wake_event"] = None
+            self._task["event_payload"] = None
+            raise TimeoutError(f'Timed out waiting for event "{event_name}"')
 
         if not result["should_suspend"]:
             self._checkpoint_cache[checkpoint_name] = result["payload"]
@@ -907,6 +933,30 @@ class TaskContext:
         self._step_name_counter[name] = count
         return name if count == 1 else f"{name}#{count}"
 
+    def _ensure_await_event_timed_out_column_support(self) -> bool:
+        if self._await_event_timed_out_column_supported is not None:
+            return self._await_event_timed_out_column_supported
+
+        cursor = self._conn.cursor(row_factory=dict_row)
+        cursor.execute(
+            """SELECT EXISTS (
+                   SELECT 1
+                     FROM pg_catalog.pg_proc p
+                     JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
+                     JOIN LATERAL unnest(p.proargmodes, p.proargnames)
+                       WITH ORDINALITY AS out_args(mode, name, ord) ON true
+                    WHERE n.nspname = 'absurd'
+                      AND p.proname = 'await_event'
+                      AND out_args.mode IN ('o', 't')
+                      AND out_args.name = 'timed_out'
+               ) AS supported"""
+        )
+        row = cursor.fetchone()
+        if not row:
+            raise Exception("Failed to detect absurd.await_event timed_out support")
+        self._await_event_timed_out_column_supported = bool(row["supported"])
+        return self._await_event_timed_out_column_supported
+
     def _lookup_checkpoint(self, checkpoint_name: str) -> Union[JsonValue, object]:
         """Look up a checkpoint by name"""
         if checkpoint_name in self._checkpoint_cache:
@@ -963,6 +1013,7 @@ class AsyncTaskContext:
     _checkpoint_cache: Dict[str, JsonValue]
     _claim_timeout: int
     _step_name_counter: Dict[str, int]
+    _await_event_timed_out_column_supported: Optional[bool]
 
     def __init__(self):
         raise TypeError("Cannot create AsyncTaskContext instances")
@@ -1044,33 +1095,58 @@ class AsyncTaskContext:
         if cached is not _CHECKPOINT_NOT_FOUND:
             return cast(JsonValue, cached)
 
-        if (
-            self._task["wake_event"] == event_name
+        timed_out_column_supported = (
+            await self._ensure_await_event_timed_out_column_support()
+        )
+
+        run_legacy_timeout_path = (
+            not timed_out_column_supported
+            and self._task["wake_event"] == event_name
             and self._task["event_payload"] is None
-        ):
+        )
+        if run_legacy_timeout_path:
             self._task["wake_event"] = None
             self._task["event_payload"] = None
             raise TimeoutError(f'Timed out waiting for event "{event_name}"')
 
         cursor = self._conn.cursor(row_factory=dict_row)
         with _task_state_exception_handling():
-            await cursor.execute(
-                """SELECT should_suspend, payload
-                   FROM absurd.await_event(%s, %s, %s, %s, %s, %s)""",
-                (
-                    self._queue_name,
-                    self._task["task_id"],
-                    self._task["run_id"],
-                    checkpoint_name,
-                    event_name,
-                    timeout,
-                ),
-            )
+            if timed_out_column_supported:
+                await cursor.execute(
+                    """SELECT should_suspend, payload, timed_out
+                       FROM absurd.await_event(%s, %s, %s, %s, %s, %s)""",
+                    (
+                        self._queue_name,
+                        self._task["task_id"],
+                        self._task["run_id"],
+                        checkpoint_name,
+                        event_name,
+                        timeout,
+                    ),
+                )
+            else:
+                await cursor.execute(
+                    """SELECT should_suspend, payload
+                       FROM absurd.await_event(%s, %s, %s, %s, %s, %s)""",
+                    (
+                        self._queue_name,
+                        self._task["task_id"],
+                        self._task["run_id"],
+                        checkpoint_name,
+                        event_name,
+                        timeout,
+                    ),
+                )
 
         result = await cursor.fetchone()
 
         if not result:
             raise Exception("Failed to await event")
+
+        if result.get("timed_out"):
+            self._task["wake_event"] = None
+            self._task["event_payload"] = None
+            raise TimeoutError(f'Timed out waiting for event "{event_name}"')
 
         if not result["should_suspend"]:
             self._checkpoint_cache[checkpoint_name] = result["payload"]
@@ -1150,6 +1226,30 @@ class AsyncTaskContext:
         count = self._step_name_counter.get(name, 0) + 1
         self._step_name_counter[name] = count
         return name if count == 1 else f"{name}#{count}"
+
+    async def _ensure_await_event_timed_out_column_support(self) -> bool:
+        if self._await_event_timed_out_column_supported is not None:
+            return self._await_event_timed_out_column_supported
+
+        cursor = self._conn.cursor(row_factory=dict_row)
+        await cursor.execute(
+            """SELECT EXISTS (
+                   SELECT 1
+                     FROM pg_catalog.pg_proc p
+                     JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
+                     JOIN LATERAL unnest(p.proargmodes, p.proargnames)
+                       WITH ORDINALITY AS out_args(mode, name, ord) ON true
+                    WHERE n.nspname = 'absurd'
+                      AND p.proname = 'await_event'
+                      AND out_args.mode IN ('o', 't')
+                      AND out_args.name = 'timed_out'
+               ) AS supported"""
+        )
+        row = await cursor.fetchone()
+        if not row:
+            raise Exception("Failed to detect absurd.await_event timed_out support")
+        self._await_event_timed_out_column_supported = bool(row["supported"])
+        return self._await_event_timed_out_column_supported
 
     async def _lookup_checkpoint(
         self, checkpoint_name: str

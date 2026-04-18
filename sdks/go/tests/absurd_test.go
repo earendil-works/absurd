@@ -387,6 +387,51 @@ func TestQuickstartStyleAwaitEventFlow(t *testing.T) {
 	}
 }
 
+func TestAwaitEventSupportsPayloadLikeLegacyTimeoutSentinel(t *testing.T) {
+	queue := randomQueueName("go_sentinel_payload")
+	client := newTestClient(t, queue)
+
+	client.MustRegister(absurd.Task("sentinel-payload-waiter", func(ctx context.Context, params map[string]any) (map[string]any, error) {
+		received, err := absurd.AwaitEvent[map[string]any](ctx, "sentinel-payload-event")
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"received": received}, nil
+	}))
+
+	if err := client.EmitEvent(context.Background(), queue, "sentinel-payload-event", map[string]any{"$awaitEventTimeout": true}); err != nil {
+		t.Fatalf("EmitEvent failed: %v", err)
+	}
+
+	spawned, err := client.Spawn(context.Background(), "sentinel-payload-waiter", nil)
+	if err != nil {
+		t.Fatalf("Spawn failed: %v", err)
+	}
+
+	if err := client.WorkBatch(context.Background(), absurd.WorkBatchOptions{WorkerID: "worker"}); err != nil {
+		t.Fatalf("WorkBatch failed: %v", err)
+	}
+
+	snapshot, err := client.AwaitTaskResult(context.Background(), queue, spawned.TaskID, absurd.AwaitTaskResultOptions{Timeout: 5 * time.Second})
+	if err != nil {
+		t.Fatalf("AwaitTaskResult failed: %v", err)
+	}
+	if snapshot.State != absurd.TaskCompleted {
+		t.Fatalf("unexpected task state: %s", snapshot.State)
+	}
+	var result map[string]map[string]any
+	if err := snapshot.DecodeResult(&result); err != nil {
+		t.Fatalf("DecodeResult failed: %v", err)
+	}
+	received, ok := result["received"]
+	if !ok {
+		t.Fatalf("missing received payload: %#v", result)
+	}
+	if received["$awaitEventTimeout"] != true {
+		t.Fatalf("unexpected payload: %#v", received)
+	}
+}
+
 func TestRunWorkerAndAwaitTaskResult(t *testing.T) {
 	queue := randomQueueName("go_worker")
 	client := newTestClient(t, queue)
@@ -502,6 +547,92 @@ func TestAwaitEventNegativeTimeoutDoesNotSleepForever(t *testing.T) {
 	}
 	if !result["timed_out"] {
 		t.Fatalf("expected timeout result, got %#v", result)
+	}
+}
+
+func TestAwaitEventTimeoutCheckpointPreservesProgressAcrossMultipleAwaits(t *testing.T) {
+	queue := randomQueueName("go_timeout_loop")
+	db := setupTestDatabase(t)
+	client := newTestClient(t, queue)
+
+	baseTime := time.Date(2024, 5, 2, 13, 0, 0, 0, time.UTC)
+	setFakeNow(t, db, &baseTime)
+	defer setFakeNow(t, db, nil)
+
+	client.MustRegister(absurd.Task("timeout-loop", func(ctx context.Context, params map[string]any) (map[string]any, error) {
+		stages := make([]string, 0, 2)
+		for cycle := 0; cycle < 2; cycle++ {
+			_, err := absurd.AwaitEvent[map[string]any](ctx, fmt.Sprintf("wake:%d", cycle), absurd.AwaitEventOptions{
+				StepName: fmt.Sprintf("await-%d", cycle),
+				Timeout:  10 * time.Second,
+			})
+			if err != nil {
+				var timeoutErr *absurd.TimeoutError
+				if errors.As(err, &timeoutErr) {
+					stages = append(stages, fmt.Sprintf("timeout-%d", cycle))
+					continue
+				}
+				return nil, err
+			}
+			stages = append(stages, fmt.Sprintf("event-%d", cycle))
+		}
+		return map[string]any{"stages": stages}, nil
+	}))
+
+	spawned, err := client.Spawn(context.Background(), "timeout-loop", nil)
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+
+	if err := client.WorkBatch(context.Background(), absurd.WorkBatchOptions{WorkerID: "worker-timeout"}); err != nil {
+		t.Fatalf("WorkBatch first pass: %v", err)
+	}
+
+	t1 := baseTime.Add(15 * time.Second)
+	setFakeNow(t, db, &t1)
+	if err := client.WorkBatch(context.Background(), absurd.WorkBatchOptions{WorkerID: "worker-timeout"}); err != nil {
+		t.Fatalf("WorkBatch second pass: %v", err)
+	}
+
+	var runState string
+	var wakeEvent sql.NullString
+	runQuery := fmt.Sprintf(`select state, wake_event from absurd.r_%s where run_id = $1`, queue)
+	if err := db.QueryRow(runQuery, spawned.RunID).Scan(&runState, &wakeEvent); err != nil {
+		t.Fatalf("fetch mid run: %v", err)
+	}
+	if runState != "sleeping" || !wakeEvent.Valid || wakeEvent.String != "wake:1" {
+		t.Fatalf("expected sleeping on wake:1, got state=%q wake_event=%v", runState, wakeEvent)
+	}
+
+	t2 := baseTime.Add(30 * time.Second)
+	setFakeNow(t, db, &t2)
+	if err := client.WorkBatch(context.Background(), absurd.WorkBatchOptions{WorkerID: "worker-timeout"}); err != nil {
+		t.Fatalf("WorkBatch third pass: %v", err)
+	}
+
+	snapshot, err := client.AwaitTaskResult(context.Background(), queue, spawned.TaskID, absurd.AwaitTaskResultOptions{Timeout: 2 * time.Second})
+	if err != nil {
+		t.Fatalf("AwaitTaskResult: %v", err)
+	}
+	if snapshot.State != absurd.TaskCompleted {
+		t.Fatalf("expected completed state, got %s", snapshot.State)
+	}
+	var result map[string]any
+	if err := snapshot.DecodeResult(&result); err != nil {
+		t.Fatalf("DecodeResult: %v", err)
+	}
+	stages, ok := result["stages"].([]any)
+	if !ok || len(stages) != 2 || stages[0] != "timeout-0" || stages[1] != "timeout-1" {
+		t.Fatalf("unexpected stages: %#v", result["stages"])
+	}
+
+	var waitCount int
+	waitQuery := fmt.Sprintf(`select count(*) from absurd.w_%s`, queue)
+	if err := db.QueryRow(waitQuery).Scan(&waitCount); err != nil {
+		t.Fatalf("count waits: %v", err)
+	}
+	if waitCount != 0 {
+		t.Fatalf("expected no outstanding waits, got %d", waitCount)
 	}
 }
 

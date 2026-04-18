@@ -1,8 +1,10 @@
 """Tests for event system"""
 
 from datetime import datetime, timezone, timedelta
+import psycopg
 from psycopg import sql
 
+import absurd_sdk
 from absurd_sdk import Absurd, TimeoutError
 
 
@@ -99,6 +101,29 @@ def test_event_emitted_before_await_is_cached(conn, queue_name):
     spawned = client.spawn("late-waiter", None)
 
     # Should complete immediately with cached event
+    client.work_batch("worker1", 60, 1)
+
+    task = _get_task(conn, queue, spawned["task_id"])
+    assert task["state"] == "completed"
+    assert task["completed_payload"] == {"received": payload}
+
+
+def test_await_event_supports_payload_like_legacy_timeout_sentinel(conn, queue_name):
+    queue = queue_name("sentinel_payload_event")
+    client = Absurd(conn, queue_name=queue)
+    client.create_queue()
+
+    event_name = f"sentinel_payload_event_{queue}"
+    payload = {"$awaitEventTimeout": True}
+
+    @client.register_task("sentinel-payload-waiter")
+    def sentinel_payload_waiter_task(params, ctx):
+        received = ctx.await_event(event_name)
+        return {"received": received}
+
+    client.emit_event(event_name, payload)
+
+    spawned = client.spawn("sentinel-payload-waiter", None)
     client.work_batch("worker1", 60, 1)
 
     task = _get_task(conn, queue, spawned["task_id"])
@@ -233,8 +258,8 @@ def test_multiple_tasks_can_await_same_event(conn, queue_name):
         assert task["completed_payload"] == {"taskNum": i + 1, "received": payload}
 
 
-def test_await_event_timeout_does_not_recreate_wait_on_resume(conn, queue_name):
-    """Test that awaitEvent timeout does not recreate wait registration on resume"""
+def test_await_event_timeout_clears_wait_registration(conn, queue_name):
+    """Test that awaitEvent timeout cleans up wait registration."""
     queue = queue_name("timeout_no_loop")
     client = Absurd(conn, queue_name=queue)
     client.create_queue()
@@ -249,8 +274,7 @@ def test_await_event_timeout_does_not_recreate_wait_on_resume(conn, queue_name):
             ctx.await_event(event_name, step_name="wait", timeout=10)
             return {"stage": "unexpected"}
         except TimeoutError:
-            payload = ctx.await_event(event_name, step_name="wait", timeout=10)
-            return {"stage": "resumed", "payload": payload}
+            return {"stage": "timed-out"}
 
     spawned = client.spawn("timeout-no-loop", None)
     client.work_batch("worker-timeout", 60, 1)
@@ -272,4 +296,95 @@ def test_await_event_timeout_does_not_recreate_wait_on_resume(conn, queue_name):
 
     task = _get_task(conn, queue, spawned["task_id"])
     assert task["state"] == "completed"
-    assert task["completed_payload"] == {"stage": "resumed", "payload": None}
+    assert task["completed_payload"] == {"stage": "timed-out"}
+
+
+def test_await_event_timeout_checkpoint_preserves_progress_across_multiple_awaits(
+    conn, queue_name
+):
+    queue = queue_name("timeout_loop")
+    client = Absurd(conn, queue_name=queue)
+    client.create_queue()
+
+    base_time = datetime(2024, 5, 2, 13, 0, 0, tzinfo=timezone.utc)
+    _set_fake_now(conn, base_time)
+
+    @client.register_task("timeout-loop")
+    def timeout_loop_task(params, ctx):
+        stages = []
+        for cycle in range(2):
+            try:
+                ctx.await_event(
+                    f"wake:{cycle}",
+                    step_name=f"await-{cycle}",
+                    timeout=10,
+                )
+                stages.append(f"event-{cycle}")
+            except TimeoutError:
+                stages.append(f"timeout-{cycle}")
+        return {"stages": stages}
+
+    spawned = client.spawn("timeout-loop", None)
+    client.work_batch("worker-timeout", 60, 1)
+
+    _set_fake_now(conn, base_time + timedelta(seconds=15))
+    client.work_batch("worker-timeout", 60, 1)
+
+    mid_run = _get_run(conn, queue, spawned["run_id"])
+    assert mid_run["state"] == "sleeping"
+    assert mid_run["wake_event"] == "wake:1"
+
+    _set_fake_now(conn, base_time + timedelta(seconds=30))
+    client.work_batch("worker-timeout", 60, 1)
+
+    task = _get_task(conn, queue, spawned["task_id"])
+    assert task["state"] == "completed"
+    assert task["completed_payload"] == {"stages": ["timeout-0", "timeout-1"]}
+
+    wait_count_query = sql.SQL("SELECT COUNT(*) FROM absurd.{table}").format(
+        table=sql.Identifier(f"w_{queue}")
+    )
+    wait_count_after = conn.execute(wait_count_query).fetchone()[0]
+    assert wait_count_after == 0
+
+
+def test_await_event_legacy_fallback_works_in_transactional_connection(
+    db_dsn, queue_name, monkeypatch
+):
+    queue = queue_name("timeout_tx_fallback")
+
+    monkeypatch.setattr(
+        absurd_sdk.TaskContext,
+        "_ensure_await_event_timed_out_column_support",
+        lambda self: False,
+    )
+
+    with psycopg.connect(db_dsn, autocommit=False) as tx_conn:
+        tx_conn.execute("set timezone to 'UTC'")
+        client = Absurd(tx_conn, queue_name=queue)
+        client.create_queue()
+
+        event_name = f"timeout_tx_fallback_{queue}"
+        base_time = datetime(2024, 5, 2, 14, 0, 0, tzinfo=timezone.utc)
+        _set_fake_now(tx_conn, base_time)
+
+        @client.register_task("timeout-tx-fallback")
+        def timeout_tx_fallback_task(params, ctx):
+            try:
+                ctx.await_event(event_name, step_name="wait", timeout=10)
+                return {"stage": "unexpected"}
+            except TimeoutError:
+                return {"stage": "timed-out"}
+
+        spawned = client.spawn("timeout-tx-fallback", None)
+        client.work_batch("worker-timeout", 60, 1)
+
+        _set_fake_now(tx_conn, base_time + timedelta(seconds=15))
+        client.work_batch("worker-timeout", 60, 1)
+
+        task = _get_task(tx_conn, queue, spawned["task_id"])
+        assert task["state"] == "completed"
+        assert task["completed_payload"] == {"stage": "timed-out"}
+
+        # Ensure the transaction is still usable (no failed-transaction state).
+        assert tx_conn.execute("select 1").fetchone()[0] == 1
