@@ -828,7 +828,19 @@ class TaskContext:
         ):
             raise Exception("absurd.await_event returned an invalid row shape")
 
-        if result.get("timed_out") is True:
+        has_timed_out_field = "timed_out" in result
+        timed_out = (
+            result.get("timed_out") is True
+            if has_timed_out_field
+            else (
+                result["should_suspend"] is False
+                and result["payload"] is None
+                and self._task.get("wake_event") == event_name
+                and self._task.get("event_payload") is None
+            )
+        )
+
+        if timed_out:
             self._task["wake_event"] = None
             self._task["event_payload"] = None
             raise TimeoutError(f'Timed out waiting for event "{event_name}"')
@@ -1073,7 +1085,19 @@ class AsyncTaskContext:
         ):
             raise Exception("absurd.await_event returned an invalid row shape")
 
-        if result.get("timed_out") is True:
+        has_timed_out_field = "timed_out" in result
+        timed_out = (
+            result.get("timed_out") is True
+            if has_timed_out_field
+            else (
+                result["should_suspend"] is False
+                and result["payload"] is None
+                and self._task.get("wake_event") == event_name
+                and self._task.get("event_payload") is None
+            )
+        )
+
+        if timed_out:
             self._task["wake_event"] = None
             self._task["event_payload"] = None
             raise TimeoutError(f'Timed out waiting for event "{event_name}"')

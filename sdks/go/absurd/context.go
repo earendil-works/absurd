@@ -392,6 +392,7 @@ func AwaitEvent[T any](ctx context.Context, eventName string, options ...AwaitEv
 	var shouldSuspend bool
 	var payload []byte
 	var timedOut bool
+	var hasTimedOutColumn bool
 
 	rows, err := task.client.db.QueryContext(ctx, `SELECT *
         FROM absurd.await_event($1, $2, $3, $4, $5, $6)`,
@@ -424,11 +425,13 @@ func AwaitEvent[T any](ctx context.Context, eventName string, options ...AwaitEv
 		if err := rows.Scan(&shouldSuspend, &payload); err != nil {
 			return zero[T](), mapTaskStateError(err)
 		}
+		hasTimedOutColumn = false
 		timedOut = false
 	case 3:
 		if err := rows.Scan(&shouldSuspend, &payload, &timedOut); err != nil {
 			return zero[T](), mapTaskStateError(err)
 		}
+		hasTimedOutColumn = true
 	default:
 		return zero[T](), fmt.Errorf("await_event returned unexpected column count: %d", len(columns))
 	}
@@ -436,7 +439,12 @@ func AwaitEvent[T any](ctx context.Context, eventName string, options ...AwaitEv
 	if shouldSuspend {
 		return zero[T](), errSuspend
 	}
-	if timedOut || payload == nil {
+
+	legacyTimedOut := !hasTimedOutColumn &&
+		payload == nil &&
+		task.wakeEvent == eventName &&
+		task.eventRaw == nil
+	if timedOut || legacyTimedOut {
 		task.mu.Lock()
 		task.wakeEvent = ""
 		task.eventRaw = nil

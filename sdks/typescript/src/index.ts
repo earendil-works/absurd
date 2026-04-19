@@ -527,7 +527,16 @@ export class TaskContext {
     const row = result.rows[0];
     const shouldSuspend = row.should_suspend as boolean;
     const payload = row.payload as JsonValue;
-    const timedOut = row.timed_out === true;
+    const hasTimedOutField = Object.prototype.hasOwnProperty.call(
+      row,
+      "timed_out",
+    );
+    const timedOut = hasTimedOutField
+      ? row.timed_out === true
+      : !shouldSuspend &&
+        payload === null &&
+        this.task.wake_event === eventName &&
+        this.task.event_payload === null;
 
     if (timedOut) {
       this.task.wake_event = null;
