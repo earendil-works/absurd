@@ -865,11 +865,36 @@ begin
   using p_task_id, p_step_name;
 
   if v_checkpoint_status is not null then
-    if v_checkpoint_status = 'timed_out' then
-      return query select false, null::jsonb, true;
+    if v_checkpoint_status <> 'timed_out' then
+      return query select false, v_checkpoint_payload, false;
       return;
     end if;
-    return query select false, v_checkpoint_payload, false;
+
+    execute format(
+      'select r.state, t.state
+         from absurd.%I r
+         join absurd.%I t on t.task_id = r.task_id
+        where r.run_id = $1
+        for update',
+      'r_' || p_queue_name,
+      't_' || p_queue_name
+    )
+    into v_run_state, v_task_state
+    using p_run_id;
+
+    if v_run_state is null then
+      raise exception 'Run "%" not found while awaiting event', p_run_id;
+    end if;
+
+    if v_task_state = 'cancelled' then
+      raise exception sqlstate 'AB001' using message = 'Task has been cancelled';
+    end if;
+
+    if v_run_state <> 'running' then
+      raise exception 'Run "%" must be running to await events', p_run_id;
+    end if;
+
+    return query select false, null::jsonb, true;
     return;
   end if;
 

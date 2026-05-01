@@ -2,6 +2,7 @@
 
 from datetime import datetime, timezone, timedelta
 import psycopg
+import pytest
 from psycopg import sql
 
 from absurd_sdk import Absurd, TimeoutError
@@ -345,6 +346,62 @@ def test_await_event_timeout_checkpoint_preserves_progress_across_multiple_await
     )
     wait_count_after = conn.execute(wait_count_query).fetchone()[0]
     assert wait_count_after == 0
+
+
+def test_await_event_timeout_checkpoint_raises_cancellation_after_task_cancel(
+    conn, queue_name
+):
+    queue = queue_name("timeout_cancelled")
+    client = Absurd(conn, queue_name=queue)
+    client.create_queue()
+
+    event_name = f"timeout_cancelled_{queue}"
+    base_time = datetime(2024, 5, 2, 14, 0, 0, tzinfo=timezone.utc)
+    _set_fake_now(conn, base_time)
+
+    @client.register_task("timeout-cancelled")
+    def timeout_cancelled_task(params, ctx):
+        try:
+            ctx.await_event(event_name, step_name="wait", timeout=10)
+            return {"stage": "unexpected"}
+        except TimeoutError:
+            ctx.sleep_for("after-timeout", 3600)
+            return {"stage": "unreachable"}
+
+    spawned = client.spawn("timeout-cancelled", None)
+    client.work_batch("worker-timeout", 60, 1)
+
+    _set_fake_now(conn, base_time + timedelta(seconds=15))
+    client.work_batch("worker-timeout", 60, 1)
+
+    checkpoint_row = conn.execute(
+        sql.SQL(
+            "select state, status from absurd.{table} where task_id = %s and checkpoint_name = %s"
+        ).format(table=sql.Identifier(f"c_{queue}")),
+        (spawned["task_id"], "wait"),
+    ).fetchone()
+    assert checkpoint_row == (None, "timed_out")
+
+    sleeping_run = _get_run(conn, queue, spawned["run_id"])
+    assert sleeping_run["state"] == "sleeping"
+    assert sleeping_run["wake_event"] is None
+
+    client.cancel_task(spawned["task_id"])
+
+    task = _get_task(conn, queue, spawned["task_id"])
+    assert task["state"] == "cancelled"
+
+    cancelled_run = _get_run(conn, queue, spawned["run_id"])
+    assert cancelled_run["state"] == "cancelled"
+
+    with pytest.raises(psycopg.Error) as exc_info:
+        conn.execute(
+            "select * from absurd.await_event(%s, %s, %s, %s, %s, %s)",
+            (queue, spawned["task_id"], spawned["run_id"], "wait", event_name, 10),
+        ).fetchone()
+
+    assert getattr(exc_info.value, "sqlstate", None) == "AB001"
+    assert "cancelled" in str(exc_info.value).lower()
 
 
 def test_await_event_works_in_transactional_connection(db_dsn, queue_name):
