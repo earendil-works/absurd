@@ -802,18 +802,10 @@ class TaskContext:
         if cached is not _CHECKPOINT_NOT_FOUND:
             return cast(JsonValue, cached)
 
-        if (
-            self._task["wake_event"] == event_name
-            and self._task["event_payload"] is None
-        ):
-            self._task["wake_event"] = None
-            self._task["event_payload"] = None
-            raise TimeoutError(f'Timed out waiting for event "{event_name}"')
-
         cursor = self._conn.cursor(row_factory=dict_row)
         with _task_state_exception_handling():
             cursor.execute(
-                """SELECT should_suspend, payload
+                """SELECT *
                    FROM absurd.await_event(%s, %s, %s, %s, %s, %s)""",
                 (
                     self._queue_name,
@@ -829,6 +821,29 @@ class TaskContext:
 
         if not result:
             raise Exception("Failed to await event")
+
+        if (
+            not isinstance(result.get("should_suspend"), bool)
+            or "payload" not in result
+        ):
+            raise Exception("absurd.await_event returned an invalid row shape")
+
+        has_timed_out_field = "timed_out" in result
+        timed_out = (
+            result.get("timed_out") is True
+            if has_timed_out_field
+            else (
+                result["should_suspend"] is False
+                and result["payload"] is None
+                and self._task.get("wake_event") == event_name
+                and self._task.get("event_payload") is None
+            )
+        )
+
+        if timed_out:
+            self._task["wake_event"] = None
+            self._task["event_payload"] = None
+            raise TimeoutError(f'Timed out waiting for event "{event_name}"')
 
         if not result["should_suspend"]:
             self._checkpoint_cache[checkpoint_name] = result["payload"]
@@ -1044,18 +1059,10 @@ class AsyncTaskContext:
         if cached is not _CHECKPOINT_NOT_FOUND:
             return cast(JsonValue, cached)
 
-        if (
-            self._task["wake_event"] == event_name
-            and self._task["event_payload"] is None
-        ):
-            self._task["wake_event"] = None
-            self._task["event_payload"] = None
-            raise TimeoutError(f'Timed out waiting for event "{event_name}"')
-
         cursor = self._conn.cursor(row_factory=dict_row)
         with _task_state_exception_handling():
             await cursor.execute(
-                """SELECT should_suspend, payload
+                """SELECT *
                    FROM absurd.await_event(%s, %s, %s, %s, %s, %s)""",
                 (
                     self._queue_name,
@@ -1071,6 +1078,29 @@ class AsyncTaskContext:
 
         if not result:
             raise Exception("Failed to await event")
+
+        if (
+            not isinstance(result.get("should_suspend"), bool)
+            or "payload" not in result
+        ):
+            raise Exception("absurd.await_event returned an invalid row shape")
+
+        has_timed_out_field = "timed_out" in result
+        timed_out = (
+            result.get("timed_out") is True
+            if has_timed_out_field
+            else (
+                result["should_suspend"] is False
+                and result["payload"] is None
+                and self._task.get("wake_event") == event_name
+                and self._task.get("event_payload") is None
+            )
+        )
+
+        if timed_out:
+            self._task["wake_event"] = None
+            self._task["event_payload"] = None
+            raise TimeoutError(f'Timed out waiting for event "{event_name}"')
 
         if not result["should_suspend"]:
             self._checkpoint_cache[checkpoint_name] = result["payload"]

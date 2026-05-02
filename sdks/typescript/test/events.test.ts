@@ -76,6 +76,29 @@ describe("Event system", () => {
     });
   });
 
+  test("awaitEvent supports payload that looks like legacy timeout sentinel", async () => {
+    const eventName = randomName("sentinel_payload_event");
+    const payload = { $awaitEventTimeout: true };
+
+    absurd.registerTask(
+      { name: "sentinel-payload-waiter" },
+      async (_params, ctx) => {
+        const received = await ctx.awaitEvent(eventName);
+        return { received };
+      },
+    );
+
+    await absurd.emitEvent(eventName, payload);
+
+    const { taskID } = await absurd.spawn("sentinel-payload-waiter", undefined);
+    await absurd.workBatch("worker1", 60, 1);
+
+    expect(await ctx.getTask(taskID)).toMatchObject({
+      state: "completed",
+      completed_payload: { received: payload },
+    });
+  });
+
   test("emitEvent is first-write-wins", async () => {
     const eventName = randomName("stable_event");
     const firstPayload = { value: 1 };
@@ -209,7 +232,7 @@ describe("Event system", () => {
     }
   });
 
-  test("awaitEvent timeout does not recreate wait on resume", async () => {
+  test("awaitEvent timeout clears wait registration", async () => {
     const eventName = randomName("timeout_no_loop");
     const baseTime = new Date("2024-05-02T11:00:00Z");
     await ctx.setFakeNow(baseTime);
@@ -220,11 +243,7 @@ describe("Event system", () => {
         return { stage: "unexpected" };
       } catch (err) {
         if (err instanceof TimeoutError) {
-          const payload = await ctx.awaitEvent(eventName, {
-            stepName: "wait",
-            timeout: 10,
-          });
-          return { stage: "resumed", payload };
+          return { stage: "timed-out" };
         }
         throw err;
       }
@@ -251,7 +270,55 @@ describe("Event system", () => {
 
     expect(await ctx.getTask(taskID)).toMatchObject({
       state: "completed",
-      completed_payload: { stage: "resumed", payload: null },
+      completed_payload: { stage: "timed-out" },
     });
+  });
+
+  test("awaitEvent timeout checkpoint preserves progress across multiple awaits", async () => {
+    const baseTime = new Date("2024-05-02T13:00:00Z");
+    await ctx.setFakeNow(baseTime);
+
+    absurd.registerTask({ name: "timeout-loop" }, async (_params, ctx) => {
+      const stages: string[] = [];
+      for (let cycle = 0; cycle < 2; cycle++) {
+        try {
+          await ctx.awaitEvent(`wake:${cycle}`, {
+            stepName: `await-${cycle}`,
+            timeout: 10,
+          });
+          stages.push(`event-${cycle}`);
+        } catch (err) {
+          if (err instanceof TimeoutError) {
+            stages.push(`timeout-${cycle}`);
+            continue;
+          }
+          throw err;
+        }
+      }
+      return { stages };
+    });
+
+    const { taskID, runID } = await absurd.spawn("timeout-loop", undefined);
+
+    await absurd.workBatch("worker-timeout", 60, 1);
+
+    await ctx.setFakeNow(new Date(baseTime.getTime() + 15 * 1000));
+    await absurd.workBatch("worker-timeout", 60, 1);
+
+    const midRun = await ctx.getRun(runID);
+    expect(midRun).toMatchObject({ state: "sleeping", wake_event: "wake:1" });
+
+    await ctx.setFakeNow(new Date(baseTime.getTime() + 30 * 1000));
+    await absurd.workBatch("worker-timeout", 60, 1);
+
+    expect(await ctx.getTask(taskID)).toMatchObject({
+      state: "completed",
+      completed_payload: { stages: ["timeout-0", "timeout-1"] },
+    });
+
+    const waitCountAfter = await ctx.pool.query<{ count: string }>(
+      `SELECT COUNT(*)::text AS count FROM absurd.w_${ctx.queueName}`,
+    );
+    expect(Number(waitCountAfter.rows[0].count)).toBe(0);
   });
 });
