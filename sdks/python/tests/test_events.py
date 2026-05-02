@@ -435,4 +435,6 @@ def test_await_event_works_in_transactional_connection(db_dsn, queue_name):
         assert task["completed_payload"] == {"stage": "timed-out"}
 
         # Ensure the transaction is still usable (no failed-transaction state).
-        assert tx_conn.execute("select 1").fetchone()[0] == 1
+        row = tx_conn.execute("select 1").fetchone()
+        assert row is not None
+        assert row[0] == 1
