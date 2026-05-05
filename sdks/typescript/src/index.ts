@@ -266,8 +266,8 @@ export class TaskContext {
   private readonly log: Log;
   readonly taskID: string;
   private readonly con: Queryable;
-  private readonly queueName: string;
-  private readonly task: ClaimedTask;
+  readonly queueName: string;
+  readonly task: ClaimedTask;
   private readonly checkpointCache: Map<string, JsonValue>;
   private readonly claimTimeout: number;
   private readonly onLeaseExtended: (leaseSeconds: number) => void;
