@@ -1619,17 +1619,28 @@ def cmd_schema_version(args):
     """Show the currently recorded Absurd schema version."""
     usage = "usage: %prog schema-version [options]"
     parser = build_command_parser(usage)
+    parser.add_option(
+        "--target",
+        dest="target",
+        action="store_true",
+        default=False,
+        help="Print the latest schema version supported by this absurdctl",
+    )
 
     options, args = parse_args_with_help(
         parser,
         args,
-        ["absurdctl schema-version"],
+        ["absurdctl schema-version", "absurdctl schema-version --target"],
     )
 
     if args:
         print("Error: schema-version does not accept positional arguments", file=sys.stderr)
         parser.print_help()
         sys.exit(1)
+
+    if options.target:
+        print(ABSURD_SCHEMA_TARGET_VERSION)
+        return
 
     config = config_from_options(options)
     version = get_recorded_schema_version(config)
