@@ -1265,23 +1265,21 @@ class _AbsurdBase:
         else:
             actual_queue = queue
 
-        effective_max_attempts = (
-            max_attempts
-            if max_attempts is not None
-            else (
-                registration.get("default_max_attempts")
-                if registration
-                else self._default_max_attempts
-            )
+        registered_max_attempts = (
+            registration.get("default_max_attempts") if registration else None
         )
+        effective_max_attempts = max_attempts
+        if effective_max_attempts is None:
+            effective_max_attempts = registered_max_attempts
+        if effective_max_attempts is None:
+            effective_max_attempts = self._default_max_attempts
 
-        effective_cancellation = (
-            cancellation
-            if cancellation is not None
-            else registration.get("default_cancellation")
-            if registration
-            else None
+        registered_cancellation = (
+            registration.get("default_cancellation") if registration else None
         )
+        effective_cancellation = cancellation
+        if effective_cancellation is None:
+            effective_cancellation = registered_cancellation
 
         actual_queue = _validate_queue_name(actual_queue)
 
