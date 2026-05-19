@@ -23,7 +23,7 @@ def _set_fake_now(conn, fake_time):
 def _get_task(conn, queue, task_id):
     """Get task details"""
     query = sql.SQL(
-        "select state, attempts, completed_payload, cancelled_at from absurd.{table} where task_id = %s"
+        "select state, attempts, completed_payload, cancelled_at, max_attempts from absurd.{table} where task_id = %s"
     ).format(table=sql.Identifier(f"t_{queue}"))
     result = conn.execute(query, (task_id,)).fetchone()
     if not result:
@@ -33,6 +33,7 @@ def _get_task(conn, queue, task_id):
         "attempts": result[1],
         "completed_payload": result[2],
         "cancelled_at": result[3],
+        "max_attempts": result[4],
     }
 
 
@@ -187,6 +188,30 @@ def test_task_fails_permanently_after_max_attempts(conn, queue_name):
     assert task["state"] == "pending"
 
     # Attempt 2 (final)
+    client.work_batch("worker1", 60, 1)
+    task = _get_task(conn, queue, spawned["task_id"])
+    assert task["state"] == "failed"
+    assert task["attempts"] == 2
+
+
+def test_registered_task_without_retry_default_uses_client_default(conn, queue_name):
+    queue = queue_name("client_retry_default")
+    client = Absurd(conn, queue_name=queue, default_max_attempts=2)
+    client.create_queue()
+
+    @client.register_task("uses-client-default")
+    def uses_client_default(params, ctx):
+        raise Exception("always fails")
+
+    spawned = client.spawn("uses-client-default", None)
+
+    task = _get_task(conn, queue, spawned["task_id"])
+    assert task["max_attempts"] == 2
+
+    client.work_batch("worker1", 60, 1)
+    task = _get_task(conn, queue, spawned["task_id"])
+    assert task["state"] == "pending"
+
     client.work_batch("worker1", 60, 1)
     task = _get_task(conn, queue, spawned["task_id"])
     assert task["state"] == "failed"
