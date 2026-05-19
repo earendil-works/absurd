@@ -1944,7 +1944,7 @@ def cmd_spawn_task(args):
 
     params_json = build_json_params(options.params, options.base_params)
 
-    headers_payload = None
+    spawn_options = {}
     if options.headers:
         headers_dict = {}
         for header in options.headers:
@@ -1956,32 +1956,35 @@ def cmd_spawn_task(args):
                 sys.exit(1)
             key, value = header.split("=", 1)
             headers_dict[key] = value
-        headers_payload = json.dumps(headers_dict)
+        spawn_options["headers"] = headers_dict
 
-    retry_json = "NULL"
+    if options.max_attempts is not None:
+        spawn_options["max_attempts"] = options.max_attempts
+
     if (
         options.retry_kind
-        or options.retry_base
-        or options.retry_factor
-        or options.retry_max
+        or options.retry_base is not None
+        or options.retry_factor is not None
+        or options.retry_max is not None
     ):
         retry = {"kind": options.retry_kind or "exponential"}
-        if options.retry_base:
-            retry["baseSeconds"] = options.retry_base
-        if options.retry_factor:
+        if options.retry_base is not None:
+            retry["base_seconds"] = options.retry_base
+        if options.retry_factor is not None:
             retry["factor"] = options.retry_factor
-        if options.retry_max:
-            retry["maxSeconds"] = options.retry_max
-        retry_json = f"'{json.dumps(retry)}'::jsonb"
+        if options.retry_max is not None:
+            retry["max_seconds"] = options.retry_max
+        spawn_options["retry_strategy"] = retry
 
-    cancellation_json = "NULL"
-    if options.max_duration or options.max_delay:
+    if options.max_duration is not None or options.max_delay is not None:
         cancellation = {}
-        if options.max_duration:
-            cancellation["maxDuration"] = options.max_duration
-        if options.max_delay:
-            cancellation["maxDelay"] = options.max_delay
-        cancellation_json = f"'{json.dumps(cancellation)}'::jsonb"
+        if options.max_duration is not None:
+            cancellation["max_duration"] = options.max_duration
+        if options.max_delay is not None:
+            cancellation["max_delay"] = options.max_delay
+        spawn_options["cancellation"] = cancellation
+
+    options_payload = json.dumps(spawn_options)
 
     queue = validate_queue_name(options.queue or "default")
 
@@ -1992,34 +1995,31 @@ def cmd_spawn_task(args):
         ("Queue", queue),
         ("Params", params_json),
     ]
-    if headers_payload is not None:
-        details.append(("Headers", headers_payload))
-    if options.max_attempts:
-        details.append(("Max attempts", options.max_attempts))
-    if retry_json != "NULL":
-        details.append(("Retry strategy", retry_json))
-    if cancellation_json != "NULL":
-        details.append(("Cancellation", cancellation_json))
+    if "headers" in spawn_options:
+        details.append(("Headers", json.dumps(spawn_options["headers"])))
+    if "max_attempts" in spawn_options:
+        details.append(("Max attempts", spawn_options["max_attempts"]))
+    if "retry_strategy" in spawn_options:
+        details.append(("Retry strategy", json.dumps(spawn_options["retry_strategy"])))
+    if "cancellation" in spawn_options:
+        details.append(("Cancellation", json.dumps(spawn_options["cancellation"])))
     details.extend(get_common_db_details(config))
     print_verbose_configuration(options.verbose, details)
 
-    headers_expr = "NULL"
     variables = {
         "queue": queue,
         "task_name": task_name,
         "params_json": params_json,
+        "options_json": options_payload,
     }
-    if headers_payload is not None:
-        headers_expr = ":'headers_json'::jsonb"
-        variables["headers_json"] = headers_payload
 
-    query = f"""
+    query = """
         SELECT task_id, run_id, attempt
         FROM absurd.spawn_task(
             :'queue',
             :'task_name',
             :'params_json'::jsonb,
-            {headers_expr}
+            :'options_json'::jsonb
         );
     """
 

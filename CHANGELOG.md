@@ -11,6 +11,7 @@ This contains the changes between releases.
 * Fixed the Python SDK's synchronous worker to honor configured `concurrency` and run tasks in parallel when `concurrency > 1`.
 * Improved Python SDK type annotations and hook handling for better static type-checking and async hook interoperability.
 * Fixed Go SDK spawn behavior to require an explicit queue when spawning unregistered tasks.
+* Fixed `absurdctl spawn-task` to pass headers, max attempts, retry strategy, and cancellation policy inside the SQL `spawn_task` options payload.
 
 # 0.3.0
 
