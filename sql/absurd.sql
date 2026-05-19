@@ -74,6 +74,406 @@ create table if not exists absurd.queues (
     check (detach_min_age >= interval '0 seconds')
 );
 
+-- Declarative cron job registry for task-spawning schedules.
+--
+-- The registry is intentionally separate from pg_cron's cron.job table.  It is
+-- the Absurd-owned source of truth for "this schedule should spawn this task";
+-- pg_cron, when installed, is only an adapter that calls absurd.run_cron_job.
+create table if not exists absurd.cron_jobs (
+  job_name text primary key,
+  queue_name text not null references absurd.queues(queue_name) on delete cascade,
+  task_name text not null,
+  schedule text not null,
+  params jsonb not null default '{}'::jsonb,
+  task_options jsonb not null default '{}'::jsonb,
+  enabled boolean not null default true,
+  description text,
+  metadata jsonb not null default '{}'::jsonb,
+  pgcron_job_id bigint,
+  created_at timestamptz not null default absurd.current_time(),
+  updated_at timestamptz not null default absurd.current_time(),
+  check (length(trim(job_name)) > 0),
+  check (length(trim(queue_name)) > 0),
+  check (length(trim(task_name)) > 0),
+  check (length(trim(schedule)) > 0),
+  check (jsonb_typeof(params) = 'object'),
+  check (jsonb_typeof(task_options) = 'object'),
+  check (not (task_options ? 'idempotency_key')),
+  check (not (task_options ? 'headers') or jsonb_typeof(task_options->'headers') = 'object'),
+  check (jsonb_typeof(metadata) = 'object')
+);
+
+create index if not exists cron_jobs_queue_name_idx
+  on absurd.cron_jobs (queue_name);
+
+create function absurd.cron_job_slot (
+  p_scheduled_at timestamptz
+)
+  returns text
+  language sql
+  stable
+as $$
+  select to_char(
+    date_trunc('minute', coalesce(p_scheduled_at, absurd.current_time()) at time zone 'UTC'),
+    'YYYY-MM-DD"T"HH24:MI"Z"'
+  );
+$$;
+
+create function absurd.cron_job_idempotency_key (
+  p_job_name text,
+  p_scheduled_at timestamptz
+)
+  returns text
+  language sql
+  stable
+as $$
+  select 'cron:' || substr(md5(p_job_name || '|' || absurd.cron_job_slot(p_scheduled_at)), 1, 24);
+$$;
+
+create function absurd.cron_pgcron_job_name (
+  p_job_name text
+)
+  returns text
+  language sql
+  immutable
+as $$
+  select 'absurd_cron_' || substr(md5(p_job_name), 1, 24);
+$$;
+
+create function absurd.run_cron_job (
+  p_job_name text,
+  p_scheduled_at timestamptz default null
+)
+  returns table (
+    task_id uuid,
+    run_id uuid,
+    attempt integer,
+    created boolean
+  )
+  language plpgsql
+as $$
+declare
+  v_job absurd.cron_jobs%rowtype;
+  v_scheduled_at timestamptz := coalesce(p_scheduled_at, absurd.current_time());
+  v_headers jsonb;
+  v_options jsonb;
+begin
+  select *
+    into v_job
+    from absurd.cron_jobs
+   where job_name = p_job_name
+   for key share;
+
+  if not found then
+    raise exception 'Cron job "%" does not exist', p_job_name;
+  end if;
+
+  if not v_job.enabled then
+    return;
+  end if;
+
+  v_headers := coalesce(v_job.task_options->'headers', '{}'::jsonb)
+    || jsonb_build_object(
+      'absurd_cron_job', v_job.job_name,
+      'absurd_cron_schedule', v_job.schedule,
+      'absurd_cron_scheduled_for', absurd.cron_job_slot(v_scheduled_at)
+    );
+
+  v_options := v_job.task_options
+    || jsonb_build_object(
+      'headers', v_headers,
+      'idempotency_key', absurd.cron_job_idempotency_key(v_job.job_name, v_scheduled_at)
+    );
+
+  return query
+    select *
+      from absurd.spawn_task(
+        v_job.queue_name,
+        v_job.task_name,
+        v_job.params,
+        v_options
+      );
+end;
+$$;
+
+create function absurd.register_cron_job (
+  p_job_name text,
+  p_queue_name text,
+  p_task_name text,
+  p_schedule text,
+  p_params jsonb default '{}'::jsonb,
+  p_task_options jsonb default '{}'::jsonb,
+  p_enabled boolean default true,
+  p_description text default null,
+  p_metadata jsonb default '{}'::jsonb,
+  p_install_pgcron boolean default false
+)
+  returns table (
+    job_name text,
+    installed boolean,
+    pgcron_job_id bigint
+  )
+  language plpgsql
+as $$
+declare
+  v_pgcron_job_id bigint;
+begin
+  if p_job_name is null or length(trim(p_job_name)) = 0 then
+    raise exception 'Cron job name must be provided';
+  end if;
+
+  p_queue_name := absurd.validate_queue_name(p_queue_name);
+
+  if p_task_name is null or length(trim(p_task_name)) = 0 then
+    raise exception 'Task name must be provided';
+  end if;
+
+  if p_schedule is null or length(trim(p_schedule)) = 0 then
+    raise exception 'Cron schedule must be provided';
+  end if;
+
+  if coalesce(jsonb_typeof(coalesce(p_params, '{}'::jsonb)), '') <> 'object' then
+    raise exception 'Cron params must be a JSON object';
+  end if;
+
+  if coalesce(jsonb_typeof(coalesce(p_task_options, '{}'::jsonb)), '') <> 'object' then
+    raise exception 'Cron task_options must be a JSON object';
+  end if;
+
+  if coalesce(p_task_options, '{}'::jsonb) ? 'idempotency_key' then
+    raise exception 'Cron task_options must not include idempotency_key; Absurd derives one per schedule slot';
+  end if;
+
+  if coalesce(p_task_options, '{}'::jsonb) ? 'headers'
+     and jsonb_typeof(coalesce(p_task_options, '{}'::jsonb)->'headers') <> 'object' then
+    raise exception 'Cron task_options.headers must be a JSON object';
+  end if;
+
+  if coalesce(jsonb_typeof(coalesce(p_metadata, '{}'::jsonb)), '') <> 'object' then
+    raise exception 'Cron metadata must be a JSON object';
+  end if;
+
+  insert into absurd.cron_jobs (
+    job_name,
+    queue_name,
+    task_name,
+    schedule,
+    params,
+    task_options,
+    enabled,
+    description,
+    metadata,
+    updated_at
+  ) values (
+    p_job_name,
+    p_queue_name,
+    p_task_name,
+    p_schedule,
+    coalesce(p_params, '{}'::jsonb),
+    coalesce(p_task_options, '{}'::jsonb),
+    coalesce(p_enabled, true),
+    p_description,
+    coalesce(p_metadata, '{}'::jsonb),
+    absurd.current_time()
+  )
+  on conflict (job_name) do update
+     set queue_name = excluded.queue_name,
+         task_name = excluded.task_name,
+         schedule = excluded.schedule,
+         params = excluded.params,
+         task_options = excluded.task_options,
+         enabled = excluded.enabled,
+         description = excluded.description,
+         metadata = excluded.metadata,
+         updated_at = excluded.updated_at;
+
+  if p_install_pgcron then
+    select installed_job.pgcron_job_id
+      into v_pgcron_job_id
+      from absurd.install_cron_job(p_job_name) as installed_job;
+  else
+    select absurd.cron_jobs.pgcron_job_id
+      into v_pgcron_job_id
+      from absurd.cron_jobs
+     where absurd.cron_jobs.job_name = p_job_name;
+  end if;
+
+  job_name := p_job_name;
+  installed := p_install_pgcron;
+  pgcron_job_id := v_pgcron_job_id;
+  return next;
+end;
+$$;
+
+create function absurd.install_cron_job (
+  p_job_name text
+)
+  returns table (
+    job_name text,
+    pgcron_job_name text,
+    pgcron_job_id bigint
+  )
+  language plpgsql
+as $$
+declare
+  v_job absurd.cron_jobs%rowtype;
+  v_pgcron_job_name text;
+  v_existing_job_id bigint;
+  v_job_id bigint;
+  v_command text;
+begin
+  select *
+    into v_job
+    from absurd.cron_jobs
+   where absurd.cron_jobs.job_name = p_job_name;
+
+  if not found then
+    raise exception 'Cron job "%" does not exist', p_job_name;
+  end if;
+
+  if to_regclass('cron.job') is null then
+    raise exception 'pg_cron is not available (missing cron.job)';
+  end if;
+
+  if not exists (
+    select 1
+    from pg_proc p
+    join pg_namespace n on n.oid = p.pronamespace
+    where n.nspname = 'cron'
+      and p.proname = 'schedule'
+  ) then
+    raise exception 'pg_cron is not available (missing cron.schedule)';
+  end if;
+
+  if not exists (
+    select 1
+    from pg_proc p
+    join pg_namespace n on n.oid = p.pronamespace
+    where n.nspname = 'cron'
+      and p.proname = 'unschedule'
+  ) then
+    raise exception 'pg_cron is not available (missing cron.unschedule)';
+  end if;
+
+  v_pgcron_job_name := absurd.cron_pgcron_job_name(p_job_name);
+  v_command := format('select * from absurd.run_cron_job(%L);', p_job_name);
+
+  for v_existing_job_id in
+    execute 'select jobid from cron.job where jobname = $1'
+    using v_pgcron_job_name
+  loop
+    execute 'select cron.unschedule($1)' using v_existing_job_id;
+  end loop;
+
+  execute 'select cron.schedule($1, $2, $3)'
+    into v_job_id
+    using v_pgcron_job_name, v_job.schedule, v_command;
+
+  update absurd.cron_jobs
+     set pgcron_job_id = v_job_id,
+         updated_at = absurd.current_time()
+   where absurd.cron_jobs.job_name = p_job_name;
+
+  job_name := p_job_name;
+  pgcron_job_name := v_pgcron_job_name;
+  pgcron_job_id := v_job_id;
+  return next;
+end;
+$$;
+
+create function absurd.uninstall_cron_job (
+  p_job_name text
+)
+  returns table (
+    job_name text,
+    pgcron_job_name text,
+    pgcron_job_id bigint
+  )
+  language plpgsql
+as $$
+declare
+  v_pgcron_job_name text;
+  v_existing_job record;
+begin
+  if to_regclass('cron.job') is null then
+    raise exception 'pg_cron is not available (missing cron.job)';
+  end if;
+
+  if not exists (
+    select 1
+    from pg_proc p
+    join pg_namespace n on n.oid = p.pronamespace
+    where n.nspname = 'cron'
+      and p.proname = 'unschedule'
+  ) then
+    raise exception 'pg_cron is not available (missing cron.unschedule)';
+  end if;
+
+  v_pgcron_job_name := absurd.cron_pgcron_job_name(p_job_name);
+
+  for v_existing_job in
+    execute 'select jobid, jobname from cron.job where jobname = $1 order by jobid'
+    using v_pgcron_job_name
+  loop
+    execute 'select cron.unschedule($1)' using v_existing_job.jobid;
+
+    job_name := p_job_name;
+    pgcron_job_name := v_existing_job.jobname;
+    pgcron_job_id := v_existing_job.jobid;
+    return next;
+  end loop;
+
+  update absurd.cron_jobs
+     set pgcron_job_id = null,
+         updated_at = absurd.current_time()
+   where absurd.cron_jobs.job_name = p_job_name;
+end;
+$$;
+
+create function absurd.unregister_cron_job (
+  p_job_name text,
+  p_uninstall_pgcron boolean default true
+)
+  returns table (
+    job_name text,
+    pgcron_job_id bigint
+  )
+  language plpgsql
+as $$
+declare
+  v_removed absurd.cron_jobs%rowtype;
+  v_uninstalled record;
+begin
+  if p_uninstall_pgcron
+     and to_regclass('cron.job') is not null
+     and exists (
+       select 1
+       from pg_proc p
+       join pg_namespace n on n.oid = p.pronamespace
+       where n.nspname = 'cron'
+         and p.proname = 'unschedule'
+     ) then
+    for v_uninstalled in
+      select * from absurd.uninstall_cron_job(p_job_name)
+    loop
+      job_name := v_uninstalled.job_name;
+      pgcron_job_id := v_uninstalled.pgcron_job_id;
+      return next;
+    end loop;
+  end if;
+
+  delete from absurd.cron_jobs
+   where absurd.cron_jobs.job_name = p_job_name
+   returning * into v_removed;
+
+  if found then
+    job_name := v_removed.job_name;
+    pgcron_job_id := v_removed.pgcron_job_id;
+    return next;
+  end if;
+end;
+$$;
+
 -- Returns the Absurd schema release version baked into this SQL file.
 -- During development this is usually "main" and release automation replaces
 -- it with the actual tag version.
@@ -353,6 +753,15 @@ begin
 
   if v_existing_queue is null then
     return;
+  end if;
+
+  -- Remove queue-scoped task-spawning cron adapters before the registry rows
+  -- cascade away.  Without this, pg_cron could retain orphaned jobs that fail
+  -- every time they call absurd.run_cron_job(...).
+  if to_regclass('absurd.cron_jobs') is not null then
+    perform absurd.unregister_cron_job(cj.job_name)
+      from absurd.cron_jobs cj
+     where cj.queue_name = p_queue_name;
   end if;
 
   -- Remove queue-scoped maintenance jobs only when pg_cron is available.

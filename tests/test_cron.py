@@ -457,3 +457,177 @@ def test_drop_queue_unschedules_queue_scoped_cron_jobs(client):
         (f"absurd%{scope}%",),
     ).fetchall()
     assert remaining == []
+
+
+
+def test_register_cron_job_records_declarative_schedule_and_runs_idempotently(client):
+    queue = "cron-registry-run"
+    client.create_queue(queue)
+    base = datetime(2024, 6, 1, 10, 3, 45, tzinfo=timezone.utc)
+    client.set_fake_now(base)
+
+    row = client.conn.execute(
+        """
+        select job_name, installed, pgcron_job_id
+        from absurd.register_cron_job(
+          'daily-report',
+          %s,
+          'send-report',
+          '0 8 * * *',
+          '{"kind":"daily"}'::jsonb,
+          '{"headers":{"source":"test"}}'::jsonb,
+          true,
+          'Daily report',
+          '{"owner":"ops"}'::jsonb
+        )
+        """,
+        (queue,),
+    ).fetchone()
+
+    assert row == ("daily-report", False, None)
+
+    first = client.conn.execute(
+        "select task_id, run_id, attempt, created from absurd.run_cron_job('daily-report')"
+    ).fetchone()
+    second = client.conn.execute(
+        "select task_id, run_id, attempt, created from absurd.run_cron_job('daily-report')"
+    ).fetchone()
+
+    assert first is not None
+    assert first[3] is True
+    assert second is not None
+    assert second[0] == first[0]
+    assert second[1] == first[1]
+    assert second[3] is False
+
+    task = client.get_task(queue, first[0])
+    assert task is not None
+    assert task["task_name"] == "send-report"
+    assert task["params"] == {"kind": "daily"}
+    assert task["headers"]["source"] == "test"
+    assert task["headers"]["absurd_cron_job"] == "daily-report"
+    assert task["headers"]["absurd_cron_schedule"] == "0 8 * * *"
+    assert task["headers"]["absurd_cron_scheduled_for"] == "2024-06-01T10:03Z"
+
+
+def test_register_cron_job_can_install_replace_and_uninstall_pgcron_adapter(client):
+    queue = "cron-registry-pgcron"
+    client.create_queue(queue)
+    _install_mock_cron(client.conn)
+
+    installed = client.conn.execute(
+        """
+        select job_name, installed, pgcron_job_id
+        from absurd.register_cron_job(
+          'rebuild-search',
+          %s,
+          'rebuild-search-index',
+          '0 2 * * *',
+          '{}'::jsonb,
+          '{}'::jsonb,
+          true,
+          null,
+          '{}'::jsonb,
+          true
+        )
+        """,
+        (queue,),
+    ).fetchone()
+
+    assert installed[0] == "rebuild-search"
+    assert installed[1] is True
+    assert installed[2] is not None
+
+    jobs = client.conn.execute(
+        "select jobname, schedule, command from cron.job order by jobid"
+    ).fetchall()
+    assert len(jobs) == 1
+    assert jobs[0][0].startswith("absurd_cron_")
+    assert jobs[0][1] == "0 2 * * *"
+    assert "absurd.run_cron_job('rebuild-search')" in jobs[0][2]
+
+    client.conn.execute(
+        """
+        select *
+        from absurd.register_cron_job(
+          'rebuild-search',
+          %s,
+          'rebuild-search-index',
+          '30 2 * * *',
+          '{}'::jsonb,
+          '{}'::jsonb,
+          true,
+          null,
+          '{}'::jsonb,
+          true
+        )
+        """,
+        (queue,),
+    )
+
+    jobs_after_replace = client.conn.execute(
+        "select schedule, command from cron.job order by jobid"
+    ).fetchall()
+    assert jobs_after_replace == [("30 2 * * *", "select * from absurd.run_cron_job('rebuild-search');")]
+
+    removed = client.conn.execute(
+        "select job_name, pgcron_job_id from absurd.unregister_cron_job('rebuild-search')"
+    ).fetchall()
+    assert removed
+    assert client.conn.execute("select count(*) from cron.job").fetchone()[0] == 0
+    assert client.conn.execute("select count(*) from absurd.cron_jobs").fetchone()[0] == 0
+
+
+def test_cron_job_registry_rejects_user_supplied_idempotency_key(client):
+    queue = "cron-registry-idem"
+    client.create_queue(queue)
+
+    with pytest.raises(Exception):
+        client.conn.execute(
+            """
+            select *
+            from absurd.register_cron_job(
+              'bad-idempotency',
+              %s,
+              'task',
+              '* * * * *',
+              '{}'::jsonb,
+              '{"idempotency_key":"user-controlled"}'::jsonb
+            )
+            """,
+            (queue,),
+        )
+
+
+def test_drop_queue_unschedules_registered_cron_jobs(client):
+    queue = "cron-registry-drop"
+    client.create_queue(queue)
+    _install_mock_cron(client.conn)
+
+    client.conn.execute(
+        """
+        select *
+        from absurd.register_cron_job(
+          'drop-me',
+          %s,
+          'task',
+          '* * * * *',
+          '{}'::jsonb,
+          '{}'::jsonb,
+          true,
+          null,
+          '{}'::jsonb,
+          true
+        )
+        """,
+        (queue,),
+    )
+    assert client.conn.execute("select count(*) from cron.job").fetchone()[0] == 1
+
+    client.drop_queue(queue)
+
+    assert client.conn.execute("select count(*) from cron.job").fetchone()[0] == 0
+    assert client.conn.execute(
+        "select count(*) from absurd.cron_jobs where queue_name = %s",
+        (queue,),
+    ).fetchone()[0] == 0
