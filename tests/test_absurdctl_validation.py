@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 from subprocess import CompletedProcess
 from types import SimpleNamespace
@@ -12,6 +13,7 @@ ABSURDCTL_PATH = Path(__file__).resolve().parents[1] / "absurdctl"
 MODULE = runpy.run_path(str(ABSURDCTL_PATH))
 validate_queue_name = MODULE["validate_queue_name"]
 cmd_emit_event = MODULE["cmd_emit_event"]
+cmd_spawn_task = MODULE["cmd_spawn_task"]
 cmd_retry_task = MODULE["cmd_retry_task"]
 cmd_migrate = MODULE["cmd_migrate"]
 cmd_schema_version = MODULE["cmd_schema_version"]
@@ -94,6 +96,139 @@ def test_emit_event_validates_queue_name(monkeypatch):
 
     with pytest.raises(SystemExit):
         cmd_emit_event(["-q", "a" * 58, "order.completed"])
+
+
+def test_spawn_task_passes_options_payload(monkeypatch):
+    captured = {}
+
+    def fake_run_psql_csv(config, query=None, **kwargs):
+        captured["query"] = query
+        captured["variables"] = kwargs.get("variables")
+        return [
+            [
+                "019a32d3-8425-7ae2-a5af-2f17a6707666",
+                "019a32d3-8425-7ae2-a5af-2f17a6707667",
+                "1",
+            ]
+        ]
+
+    monkeypatch.setitem(cmd_spawn_task.__globals__, "run_psql_csv", fake_run_psql_csv)
+    monkeypatch.setitem(
+        cmd_spawn_task.__globals__, "ensure_queue_exists", lambda *_: None
+    )
+
+    cmd_spawn_task(
+        [
+            "-q",
+            "default",
+            "my-task",
+            "--params",
+            '{"foo":"bar"}',
+            "-H",
+            "origin-kind=slack",
+            "--max-attempts",
+            "5",
+            "--retry-kind",
+            "fixed",
+            "--retry-base",
+            "10",
+            "--retry-max",
+            "60",
+            "--max-duration",
+            "300",
+            "--max-delay",
+            "30",
+        ]
+    )
+
+    assert ":'options_json'::jsonb" in captured["query"]
+    assert captured["variables"]["queue"] == "default"
+    assert captured["variables"]["task_name"] == "my-task"
+    assert captured["variables"]["params_json"] == '{"foo": "bar"}'
+    assert json.loads(captured["variables"]["options_json"]) == {
+        "headers": {"origin-kind": "slack"},
+        "max_attempts": 5,
+        "retry_strategy": {
+            "kind": "fixed",
+            "base_seconds": 10,
+            "max_seconds": 60,
+        },
+        "cancellation": {
+            "max_duration": 300,
+            "max_delay": 30,
+        },
+    }
+
+
+def test_spawn_task_preserves_zero_valued_options(monkeypatch):
+    captured = {}
+
+    def fake_run_psql_csv(config, query=None, **kwargs):
+        captured["variables"] = kwargs.get("variables")
+        return [
+            [
+                "019a32d3-8425-7ae2-a5af-2f17a6707666",
+                "019a32d3-8425-7ae2-a5af-2f17a6707667",
+                "1",
+            ]
+        ]
+
+    monkeypatch.setitem(cmd_spawn_task.__globals__, "run_psql_csv", fake_run_psql_csv)
+    monkeypatch.setitem(
+        cmd_spawn_task.__globals__, "ensure_queue_exists", lambda *_: None
+    )
+
+    cmd_spawn_task(
+        [
+            "my-task",
+            "--retry-base",
+            "0",
+            "--retry-factor",
+            "0",
+            "--retry-max",
+            "0",
+            "--max-duration",
+            "0",
+            "--max-delay",
+            "0",
+        ]
+    )
+
+    assert json.loads(captured["variables"]["options_json"]) == {
+        "retry_strategy": {
+            "kind": "exponential",
+            "base_seconds": 0,
+            "factor": 0.0,
+            "max_seconds": 0,
+        },
+        "cancellation": {
+            "max_duration": 0,
+            "max_delay": 0,
+        },
+    }
+
+
+def test_spawn_task_uses_empty_options_payload_by_default(monkeypatch):
+    captured = {}
+
+    def fake_run_psql_csv(config, query=None, **kwargs):
+        captured["variables"] = kwargs.get("variables")
+        return [
+            [
+                "019a32d3-8425-7ae2-a5af-2f17a6707666",
+                "019a32d3-8425-7ae2-a5af-2f17a6707667",
+                "1",
+            ]
+        ]
+
+    monkeypatch.setitem(cmd_spawn_task.__globals__, "run_psql_csv", fake_run_psql_csv)
+    monkeypatch.setitem(
+        cmd_spawn_task.__globals__, "ensure_queue_exists", lambda *_: None
+    )
+
+    cmd_spawn_task(["my-task"])
+
+    assert captured["variables"]["options_json"] == "{}"
 
 
 def test_retry_task_uses_parameterized_query(monkeypatch):
