@@ -1634,7 +1634,8 @@ create function absurd.await_event (
 )
   returns table (
     should_suspend boolean,
-    payload jsonb
+    payload jsonb,
+    timed_out boolean
   )
   language plpgsql
 as $$
@@ -1643,6 +1644,7 @@ declare
   v_existing_payload jsonb;
   v_event_payload jsonb;
   v_checkpoint_payload jsonb;
+  v_checkpoint_status text;
   v_resolved_payload jsonb;
   v_timeout_at timestamptz;
   v_available_at timestamptz;
@@ -1664,17 +1666,46 @@ begin
   v_available_at := coalesce(v_timeout_at, 'infinity'::timestamptz);
 
   execute format(
-    'select state
+    'select state, status
        from absurd.%I
       where task_id = $1
         and checkpoint_name = $2',
     'c_' || p_queue_name
   )
-  into v_checkpoint_payload
+  into v_checkpoint_payload, v_checkpoint_status
   using p_task_id, p_step_name;
 
-  if v_checkpoint_payload is not null then
-    return query select false, v_checkpoint_payload;
+  if v_checkpoint_status is not null then
+    if v_checkpoint_status <> 'timed_out' then
+      return query select false, v_checkpoint_payload, false;
+      return;
+    end if;
+
+    execute format(
+      'select r.state, t.state
+         from absurd.%I r
+         join absurd.%I t on t.task_id = r.task_id
+        where r.run_id = $1
+        for update',
+      'r_' || p_queue_name,
+      't_' || p_queue_name
+    )
+    into v_run_state, v_task_state
+    using p_run_id;
+
+    if v_run_state is null then
+      raise exception 'Run "%" not found while awaiting event', p_run_id;
+    end if;
+
+    if v_task_state = 'cancelled' then
+      raise exception sqlstate 'AB001' using message = 'Task has been cancelled';
+    end if;
+
+    if v_run_state <> 'running' then
+      raise exception 'Run "%" must be running to await events', p_run_id;
+    end if;
+
+    return query select false, null::jsonb, true;
     return;
   end if;
 
@@ -1762,18 +1793,29 @@ begin
                      updated_at = excluded.updated_at',
       'c_' || p_queue_name
     ) using p_task_id, p_step_name, v_resolved_payload, p_run_id, v_now;
-    return query select false, v_resolved_payload;
+    return query select false, v_resolved_payload, false;
     return;
   end if;
 
   -- Detect if we resumed due to timeout: wake_event matches and payload is null
   if v_resolved_payload is null and v_wake_event = p_event_name and v_existing_payload is null then
-    -- Resumed due to timeout; don't re-sleep and don't create a new wait
+    -- Resumed due to timeout; persist timeout checkpoint and don't re-sleep.
+    execute format(
+      'insert into absurd.%I (task_id, checkpoint_name, state, status, owner_run_id, updated_at)
+       values ($1, $2, null, ''timed_out'', $3, $4)
+       on conflict (task_id, checkpoint_name)
+       do update set state = excluded.state,
+                     status = excluded.status,
+                     owner_run_id = excluded.owner_run_id,
+                     updated_at = excluded.updated_at',
+      'c_' || p_queue_name
+    ) using p_task_id, p_step_name, p_run_id, v_now;
+
     execute format(
       'update absurd.%I set wake_event = null where run_id = $1',
       'r_' || p_queue_name
     ) using p_run_id;
-    return query select false, null::jsonb;
+    return query select false, null::jsonb, true;
     return;
   end if;
 
@@ -1806,7 +1848,7 @@ begin
     't_' || p_queue_name
   ) using p_task_id;
 
-  return query select true, null::jsonb;
+  return query select true, null::jsonb, false;
   return;
 end;
 $$;

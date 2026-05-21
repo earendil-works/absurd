@@ -506,19 +506,10 @@ export class TaskContext {
     if (cached !== undefined) {
       return cached as JsonValue;
     }
-    if (
-      this.task.wake_event === eventName &&
-      (this.task.event_payload === null ||
-        this.task.event_payload === undefined)
-    ) {
-      this.task.wake_event = null;
-      this.task.event_payload = null;
-      throw new TimeoutError(`Timed out waiting for event "${eventName}"`);
-    }
 
     const result = await this.queryWithTaskStateCheck(
-      `SELECT should_suspend, payload
-        FROM absurd.await_event($1, $2, $3, $4, $5, $6)`,
+      `SELECT *
+         FROM absurd.await_event($1, $2, $3, $4, $5, $6)`,
       [
         this.queueName,
         this.task.task_id,
@@ -533,9 +524,27 @@ export class TaskContext {
       throw new Error("Failed to await event");
     }
 
-    const { should_suspend, payload } = result.rows[0];
+    const row = result.rows[0];
+    const shouldSuspend = row.should_suspend as boolean;
+    const payload = row.payload as JsonValue;
+    const hasTimedOutField = Object.prototype.hasOwnProperty.call(
+      row,
+      "timed_out",
+    );
+    const timedOut = hasTimedOutField
+      ? row.timed_out === true
+      : !shouldSuspend &&
+        payload === null &&
+        this.task.wake_event === eventName &&
+        this.task.event_payload === null;
 
-    if (!should_suspend) {
+    if (timedOut) {
+      this.task.wake_event = null;
+      this.task.event_payload = null;
+      throw new TimeoutError(`Timed out waiting for event "${eventName}"`);
+    }
+
+    if (!shouldSuspend) {
       this.checkpointCache.set(checkpointName, payload);
       this.task.event_payload = null;
       return payload;
