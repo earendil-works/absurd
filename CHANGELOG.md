@@ -4,14 +4,18 @@ This contains the changes between releases.
 
 # Unreleased
 
+# 0.4.0
+
 * Added a Go SDK.  #80
 * Added partitioned queue storage support.  #83
 * Changed workers in the Go, Python, and TypeScript SDKs to defer claimed unknown tasks back into the queue instead of immediately failing runs.
 * Fixed terminal run-state race handling across SQL and SDKs so cancellation/failure transitions are treated as terminal consistently.
 * Fixed the Python SDK's synchronous worker to honor configured `concurrency` and run tasks in parallel when `concurrency > 1`.
+* Fixed Python SDK registered tasks without per-task retry config to fall back to the client default max attempts.
 * Improved Python SDK type annotations and hook handling for better static type-checking and async hook interoperability.
 * Fixed Go SDK spawn behavior to require an explicit queue when spawning unregistered tasks.
 * Fixed `absurdctl spawn-task` to pass headers, max attempts, retry strategy, and cancellation policy inside the SQL `spawn_task` options payload.
+* Improved Habitat's retry flow to navigate to newly spawned retry tasks.
 
 # 0.3.0
 
