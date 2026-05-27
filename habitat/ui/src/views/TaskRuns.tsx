@@ -1,4 +1,4 @@
-import { A, useParams } from "@solidjs/router";
+import { A, useNavigate, useParams } from "@solidjs/router";
 import {
   For,
   Show,
@@ -39,6 +39,7 @@ import {
 
 export default function TaskRuns() {
   const params = useParams<{ taskId: string }>();
+  const navigate = useNavigate();
   const taskId = () => params.taskId;
 
   const [runsError, setRunsError] = createSignal<string | null>(null);
@@ -416,17 +417,17 @@ export default function TaskRuns() {
 
       const result = await retryTask(payload);
 
+      setRetryDialogOpen(false);
+
       if (result.created) {
-        setRetrySuccess(
-          `Spawned new task ${result.taskId} (attempt ${result.attempt}).`,
-        );
-      } else {
-        setRetrySuccess(
-          `Retried task ${result.taskId} on attempt ${result.attempt}.`,
-        );
+        navigate(`/tasks/${result.taskId}`);
+        return;
       }
 
-      setRetryDialogOpen(false);
+      setRetrySuccess(
+        `Retried task ${result.taskId} on attempt ${result.attempt}.`,
+      );
+
       await handleRefresh();
     } catch (error) {
       if (error instanceof APIError) {
