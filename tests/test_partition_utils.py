@@ -15,7 +15,7 @@ def test_uuidv7_timestamp_extracts_timestamp(client):
 
 def test_uuidv7_timestamp_returns_null_for_non_v7(client):
     row = client.conn.execute(
-        "select absurd.uuidv7_timestamp(uuid_generate_v4())"
+        "select absurd.uuidv7_timestamp(gen_random_uuid())"
     ).fetchone()
 
     assert row is not None
