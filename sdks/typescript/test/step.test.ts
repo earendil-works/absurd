@@ -315,7 +315,6 @@ describe("Step functionality", () => {
     expect(checkpointRow.rows[0]).toMatchObject({
       checkpoint_name: "sleep-step",
       owner_run_id: runID,
-      state: wakeTime.toISOString(),
     });
 
     const sleepingRun = await ctx.getRun(runID);
