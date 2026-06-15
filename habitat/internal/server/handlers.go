@@ -310,6 +310,7 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	statusFilter, statusValid := normalizeTaskStatusFilter(queryValues.Get("status"))
+	failedRunScope, failedRunScopeValid := normalizeFailedRunScope(queryValues.Get("failedRunScope"))
 	queueFilter := strings.TrimSpace(queryValues.Get("queue"))
 	taskNameFilter := strings.TrimSpace(queryValues.Get("taskName"))
 	taskIDFilter := strings.TrimSpace(queryValues.Get("taskId"))
@@ -336,7 +337,7 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !statusValid {
+	if !statusValid || !failedRunScopeValid {
 		writeJSON(w, http.StatusOK, emptyTaskListResponse(page, perPage, queueNames))
 		return
 	}
@@ -396,6 +397,7 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 			ctx,
 			queueName,
 			statusFilter,
+			failedRunScope,
 			taskNameFilter,
 			taskIDFilter,
 			limitPerQueue,
@@ -609,6 +611,25 @@ func allTaskStatuses() []string {
 	return []string{"pending", "running", "sleeping", "completed", "failed", "cancelled"}
 }
 
+const (
+	failedRunScopeAll      = "all"
+	failedRunScopeTerminal = "terminal"
+)
+
+func normalizeFailedRunScope(value string) (string, bool) {
+	scope := strings.ToLower(strings.TrimSpace(value))
+	if scope == "" {
+		return failedRunScopeAll, true
+	}
+
+	switch scope {
+	case failedRunScopeAll, failedRunScopeTerminal:
+		return scope, true
+	default:
+		return failedRunScopeAll, false
+	}
+}
+
 func normalizeTaskStatusFilter(value string) (string, bool) {
 	status := strings.ToLower(strings.TrimSpace(value))
 	if status == "" {
@@ -645,6 +666,7 @@ func (s *Server) fetchQueueTaskCandidates(
 	ctx context.Context,
 	queueName string,
 	statusFilter string,
+	failedRunScope string,
 	taskNameFilter string,
 	taskIDFilter string,
 	limit int,
@@ -686,6 +708,10 @@ func (s *Server) fetchQueueTaskCandidates(
 	if statusFilter != "" {
 		params = append(params, statusFilter)
 		clauses = append(clauses, fmt.Sprintf("r.state = $%d", len(params)))
+	}
+	if statusFilter == "failed" && failedRunScope == failedRunScopeTerminal {
+		clauses = append(clauses, "t.state = 'failed'")
+		clauses = append(clauses, "r.run_id = t.last_attempt_run")
 	}
 	if taskNameFilter != "" {
 		params = append(params, taskNameFilter)

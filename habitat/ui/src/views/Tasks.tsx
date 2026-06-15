@@ -18,6 +18,7 @@ import {
 } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import {
+  type FailedRunScope,
   type TaskDetail,
   type TaskSummary,
   fetchTasks,
@@ -56,6 +57,7 @@ import {
 
 const REFRESH_INTERVAL_MS = 15_000;
 const PAGE_SIZE = 25;
+const DEFAULT_FAILED_RUN_SCOPE: FailedRunScope = "terminal";
 
 interface FilterOption {
   label: string;
@@ -122,6 +124,17 @@ export default function Tasks() {
     return value.trim().length === 0 ? null : value;
   };
 
+  const normalizeFailedRunScopeParam = (
+    value: string | undefined,
+  ): FailedRunScope => {
+    return value?.trim().toLowerCase() === "all"
+      ? "all"
+      : DEFAULT_FAILED_RUN_SCOPE;
+  };
+
+  const isFailedStatus = (value: string | null | undefined): boolean =>
+    value?.toLowerCase() === "failed";
+
   const parsePageParam = (value: string | undefined): number => {
     const parsed = Number.parseInt(value ?? "", 10);
     return Number.isFinite(parsed) && parsed > 0 ? parsed : 1;
@@ -134,6 +147,9 @@ export default function Tasks() {
   );
   const [statusFilter, setStatusFilter] = createSignal<string | null>(
     normalizeNullableParam(getParam("status")),
+  );
+  const [failedRunScope, setFailedRunScope] = createSignal<FailedRunScope>(
+    normalizeFailedRunScopeParam(getParam("failedRunScope")),
   );
   const [taskNameFilter, setTaskNameFilter] = createSignal<string | null>(
     normalizeNullableParam(getParam("taskName")),
@@ -164,6 +180,7 @@ export default function Tasks() {
       search: string | null;
       queue: string | null;
       status: string | null;
+      failedRunScope: FailedRunScope | null;
       taskName: string | null;
       timeParams: TimeSelectionParams;
       page: number | null;
@@ -180,6 +197,10 @@ export default function Tasks() {
     }
     if ("status" in updates) {
       payload.status = toParamValue(updates.status);
+    }
+    if ("failedRunScope" in updates) {
+      payload.failedRunScope =
+        updates.failedRunScope === "all" ? "all" : undefined;
     }
     if ("taskName" in updates) {
       payload.taskName = toParamValue(updates.taskName);
@@ -220,6 +241,13 @@ export default function Tasks() {
       setStatusFilter(nextStatus);
     }
 
+    const nextFailedRunScope = normalizeFailedRunScopeParam(
+      getParam("failedRunScope"),
+    );
+    if (nextFailedRunScope !== failedRunScope()) {
+      setFailedRunScope(nextFailedRunScope);
+    }
+
     const nextTaskName = normalizeNullableParam(getParam("taskName"));
     if (nextTaskName !== taskNameFilter()) {
       setTaskNameFilter(nextTaskName);
@@ -237,6 +265,7 @@ export default function Tasks() {
       search: searchTerm(),
       queue: queueFilter(),
       status: statusFilter(),
+      failedRunScope: isFailedStatus(statusFilter()) ? failedRunScope() : null,
       taskName: taskNameFilter(),
       after: timeRange().after ?? null,
       before: timeRange().before ?? null,
@@ -249,6 +278,7 @@ export default function Tasks() {
         prev.search === next.search &&
         prev.queue === next.queue &&
         prev.status === next.status &&
+        prev.failedRunScope === next.failedRunScope &&
         prev.taskName === next.taskName &&
         prev.after === next.after &&
         prev.before === next.before &&
@@ -404,10 +434,21 @@ export default function Tasks() {
       status: () => {
         if (statusFilter() === value) {
           setStatusFilter(null);
-          syncSearchParams({ status: null, page: 1 });
+          setFailedRunScope(DEFAULT_FAILED_RUN_SCOPE);
+          syncSearchParams({ status: null, failedRunScope: null, page: 1 });
         } else {
+          const nextFailedRunScope = isFailedStatus(value)
+            ? isFailedStatus(statusFilter())
+              ? failedRunScope()
+              : DEFAULT_FAILED_RUN_SCOPE
+            : null;
           setStatusFilter(value);
-          syncSearchParams({ status: value, page: 1 });
+          setFailedRunScope(nextFailedRunScope ?? DEFAULT_FAILED_RUN_SCOPE);
+          syncSearchParams({
+            status: value,
+            failedRunScope: nextFailedRunScope,
+            page: 1,
+          });
         }
       },
       taskName: () => {
@@ -561,11 +602,23 @@ export default function Tasks() {
                         return;
                       }
 
+                      const nextFailedRunScope = isFailedStatus(nextValue)
+                        ? isFailedStatus(statusFilter())
+                          ? failedRunScope()
+                          : DEFAULT_FAILED_RUN_SCOPE
+                        : null;
                       setStatusFilter(nextValue);
+                      setFailedRunScope(
+                        nextFailedRunScope ?? DEFAULT_FAILED_RUN_SCOPE,
+                      );
                       if (page() !== 1) {
                         setPage(1);
                       }
-                      syncSearchParams({ status: nextValue, page: 1 });
+                      syncSearchParams({
+                        status: nextValue,
+                        failedRunScope: nextFailedRunScope,
+                        page: 1,
+                      });
                     }}
                     itemComponent={renderSelectOption}
                     placeholder="All statuses"
@@ -651,6 +704,39 @@ export default function Tasks() {
                   </Combobox>
                 </div>
               </div>
+              <Show when={isFailedStatus(statusFilter())}>
+                <div class="flex flex-wrap items-center gap-2">
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant={
+                      failedRunScope() === "terminal" ? "secondary" : "outline"
+                    }
+                    aria-pressed={failedRunScope() === "terminal"}
+                    title="Only show failed runs where the task has exhausted retries."
+                    onClick={() => {
+                      const nextScope =
+                        failedRunScope() === "terminal" ? "all" : "terminal";
+                      setFailedRunScope(nextScope);
+                      if (page() !== 1) {
+                        setPage(1);
+                      }
+                      syncSearchParams({
+                        failedRunScope: nextScope,
+                        page: 1,
+                      });
+                    }}
+                  >
+                    {failedRunScope() === "terminal" ? "✓ " : ""}
+                    Terminal failures only
+                  </Button>
+                  <span class="text-xs text-muted-foreground">
+                    {failedRunScope() === "terminal"
+                      ? "Hiding failed attempts that were retried later."
+                      : "Showing all failed attempts, including retried failures."}
+                  </span>
+                </div>
+              </Show>
               <div class="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
                 <Show when={allTasks().length > 0}>
                   <Show

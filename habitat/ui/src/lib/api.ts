@@ -159,9 +159,12 @@ export interface TaskListResponse {
   availableTaskNames: string[];
 }
 
+export type FailedRunScope = "all" | "terminal";
+
 export interface TaskListQuery {
   search?: string;
   status?: string | null;
+  failedRunScope?: FailedRunScope | null;
   queue?: string | null;
   taskName?: string | null;
   taskId?: string | null;
@@ -181,6 +184,9 @@ export async function fetchTasks(
   }
   if (filters.status) {
     params.set("status", filters.status);
+  }
+  if (filters.failedRunScope) {
+    params.set("failedRunScope", filters.failedRunScope);
   }
   if (filters.queue) {
     params.set("queue", filters.queue);

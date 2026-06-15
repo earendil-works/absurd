@@ -184,6 +184,42 @@ func expectQueueTasksQuery(queueName string, limit int64) func(string, []driver.
 	}
 }
 
+func expectFailedQueueTasksQuery(queueName string, limit int64, terminal bool) func(string, []driver.NamedValue) error {
+	rTable := fmt.Sprintf(`FROM absurd.%q r`, "r_"+queueName)
+	tTable := fmt.Sprintf(`JOIN absurd.%q t ON t.task_id = r.task_id`, "t_"+queueName)
+	return func(query string, args []driver.NamedValue) error {
+		for _, required := range []string{
+			rTable,
+			tTable,
+			"r.state = $1",
+			"ORDER BY r.run_id DESC",
+		} {
+			if !strings.Contains(query, required) {
+				return fmt.Errorf("query %q missing %q", query, required)
+			}
+		}
+		for _, terminalClause := range []string{"t.state = 'failed'", "r.run_id = t.last_attempt_run"} {
+			contains := strings.Contains(query, terminalClause)
+			if terminal && !contains {
+				return fmt.Errorf("query %q missing %q", query, terminalClause)
+			}
+			if !terminal && contains {
+				return fmt.Errorf("query %q unexpectedly contains %q", query, terminalClause)
+			}
+		}
+		if len(args) != 2 {
+			return fmt.Errorf("expected 2 args, got %d", len(args))
+		}
+		if args[0].Value != "failed" {
+			return fmt.Errorf("status arg = %#v, want failed", args[0].Value)
+		}
+		if args[1].Value != limit {
+			return fmt.Errorf("limit arg = %#v, want %#v", args[1].Value, limit)
+		}
+		return nil
+	}
+}
+
 func expectRecentTaskNamesQuery(queueName string, limit int64) func(string, []driver.NamedValue) error {
 	rTable := fmt.Sprintf(`FROM absurd.%q`, "r_"+queueName)
 	tTable := fmt.Sprintf(`JOIN absurd.%q t ON t.task_id = r.task_id`, "t_"+queueName)
@@ -349,6 +385,171 @@ func TestHandleTasksFailsFastOnQueueQueryDeadline(t *testing.T) {
 	}
 	if strings.Contains(body, `"items"`) {
 		t.Fatalf("expected non-JSON error response for timeout, got %q", body)
+	}
+}
+
+func TestHandleTasksTerminalFailedScopeFiltersLastFailedRun(t *testing.T) {
+	now := time.Now().UTC()
+	taskID := uuid.NewString()
+	runID := uuid.NewString()
+
+	db := newScriptedDB(t, []scriptedQuery{
+		{
+			match:   expectContains(`SELECT queue_name FROM absurd.queues ORDER BY queue_name`),
+			columns: []string{"queue_name"},
+			rows:    [][]driver.Value{{"alpha"}},
+		},
+		{
+			match:   expectRecentTaskNamesQuery("alpha", 5000),
+			columns: []string{"task_name"},
+			rows:    [][]driver.Value{{"process-webhook"}},
+		},
+		{
+			match: expectFailedQueueTasksQuery("alpha", 27, true),
+			columns: []string{
+				"task_id",
+				"run_id",
+				"queue_name",
+				"task_name",
+				"state",
+				"attempt",
+				"max_attempts",
+				"created_at",
+				"updated_at",
+				"completed_at",
+				"claimed_by",
+				"params",
+			},
+			rows: [][]driver.Value{
+				{
+					taskID,
+					runID,
+					"alpha",
+					"process-webhook",
+					"failed",
+					int64(3),
+					int64(3),
+					now,
+					now,
+					nil,
+					nil,
+					nil,
+				},
+			},
+		},
+	})
+
+	srv := &Server{db: db}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/tasks?status=failed&failedRunScope=terminal&page=1&perPage=25", nil)
+	resp := httptest.NewRecorder()
+
+	srv.handleTasks(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (body=%q)", resp.Code, http.StatusOK, resp.Body.String())
+	}
+
+	body := resp.Body.String()
+	if !strings.Contains(body, runID) {
+		t.Fatalf("expected terminal failed run in response body, got %q", body)
+	}
+	if !strings.Contains(body, `"total":1`) {
+		t.Fatalf("expected total=1 in response body, got %q", body)
+	}
+}
+
+func TestHandleTasksAllFailedScopeKeepsRetriedFailures(t *testing.T) {
+	now := time.Now().UTC()
+	taskID := uuid.NewString()
+	runID := uuid.NewString()
+
+	db := newScriptedDB(t, []scriptedQuery{
+		{
+			match:   expectContains(`SELECT queue_name FROM absurd.queues ORDER BY queue_name`),
+			columns: []string{"queue_name"},
+			rows:    [][]driver.Value{{"alpha"}},
+		},
+		{
+			match:   expectRecentTaskNamesQuery("alpha", 5000),
+			columns: []string{"task_name"},
+			rows:    [][]driver.Value{{"process-webhook"}},
+		},
+		{
+			match: expectFailedQueueTasksQuery("alpha", 27, false),
+			columns: []string{
+				"task_id",
+				"run_id",
+				"queue_name",
+				"task_name",
+				"state",
+				"attempt",
+				"max_attempts",
+				"created_at",
+				"updated_at",
+				"completed_at",
+				"claimed_by",
+				"params",
+			},
+			rows: [][]driver.Value{
+				{
+					taskID,
+					runID,
+					"alpha",
+					"process-webhook",
+					"failed",
+					int64(1),
+					int64(3),
+					now,
+					now,
+					nil,
+					nil,
+					nil,
+				},
+			},
+		},
+	})
+
+	srv := &Server{db: db}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/tasks?status=failed&failedRunScope=all&page=1&perPage=25", nil)
+	resp := httptest.NewRecorder()
+
+	srv.handleTasks(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (body=%q)", resp.Code, http.StatusOK, resp.Body.String())
+	}
+
+	body := resp.Body.String()
+	if !strings.Contains(body, runID) {
+		t.Fatalf("expected failed run in response body, got %q", body)
+	}
+}
+
+func TestHandleTasksRejectsInvalidFailedRunScope(t *testing.T) {
+	db := newScriptedDB(t, []scriptedQuery{
+		{
+			match:   expectContains(`SELECT queue_name FROM absurd.queues ORDER BY queue_name`),
+			columns: []string{"queue_name"},
+			rows:    [][]driver.Value{{"alpha"}},
+		},
+	})
+
+	srv := &Server{db: db}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/tasks?failedRunScope=sometimes&page=1&perPage=25", nil)
+	resp := httptest.NewRecorder()
+
+	srv.handleTasks(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (body=%q)", resp.Code, http.StatusOK, resp.Body.String())
+	}
+
+	body := resp.Body.String()
+	if !strings.Contains(body, `"items":[]`) || !strings.Contains(body, `"total":0`) {
+		t.Fatalf("expected empty task list response, got %q", body)
 	}
 }
 
