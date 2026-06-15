@@ -2224,13 +2224,12 @@ create function absurd.portable_uuidv7 ()
   volatile
 as $$
 declare
-  v_server_num integer := current_setting('server_version_num')::int;
   ts_ms bigint;
   b bytea;
   rnd bytea;
   i int;
 begin
-  if v_server_num >= 180000 and to_regproc('pg_catalog.uuidv7') is not null then
+  if to_regprocedure('pg_catalog.uuidv7()') is not null then
     return pg_catalog.uuidv7 ();
   end if;
   ts_ms := floor(extract(epoch from absurd.current_time()) * 1000)::bigint;
