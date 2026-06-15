@@ -4,6 +4,8 @@ This contains the changes between releases.
 
 # Unreleased
 
+* Removed the SQL dependency on `uuid-ossp`; UUIDv7 generation continues to use PostgreSQL's native UUIDv7 function when available and otherwise builds UUIDv7 values using PostgreSQL's built-in random UUID generator.
+
 # 0.4.0
 
 * Added a Go SDK.  #80

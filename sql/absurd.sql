@@ -1,7 +1,7 @@
 -- Absurd installs a Postgres-native durable workflow system that can be dropped
 -- into an existing database.
 --
--- It bootstraps the `absurd` schema and required extensions so that jobs, runs,
+-- It bootstraps the `absurd` schema and database objects so that jobs, runs,
 -- checkpoints, and workflow events all live alongside application data without
 -- external services.
 --
@@ -29,8 +29,6 @@
 -- coordinate sleepers and external signals so that tasks can suspend and resume
 -- without losing context.  Events are uniquely indexed and use first-write-wins
 -- semantics: the first emission per name is cached, later emits are ignored.
-
-create extension if not exists "uuid-ossp";
 
 create schema if not exists absurd;
 
@@ -2226,17 +2224,16 @@ create function absurd.portable_uuidv7 ()
   volatile
 as $$
 declare
-  v_server_num integer := current_setting('server_version_num')::int;
   ts_ms bigint;
   b bytea;
   rnd bytea;
   i int;
 begin
-  if v_server_num >= 180000 then
-    return uuidv7 ();
+  if to_regprocedure('pg_catalog.uuidv7()') is not null then
+    return pg_catalog.uuidv7 ();
   end if;
   ts_ms := floor(extract(epoch from absurd.current_time()) * 1000)::bigint;
-  rnd := uuid_send(uuid_generate_v4 ());
+  rnd := uuid_send(pg_catalog.gen_random_uuid ());
   b := repeat(E'\\000', 16)::bytea;
   for i in 0..5 loop
     b := set_byte(b, i, ((ts_ms >> ((5 - i) * 8)) & 255)::int);
