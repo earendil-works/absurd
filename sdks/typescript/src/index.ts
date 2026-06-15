@@ -400,10 +400,13 @@ export class TaskContext {
    * @param duration Duration to wait in seconds.
    */
   async sleepFor(stepName: string, duration: number): Promise<void> {
-    return await this.sleepUntil(
-      stepName,
-      new Date(Date.now() + duration * 1000),
-    );
+    const checkpointName = this.getCheckpointName(stepName);
+    if ((await this.lookupCheckpoint(checkpointName)) !== undefined) {
+      return;
+    }
+    await this.scheduleRunAfter(duration);
+    await this.persistCheckpoint(checkpointName, true);
+    throw new SuspendTask();
   }
 
   /**
@@ -413,16 +416,12 @@ export class TaskContext {
    */
   async sleepUntil(stepName: string, wakeAt: Date): Promise<void> {
     const checkpointName = this.getCheckpointName(stepName);
-    const state = await this.lookupCheckpoint(checkpointName);
-    let actualWakeAt = typeof state === "string" ? new Date(state) : wakeAt;
-    if (!state) {
-      await this.persistCheckpoint(checkpointName, wakeAt.toISOString());
+    if ((await this.lookupCheckpoint(checkpointName)) !== undefined) {
+      return;
     }
-
-    if (Date.now() < actualWakeAt.getTime()) {
-      await this.scheduleRun(actualWakeAt);
-      throw new SuspendTask();
-    }
+    await this.scheduleRun(wakeAt);
+    await this.persistCheckpoint(checkpointName, true);
+    throw new SuspendTask();
   }
 
   private getCheckpointName(name: string): string {
@@ -478,6 +477,13 @@ export class TaskContext {
       this.task.run_id,
       wakeAt,
     ]);
+  }
+
+  private async scheduleRunAfter(seconds: number): Promise<void> {
+    await this.con.query(
+      `SELECT absurd.schedule_run($1, $2, absurd.current_time() + make_interval(secs => $3))`,
+      [this.queueName, this.task.run_id, seconds],
+    );
   }
 
   /**
