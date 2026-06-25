@@ -419,8 +419,9 @@ export class TaskContext {
       await this.persistCheckpoint(checkpointName, wakeAt.toISOString());
     }
 
-    if (Date.now() < actualWakeAt.getTime()) {
-      await this.scheduleRun(actualWakeAt);
+    const remainingMs = actualWakeAt.getTime() - Date.now();
+    if (remainingMs > 0) {
+      await this.scheduleRunAfter(remainingMs / 1000);
       throw new SuspendTask();
     }
   }
@@ -472,12 +473,11 @@ export class TaskContext {
     this.onLeaseExtended(this.claimTimeout);
   }
 
-  private async scheduleRun(wakeAt: Date): Promise<void> {
-    await this.con.query(`SELECT absurd.schedule_run($1, $2, $3)`, [
-      this.queueName,
-      this.task.run_id,
-      wakeAt,
-    ]);
+  private async scheduleRunAfter(seconds: number): Promise<void> {
+    await this.con.query(
+      `SELECT absurd.schedule_run($1, $2, absurd.current_time() + make_interval(secs => $3::double precision))`,
+      [this.queueName, this.task.run_id, seconds],
+    );
   }
 
   /**

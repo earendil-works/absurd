@@ -784,8 +784,9 @@ class TaskContext:
             actual_wake_at = wake_at
             self._persist_checkpoint(checkpoint_name, wake_at.isoformat())
 
-        if _get_current_time() < actual_wake_at:
-            self._schedule_run(actual_wake_at)
+        remaining_seconds = (actual_wake_at - _get_current_time()).total_seconds()
+        if remaining_seconds > 0:
+            self._schedule_run_after(remaining_seconds)
             raise SuspendTask()
 
     def await_event(
@@ -944,12 +945,12 @@ class TaskContext:
             )
         self._checkpoint_cache[checkpoint_name] = value
 
-    def _schedule_run(self, wake_at: datetime) -> None:
-        """Schedule a run to wake at a specific time"""
+    def _schedule_run_after(self, seconds: float) -> None:
+        """Schedule a run to wake after a duration in seconds."""
         cursor = self._conn.cursor()
         cursor.execute(
-            "SELECT absurd.schedule_run(%s, %s, %s)",
-            (self._queue_name, self._task["run_id"], wake_at),
+            "SELECT absurd.schedule_run(%s, %s, absurd.current_time() + make_interval(secs => %s::double precision))",
+            (self._queue_name, self._task["run_id"], seconds),
         )
 
 
@@ -1026,8 +1027,9 @@ class AsyncTaskContext:
             actual_wake_at = wake_at
             await self._persist_checkpoint(checkpoint_name, wake_at.isoformat())
 
-        if _get_current_time() < actual_wake_at:
-            await self._schedule_run(actual_wake_at)
+        remaining_seconds = (actual_wake_at - _get_current_time()).total_seconds()
+        if remaining_seconds > 0:
+            await self._schedule_run_after(remaining_seconds)
             raise SuspendTask()
 
     async def await_event(
@@ -1190,12 +1192,12 @@ class AsyncTaskContext:
             )
         self._checkpoint_cache[checkpoint_name] = value
 
-    async def _schedule_run(self, wake_at: datetime) -> None:
-        """Schedule a run to wake at a specific time"""
+    async def _schedule_run_after(self, seconds: float) -> None:
+        """Schedule a run to wake after a duration in seconds."""
         cursor = self._conn.cursor()
         await cursor.execute(
-            "SELECT absurd.schedule_run(%s, %s, %s)",
-            (self._queue_name, self._task["run_id"], wake_at),
+            "SELECT absurd.schedule_run(%s, %s, absurd.current_time() + make_interval(secs => %s::double precision))",
+            (self._queue_name, self._task["run_id"], seconds),
         )
 
 

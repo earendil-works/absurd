@@ -286,6 +286,49 @@ describe("Step functionality", () => {
     });
   });
 
+  test("sleepFor schedules relative to the database clock", async () => {
+    vi.useFakeTimers();
+    const processNow = new Date("2024-05-05T10:00:00Z");
+    const dbNow = new Date(processNow.getTime() + 60 * 1000);
+    vi.setSystemTime(processNow);
+    await ctx.setFakeNow(dbNow);
+
+    const durationSeconds = 10;
+    let executions = 0;
+    absurd.registerTask(
+      { name: "sleep-for-db-clock" },
+      async (_params, ctx) => {
+        executions++;
+        await ctx.sleepFor("wait-for", durationSeconds);
+        return { resumed: true };
+      },
+    );
+
+    const { taskID, runID } = await absurd.spawn(
+      "sleep-for-db-clock",
+      undefined,
+    );
+    await absurd.workBatch("worker-sleep-db-clock", 120, 1);
+    expect(executions).toBe(1);
+
+    const sleepingRun = await ctx.getRun(runID);
+    expect(sleepingRun).toMatchObject({ state: "sleeping" });
+    expect(sleepingRun?.available_at?.getTime()).toBe(
+      dbNow.getTime() + durationSeconds * 1000,
+    );
+
+    const checkpointRow = await ctx.pool.query<{ state: string }>(
+      `SELECT state FROM absurd.c_${ctx.queueName} WHERE task_id = $1 AND checkpoint_name = 'wait-for'`,
+      [taskID],
+    );
+    expect(checkpointRow.rows[0].state).toBe(
+      new Date(processNow.getTime() + durationSeconds * 1000).toISOString(),
+    );
+
+    await absurd.workBatch("worker-sleep-db-clock", 120, 1);
+    expect(executions).toBe(1);
+  });
+
   test("sleepUntil checkpoint prevents re-scheduling when wake time passed", async () => {
     vi.useFakeTimers();
     const base = new Date("2024-05-06T09:00:00Z");

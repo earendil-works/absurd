@@ -3,6 +3,7 @@
 from datetime import datetime, timezone, timedelta
 from psycopg import sql
 
+import absurd_sdk
 from absurd_sdk import Absurd
 
 
@@ -297,6 +298,46 @@ def test_sleep_for_suspends_until_duration_elapses(conn, queue_name):
     task = _get_task(conn, queue, spawned["task_id"])
     assert task["state"] == "completed"
     assert task["completed_payload"] == {"resumed": True}
+
+
+def test_sleep_for_schedules_relative_to_database_clock(conn, queue_name, monkeypatch):
+    """sleep_for schedules with a DB-relative delay when clocks differ."""
+    queue = queue_name("sleep_for_db_clock")
+    client = Absurd(conn, queue_name=queue)
+    client.create_queue()
+
+    process_now = datetime(2024, 5, 5, 10, 0, 0, tzinfo=timezone.utc)
+    db_now = process_now + timedelta(minutes=1)
+    monkeypatch.setattr(absurd_sdk, "_get_current_time", lambda: process_now)
+    _set_fake_now(conn, db_now)
+
+    duration_seconds = 10
+    executions = []
+
+    @client.register_task("sleep-for-db-clock")
+    def sleep_for_task(params, ctx):
+        executions.append(len(executions) + 1)
+        ctx.sleep_for("wait-for", duration_seconds)
+        return {"resumed": True}
+
+    spawned = client.spawn("sleep-for-db-clock", None)
+    client.work_batch("worker-sleep-db-clock", 120, 1)
+    assert len(executions) == 1
+
+    run = _get_run(conn, queue, spawned["run_id"])
+    assert run["state"] == "sleeping"
+    assert run["available_at"] == db_now + timedelta(seconds=duration_seconds)
+
+    checkpoint_query = sql.SQL(
+        "SELECT state FROM absurd.{table} WHERE task_id = %s AND checkpoint_name = 'wait-for'"
+    ).format(table=sql.Identifier(f"c_{queue}"))
+    checkpoint = conn.execute(checkpoint_query, (spawned["task_id"],)).fetchone()
+    assert (
+        checkpoint[0] == (process_now + timedelta(seconds=duration_seconds)).isoformat()
+    )
+
+    client.work_batch("worker-sleep-db-clock", 120, 1)
+    assert len(executions) == 1
 
 
 def test_sleep_until_checkpoint_prevents_rescheduling(conn, queue_name):

@@ -367,6 +367,83 @@ func TestUnknownTaskWithExplicitQueueDefersClaimedRun(t *testing.T) {
 	}
 }
 
+func TestSleepForSchedulesRelativeToDatabaseClock(t *testing.T) {
+	queue := randomQueueName("go_sleep_db_clock")
+	db := setupTestDatabase(t)
+	oldMaxOpen := db.Stats().MaxOpenConnections
+	db.SetMaxOpenConns(1)
+	t.Cleanup(func() { db.SetMaxOpenConns(oldMaxOpen) })
+
+	client, err := absurd.New(absurd.Options{DB: db, QueueName: queue})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := client.CreateQueue(context.Background(), queue); err != nil {
+		t.Fatalf("CreateQueue: %v", err)
+	}
+
+	dbNow := time.Now().UTC().Add(time.Minute)
+	setFakeNow(t, db, &dbNow)
+	defer setFakeNow(t, db, nil)
+
+	const sleepDuration = 10 * time.Second
+	calls := 0
+	client.MustRegister(absurd.Task("sleep-for-db-clock", func(ctx context.Context, params map[string]any) (map[string]any, error) {
+		calls++
+		if err := absurd.SleepFor(ctx, "wait-for", sleepDuration); err != nil {
+			return nil, err
+		}
+		return map[string]any{"resumed": true}, nil
+	}))
+
+	spawned, err := client.Spawn(context.Background(), "sleep-for-db-clock", nil)
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	if err := client.WorkBatch(context.Background(), absurd.WorkBatchOptions{WorkerID: "worker"}); err != nil {
+		t.Fatalf("WorkBatch: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("expected one execution, got %d", calls)
+	}
+
+	runQuery := fmt.Sprintf(`select state, available_at from absurd.r_%s where run_id = $1`, queue)
+	var runState string
+	var availableAt time.Time
+	if err := db.QueryRow(runQuery, spawned.RunID).Scan(&runState, &availableAt); err != nil {
+		t.Fatalf("fetch run: %v", err)
+	}
+	if runState != "sleeping" {
+		t.Fatalf("unexpected run state=%s", runState)
+	}
+	if availableAt.Before(dbNow.Add(9*time.Second)) || availableAt.After(dbNow.Add(11*time.Second)) {
+		t.Fatalf("available_at was not scheduled relative to DB clock: db_now=%s available_at=%s", dbNow, availableAt)
+	}
+	if err := client.WorkBatch(context.Background(), absurd.WorkBatchOptions{WorkerID: "worker"}); err != nil {
+		t.Fatalf("second WorkBatch: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("sleeping task was claimed again before DB-relative wake time; got %d calls", calls)
+	}
+
+	checkpointQuery := fmt.Sprintf(`select state from absurd.c_%s where task_id = $1 and checkpoint_name = 'wait-for'`, queue)
+	var checkpointRaw []byte
+	if err := db.QueryRow(checkpointQuery, spawned.TaskID).Scan(&checkpointRaw); err != nil {
+		t.Fatalf("fetch checkpoint: %v", err)
+	}
+	var checkpointState string
+	if err := json.Unmarshal(checkpointRaw, &checkpointState); err != nil {
+		t.Fatalf("decode checkpoint: %v", err)
+	}
+	checkpointWake, err := time.Parse(time.RFC3339Nano, checkpointState)
+	if err != nil {
+		t.Fatalf("parse checkpoint timestamp: %v", err)
+	}
+	if !checkpointWake.Before(dbNow) {
+		t.Fatalf("checkpoint should remain process-clock timestamp: db_now=%s checkpoint=%s", dbNow, checkpointWake)
+	}
+}
+
 func TestQueueMismatchFailsClaimedRunImmediately(t *testing.T) {
 	queue := randomQueueName("go_queue_mismatch")
 	otherQueue := randomQueueName("go_queue_mismatch_other")

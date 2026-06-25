@@ -83,7 +83,8 @@ def test_sleep_for_schedules_future_run(conn, queue_name):
     assert run_state == "sleeping"
     assert wake_event is None
     assert available_at is not None
-    assert available_at >= scheduled_wake
+    assert available_at > before
+    assert abs((available_at - scheduled_wake).total_seconds()) < 1
 
 
 def test_await_event_flow(conn, queue_name):

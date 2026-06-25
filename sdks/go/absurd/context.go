@@ -205,8 +205,13 @@ func (t *TaskContext) persistCheckpoint(ctx context.Context, checkpointName stri
 	return nil
 }
 
-func (t *TaskContext) scheduleRun(ctx context.Context, wakeAt time.Time) error {
-	_, err := t.client.db.ExecContext(ctx, `SELECT absurd.schedule_run($1, $2, $3)`, t.queueName, t.runID, wakeAt)
+func (t *TaskContext) scheduleRunAfter(ctx context.Context, d time.Duration) error {
+	_, err := t.client.db.ExecContext(ctx,
+		`SELECT absurd.schedule_run($1, $2, absurd.current_time() + make_interval(secs => $3::double precision))`,
+		t.queueName,
+		t.runID,
+		d.Seconds(),
+	)
 	return err
 }
 
@@ -349,8 +354,9 @@ func SleepUntil(ctx context.Context, stepName string, wakeAt time.Time) error {
 			return err
 		}
 	}
-	if time.Now().UTC().Before(actualWakeAt) {
-		if err := task.scheduleRun(ctx, actualWakeAt); err != nil {
+	remaining := time.Until(actualWakeAt)
+	if remaining > 0 {
+		if err := task.scheduleRunAfter(ctx, remaining); err != nil {
 			return err
 		}
 		return errSuspend
