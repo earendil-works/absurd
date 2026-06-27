@@ -1689,21 +1689,14 @@ def cmd_migrate(args):
     script_dir = os.path.dirname(os.path.abspath(__file__))
     target_version = options.to_version or ABSURD_SCHEMA_TARGET_VERSION
 
-    if options.dump_sql and options.from_version is None:
-        print(
-            "Error: --dump-sql requires --from VERSION so SQL can be generated from an explicit range.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
     config = None
     from_version_supplied = options.from_version is not None
 
-    if options.dump_sql:
+    if from_version_supplied:
         current_version = options.from_version
     else:
         config = config_from_options(options)
-        current_version = options.from_version or get_recorded_schema_version(config)
+        current_version = get_recorded_schema_version(config)
 
     if current_version is None:
         print(
