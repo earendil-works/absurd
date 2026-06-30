@@ -111,6 +111,11 @@ jobs:
           mkdir -p bin
           go build -o bin/habitat ./cmd/habitat
 
+      - name: Build Habitat image
+        working-directory: habitat
+        run: |
+          docker build -t habitat:latest .
+
       - name: Create artifact name
         id: artifact
         run: |
