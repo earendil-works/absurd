@@ -51,6 +51,26 @@ begin
 end;
 $$;
 
+-- Clamps a delay expressed in seconds to a safe, non-negative range.
+--
+-- Retry/backoff delays are derived from user-supplied retry strategies, so an
+-- oversized value (for example base_seconds = 1e18, or a units mistake that
+-- passes milliseconds) can otherwise overflow the `interval` type when added
+-- to a timestamp.  That overflow aborts fail_run, which leaves the run stuck
+-- in `running` and makes claim_task's expired-lease sweep raise for every
+-- worker on the queue -- turning one bad task into a queue-wide outage.
+--
+-- The ceiling (100 years) is far beyond any real backoff: a retry scheduled
+-- that far out is effectively "never", while staying well inside the
+-- timestamptz range so `now() + delay` can never overflow.
+create function absurd.clamp_delay_seconds (p_seconds double precision)
+  returns double precision
+  language sql
+  immutable
+as $$
+  select least(greatest(coalesce(p_seconds, 0), 0), 3153600000::double precision);
+$$;
+
 create table if not exists absurd.queues (
   queue_name text primary key,
   created_at timestamptz not null default absurd.current_time(),
@@ -1202,6 +1222,9 @@ begin
       else
         v_delay_seconds := 0;
       end if;
+      -- Clamp so an oversized retry_strategy can't overflow the interval type
+      -- and abort fail_run (which would wedge claim_task's lease sweep).
+      v_delay_seconds := absurd.clamp_delay_seconds(v_delay_seconds);
       v_next_available := v_now + (v_delay_seconds * interval '1 second');
     end if;
 
