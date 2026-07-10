@@ -110,7 +110,13 @@ describe("Worker", () => {
       expect(claimSpy.mock.calls.length).toBeGreaterThan(initialCallCount);
     });
 
-    // Release any remaining tasks so the worker can shut down
+    // Wait until the newly claimed task has subscribed to release before
+    // emitting it. EventEmitter events are not retained for late listeners.
+    await vi.waitFor(() => expect(atGate.size).toBe(1), {
+      timeout: 100,
+    });
+
+    // Release the remaining task so the worker can shut down.
     gate.emit("release");
     await worker.close();
   });
@@ -133,7 +139,9 @@ describe("Worker", () => {
     await absurd.spawn("shutdown-task", { id: 2 });
 
     const worker = await absurd.startWorker({ concurrency: 1 });
-    await once(gate, "started");
+    await vi.waitFor(() => expect(started).toEqual([1]), {
+      timeout: 100,
+    });
 
     const closePromise = worker.close();
     const claimSpy = vi.spyOn(absurd, "claimTasks");
