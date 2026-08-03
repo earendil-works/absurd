@@ -2189,27 +2189,73 @@ class AsyncAbsurd(_AbsurdBase):
         effective_batch_size = batch_size or concurrency
         self._worker_running = True
 
-        while self._worker_running:
-            tasks = await self.claim_tasks(
-                batch_size=effective_batch_size,
-                claim_timeout=claim_timeout,
-                worker_id=worker_id,
-            )
+        if concurrency <= 1:
+            while self._worker_running:
+                tasks = await self.claim_tasks(
+                    batch_size=effective_batch_size,
+                    claim_timeout=claim_timeout,
+                    worker_id=worker_id,
+                )
+                if not tasks:
+                    await asyncio.sleep(poll_interval)
+                    continue
+                for task in tasks:
+                    await self._execute_task(task, claim_timeout)
+            return
 
-            if not tasks:
+        executing: set[asyncio.Task[None]] = set()
+
+        def _drain_done(done: set[asyncio.Task[None]]) -> None:
+            for completed in done:
+                executing.discard(completed)
+                completed.result()
+
+        def _drain_completed_nonblocking() -> None:
+            _drain_done({promise for promise in executing if promise.done()})
+
+        async def _wait_for_progress() -> None:
+            if not executing:
                 await asyncio.sleep(poll_interval)
-                continue
+                return
+            done, _ = await asyncio.wait(
+                executing,
+                timeout=poll_interval,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            _drain_done(done)
 
-            executing = set()
-            for task in tasks:
-                promise = asyncio.create_task(self._execute_task(task, claim_timeout))
-                executing.add(promise)
-                promise.add_done_callback(executing.discard)
+        try:
+            while self._worker_running:
+                _drain_completed_nonblocking()
 
-                if len(executing) >= concurrency:
-                    await asyncio.wait(executing, return_when=asyncio.FIRST_COMPLETED)
+                available_capacity = concurrency - len(executing)
+                if available_capacity <= 0:
+                    await _wait_for_progress()
+                    continue
 
+                tasks = await self.claim_tasks(
+                    batch_size=min(effective_batch_size, available_capacity),
+                    claim_timeout=claim_timeout,
+                    worker_id=worker_id,
+                )
+
+                if not tasks:
+                    await _wait_for_progress()
+                    continue
+
+                for task in tasks:
+                    executing.add(
+                        asyncio.create_task(self._execute_task(task, claim_timeout))
+                    )
+
+            # Graceful stop: let in-flight tasks finish.
             await asyncio.gather(*executing)
+        finally:
+            # On cancellation or error, never leave handlers running against a
+            # connection the caller is about to close.
+            for promise in executing:
+                promise.cancel()
+            await asyncio.gather(*executing, return_exceptions=True)
 
     def stop_worker(self) -> None:
         """Stop the running worker"""
