@@ -220,6 +220,81 @@ func TestSpawnOptionsParity(t *testing.T) {
 	}
 }
 
+func TestSpawnTxFollowsTransactionOutcome(t *testing.T) {
+	db := setupTestDatabase(t)
+
+	t.Run("commit", func(t *testing.T) {
+		queue := randomQueueName("go_spawn_tx_commit")
+		client := newTestClient(t, queue)
+		task := absurd.Task("transactional", func(ctx context.Context, params map[string]any) (map[string]any, error) {
+			return params, nil
+		})
+		client.MustRegister(task)
+
+		tx, err := db.BeginTx(context.Background(), nil)
+		if err != nil {
+			t.Fatalf("BeginTx: %v", err)
+		}
+		spawned, err := task.SpawnTx(context.Background(), client, tx, map[string]any{"value": 42})
+		if err != nil {
+			_ = tx.Rollback()
+			t.Fatalf("SpawnTx: %v", err)
+		}
+		if got := countTasks(t, db, queue); got != 0 {
+			_ = tx.Rollback()
+			t.Fatalf("spawn should not be visible before commit, got %d tasks", got)
+		}
+		if err := tx.Commit(); err != nil {
+			t.Fatalf("Commit: %v", err)
+		}
+		if got := countTasks(t, db, queue); got != 1 {
+			t.Fatalf("expected committed task, got %d", got)
+		}
+		snapshot, err := client.FetchTaskResult(context.Background(), queue, spawned.TaskID)
+		if err != nil {
+			t.Fatalf("FetchTaskResult: %v", err)
+		}
+		if snapshot == nil || snapshot.State != absurd.TaskPending {
+			t.Fatalf("unexpected committed task snapshot: %#v", snapshot)
+		}
+	})
+
+	t.Run("rollback", func(t *testing.T) {
+		queue := randomQueueName("go_spawn_tx_rollback")
+		client := newTestClient(t, queue)
+		client.MustRegister(absurd.Task("transactional", func(ctx context.Context, params map[string]any) (map[string]any, error) {
+			return params, nil
+		}))
+
+		tx, err := db.BeginTx(context.Background(), nil)
+		if err != nil {
+			t.Fatalf("BeginTx: %v", err)
+		}
+		if _, err := client.SpawnTx(context.Background(), tx, "transactional", map[string]any{"value": 42}); err != nil {
+			_ = tx.Rollback()
+			t.Fatalf("SpawnTx: %v", err)
+		}
+		if err := tx.Rollback(); err != nil {
+			t.Fatalf("Rollback: %v", err)
+		}
+		if got := countTasks(t, db, queue); got != 0 {
+			t.Fatalf("expected rolled-back spawn to leave no task, got %d", got)
+		}
+	})
+}
+
+func TestSpawnTxRejectsNilTransaction(t *testing.T) {
+	queue := randomQueueName("go_spawn_tx_nil")
+	client := newTestClient(t, queue)
+	client.MustRegister(absurd.Task("transactional", func(ctx context.Context, params map[string]any) (map[string]any, error) {
+		return params, nil
+	}))
+
+	if _, err := client.SpawnTx(context.Background(), nil, "transactional", nil); err == nil || !strings.Contains(err.Error(), "transaction must not be nil") {
+		t.Fatalf("expected nil transaction error, got %v", err)
+	}
+}
+
 func TestDefaultCancellationApplied(t *testing.T) {
 	queue := randomQueueName("go_default_cancel")
 	db := setupTestDatabase(t)
