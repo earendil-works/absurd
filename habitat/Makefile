@@ -5,7 +5,7 @@ UI_DIR := $(ROOT)/ui
 DIST_DIR := $(ROOT)/internal/web/dist
 BINARY := habitat
 
-.PHONY: dev build build-ui build-backend clean tidy fmt
+.PHONY: dev build build-ui build-backend build-docker clean tidy fmt
 
 dev: $(DIST_DIR) ## Run backend (with auto-reload) and UI dev server via shoreman
 	./scripts/shoreman.sh Procfile
@@ -25,6 +25,9 @@ build-ui: ## Compile the Solid dashboard bundle
 build-backend: ## Build the Habitat dashboard server binary
 	@mkdir -p $(BIN_DIR)
 	cd $(ROOT) && go build -o $(BIN_DIR)/$(BINARY) ./cmd/habitat
+
+build-docker: ## Build the Docker image
+	docker build -t habitat:latest .
 
 fmt: ## Format Go sources
 	cd $(ROOT) && gofmt -w $$(find . -name '*.go' -not -path './node_modules/*')
