@@ -79,6 +79,10 @@ features = [
 [project.markdown_extensions.pymdownx.tabbed]
 alternate_style = true
 
+[project.markdown_extensions.admonition]
+[project.markdown_extensions.pymdownx.details]
+[project.markdown_extensions.pymdownx.superfences]
+
 [project.theme.icon]
 logo = "material/cube-outline"
 repo = "fontawesome/brands/github"
