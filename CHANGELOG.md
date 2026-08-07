@@ -4,6 +4,8 @@ This contains the changes between releases.
 
 # Unreleased
 
+* Fixed the Python SDK's asynchronous worker to refill free concurrency slots instead of waiting for every task in a claimed batch to finish, so a slow task no longer idles the remaining slots.
+
 # 0.5.0
 
 * Added a Habitat tasks filter for terminal failures and defaulted the failed status view to hide failed attempts that were retried later.
