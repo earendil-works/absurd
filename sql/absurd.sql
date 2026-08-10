@@ -332,6 +332,14 @@ begin
   );
 
   execute format(
+    'create index if not exists %I on absurd.%I (task_id)
+      where state in (''pending'', ''sleeping'', ''running'')
+        and cancellation is not null',
+    ('t_' || p_queue_name) || '_aci',
+    't_' || p_queue_name
+  );
+
+  execute format(
     'create index if not exists %I on absurd.%I (event_name)',
     ('w_' || p_queue_name) || '_eni',
     'w_' || p_queue_name
@@ -953,6 +961,7 @@ begin
       'select task_id
          from absurd.%I
         where state in (''pending'', ''sleeping'', ''running'')
+          and cancellation is not null
           and (
             (
               (cancellation->>''max_delay'')::bigint is not null
