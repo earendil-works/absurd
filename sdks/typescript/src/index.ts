@@ -265,9 +265,10 @@ export class TaskContext {
   private stepNameCounter: Map<string, number> = new Map();
   private readonly log: Log;
   readonly taskID: string;
+  readonly runID: string;
   private readonly con: Queryable;
-  private readonly queueName: string;
-  private readonly task: ClaimedTask;
+  readonly queueName: string;
+  readonly task: ClaimedTask;
   private readonly checkpointCache: Map<string, JsonValue>;
   private readonly claimTimeout: number;
   private readonly onLeaseExtended: (leaseSeconds: number) => void;
@@ -284,6 +285,7 @@ export class TaskContext {
   ) {
     this.log = log;
     this.taskID = taskID;
+    this.runID = task.run_id;
     this.con = con;
     this.queueName = queueName;
     this.task = task;
