@@ -1844,7 +1844,10 @@ class AsyncAbsurd(_AbsurdBase):
         )
 
     async def _ensure_connected(self) -> None:
-        """Ensure the connection is established"""
+        """Ensure the connection is established, replacing an owned connection
+        that was interrupted (e.g. by an idle timeout or a server restart)."""
+        if self._conn is not None and self._owned_conn and self._conn.broken:
+            self._conn = None
         if self._conn is None and self._conn_string:
             self._conn = await AsyncConnection.connect(
                 self._conn_string, autocommit=True

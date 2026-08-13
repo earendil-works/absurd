@@ -4,6 +4,8 @@ This contains the changes between releases.
 
 # Unreleased
 
+* Fixed the Python SDK's async client to reconnect when its owned connection was interrupted (e.g. by an idle timeout or a server restart) instead of failing every later call with "the connection is closed".
+
 # 0.5.0
 
 * Added a Habitat tasks filter for terminal failures and defaulted the failed status view to hide failed attempts that were retried later.
