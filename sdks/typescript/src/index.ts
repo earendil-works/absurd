@@ -3,16 +3,12 @@
  */
 import * as pg from "pg";
 import * as os from "os";
+import { randomUUID } from "node:crypto";
 
 export type Queryable = Pick<pg.Client, "query"> | Pick<pg.PoolClient, "query">;
 
 export type JsonValue =
-  | string
-  | number
-  | boolean
-  | null
-  | JsonValue[]
-  | { [key: string]: JsonValue };
+  string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
 export type JsonObject = { [key: string]: JsonValue };
 
 export interface RetryStrategy {
@@ -81,6 +77,7 @@ export interface ClaimedTask {
   headers: JsonObject | null;
   wake_event: string | null;
   event_payload: JsonValue | null;
+  worker_id?: string;
 }
 
 export interface WorkerOptions {
@@ -113,12 +110,7 @@ export interface SpawnResult {
 }
 
 export type TaskResultState =
-  | "pending"
-  | "running"
-  | "sleeping"
-  | "completed"
-  | "failed"
-  | "cancelled";
+  "pending" | "running" | "sleeping" | "completed" | "failed" | "cancelled";
 
 export type TaskResultSnapshot =
   | { state: "pending" | "running" | "sleeping" }
@@ -161,6 +153,16 @@ export class FailedTask extends Error {
   constructor() {
     super("Task already failed");
     this.name = "FailedTask";
+  }
+}
+
+/**
+ * Internal exception thrown when this worker no longer owns the run claim.
+ */
+export class LostClaimError extends Error {
+  constructor(message: string = "Worker claim has been lost") {
+    super(message);
+    this.name = "LostClaimError";
   }
 }
 
@@ -267,6 +269,7 @@ export class TaskContext {
   readonly taskID: string;
   private readonly con: Queryable;
   private readonly queueName: string;
+  private readonly workerID: string;
   private readonly task: ClaimedTask;
   private readonly checkpointCache: Map<string, JsonValue>;
   private readonly claimTimeout: number;
@@ -277,6 +280,7 @@ export class TaskContext {
     taskID: string,
     con: Queryable,
     queueName: string,
+    workerID: string,
     task: ClaimedTask,
     checkpointCache: Map<string, JsonValue>,
     claimTimeout: number,
@@ -286,6 +290,7 @@ export class TaskContext {
     this.taskID = taskID;
     this.con = con;
     this.queueName = queueName;
+    this.workerID = workerID;
     this.task = task;
     this.checkpointCache = checkpointCache;
     this.claimTimeout = claimTimeout;
@@ -304,12 +309,22 @@ export class TaskContext {
     taskID: string;
     con: Queryable;
     queueName: string;
+    workerID?: string;
     task: ClaimedTask;
     claimTimeout: number;
     onLeaseExtended: (leaseSeconds: number) => void;
   }): Promise<TaskContext> {
-    const { log, taskID, con, queueName, task, claimTimeout, onLeaseExtended } =
-      args;
+    const {
+      log,
+      taskID,
+      con,
+      queueName,
+      workerID,
+      task,
+      claimTimeout,
+      onLeaseExtended,
+    } = args;
+    const effectiveWorkerID = workerID ?? task.worker_id ?? "worker";
     const result = await con.query<CheckpointRow>(
       `SELECT checkpoint_name, state, status, owner_run_id, updated_at
        FROM absurd.get_task_checkpoint_states($1, $2, $3)`,
@@ -324,6 +339,7 @@ export class TaskContext {
       taskID,
       con,
       queueName,
+      effectiveWorkerID,
       task,
       cache,
       claimTimeout,
@@ -459,7 +475,7 @@ export class TaskContext {
     value: JsonValue,
   ): Promise<void> {
     await this.queryWithTaskStateCheck(
-      `SELECT absurd.set_task_checkpoint_state($1, $2, $3, $4, $5, $6)`,
+      `SELECT absurd.set_task_checkpoint_state($1, $2, $3, $4, $5, $6, $7)`,
       [
         this.queueName,
         this.task.task_id,
@@ -467,6 +483,7 @@ export class TaskContext {
         JSON.stringify(value),
         this.task.run_id,
         this.claimTimeout,
+        this.workerID,
       ],
     );
     this.checkpointCache.set(checkpointName, value);
@@ -474,9 +491,9 @@ export class TaskContext {
   }
 
   private async scheduleRunAfter(seconds: number): Promise<void> {
-    await this.con.query(
-      `SELECT absurd.schedule_run($1, $2, absurd.current_time() + make_interval(secs => $3::double precision))`,
-      [this.queueName, this.task.run_id, seconds],
+    await this.queryWithTaskStateCheck(
+      `SELECT absurd.schedule_run($1, $2, absurd.current_time() + make_interval(secs => $3::double precision), $4)`,
+      [this.queueName, this.task.run_id, seconds, this.workerID],
     );
   }
 
@@ -518,7 +535,7 @@ export class TaskContext {
 
     const result = await this.queryWithTaskStateCheck(
       `SELECT should_suspend, payload
-        FROM absurd.await_event($1, $2, $3, $4, $5, $6)`,
+        FROM absurd.await_event($1, $2, $3, $4, $5, $6, $7)`,
       [
         this.queueName,
         this.task.task_id,
@@ -526,6 +543,7 @@ export class TaskContext {
         checkpointName,
         eventName,
         timeout,
+        this.workerID,
       ],
     );
 
@@ -569,18 +587,24 @@ export class TaskContext {
         Math.floor((this.claimTimeout * 1000) / 2),
       );
       let nextHeartbeatAt = Date.now() + heartbeatIntervalMs;
+      const onBeforeSleep =
+        this.claimTimeout > 0
+          ? async (waitForMs: number) => {
+              const effectiveWaitMs = Math.min(waitForMs, heartbeatIntervalMs);
+              const now = Date.now();
+              if (now + effectiveWaitMs >= nextHeartbeatAt) {
+                await this.heartbeat();
+                nextHeartbeatAt = Date.now() + heartbeatIntervalMs;
+              }
+              return effectiveWaitMs;
+            }
+          : undefined;
 
       return await awaitTaskResultWithBackoff(
         () => fetchTaskResultSnapshot(this.con, queue, taskID),
         taskID,
         options.timeout,
-        async () => {
-          const now = Date.now();
-          if (now >= nextHeartbeatAt) {
-            await this.heartbeat();
-            nextHeartbeatAt = Date.now() + heartbeatIntervalMs;
-          }
-        },
+        onBeforeSleep,
       );
     });
   }
@@ -591,9 +615,12 @@ export class TaskContext {
    */
   async heartbeat(seconds?: number): Promise<void> {
     const leaseSeconds = seconds ?? this.claimTimeout;
+    if (leaseSeconds <= 0) {
+      throw new Error("extend_by must be > 0");
+    }
     await this.queryWithTaskStateCheck(
-      `SELECT absurd.extend_claim($1, $2, $3)`,
-      [this.queueName, this.task.run_id, leaseSeconds],
+      `SELECT absurd.extend_claim($1, $2, $3, $4)`,
+      [this.queueName, this.task.run_id, leaseSeconds, this.workerID],
     );
     this.onLeaseExtended(leaseSeconds);
   }
@@ -1067,17 +1094,21 @@ export class Absurd {
     const {
       batchSize: count = 1,
       claimTimeout = 120,
-      workerId = "worker",
+      workerId,
     } = options ?? {};
 
+    const effectiveWorkerID = workerId || createWorkerID();
     const result = await this.con.query<ClaimedTask>(
       `SELECT run_id, task_id, attempt, task_name, params, retry_strategy, max_attempts,
               headers, wake_event, event_payload
        FROM absurd.claim_task($1, $2, $3, $4)`,
-      [this.queueName, workerId, claimTimeout, count],
+      [this.queueName, effectiveWorkerID, claimTimeout, count],
     );
 
-    return result.rows;
+    return result.rows.map((task) => ({
+      ...task,
+      worker_id: effectiveWorkerID,
+    }));
   }
 
   /**
@@ -1088,14 +1119,21 @@ export class Absurd {
    * Note: For parallel processing, use startWorker().
    */
   async workBatch(
-    workerId: string = "worker",
+    workerId?: string,
     claimTimeout: number = 120,
     batchSize: number = 1,
   ): Promise<void> {
-    const tasks = await this.claimTasks({ batchSize, claimTimeout, workerId });
+    const effectiveWorkerID = workerId || createWorkerID();
+    const tasks = await this.claimTasks({
+      batchSize,
+      claimTimeout,
+      workerId: effectiveWorkerID,
+    });
 
     for (const task of tasks) {
-      await this.executeTask(task, claimTimeout);
+      await this.executeTask(task, claimTimeout, {
+        workerId: effectiveWorkerID,
+      });
     }
   }
 
@@ -1112,14 +1150,14 @@ export class Absurd {
    *   - claimTimeout: Task lease duration in seconds (default: 120)
    *   - batchSize: Tasks to claim per poll (default: concurrency)
    *   - pollInterval: Seconds between polls when idle (default: 0.25)
-   *   - workerId: Worker identifier for tracking (default: hostname:pid)
+   *   - workerId: Unique worker identifier (default: hostname:pid:UUID)
    *   - onError: Error handler called for execution failures
    *   - fatalOnLeaseTimeout: Terminate process if task exceeds 2x claimTimeout (default: true)
    * @returns Worker instance with close() method for graceful shutdown.
    */
   async startWorker(options: WorkerOptions = {}): Promise<Worker> {
     const {
-      workerId = `${os.hostname?.() || "host"}:${process.pid}`,
+      workerId = createWorkerID(),
       claimTimeout = 120,
       concurrency = 1,
       batchSize,
@@ -1200,6 +1238,7 @@ export class Absurd {
           for (const task of messages) {
             const promise = this.executeTask(task, claimTimeout, {
               fatalOnLeaseTimeout,
+              workerId,
             })
               .catch((err) => onError(err as Error))
               .finally(() => {
@@ -1235,8 +1274,13 @@ export class Absurd {
   async executeTask(
     task: ClaimedTask,
     claimTimeout: number,
-    options?: { fatalOnLeaseTimeout?: boolean },
+    options?: { fatalOnLeaseTimeout?: boolean; workerId?: string },
   ): Promise<void> {
+    const workerID = task.worker_id || options?.workerId;
+    if (!workerID) {
+      throw new LostClaimError("Worker claim identity is unavailable");
+    }
+
     let warnTimer: NodeJS.Timeout | null = null;
     let fatalTimer: NodeJS.Timeout | null = null;
 
@@ -1282,6 +1326,7 @@ export class Absurd {
       taskID: task.task_id,
       con: this.con,
       queueName: this.queueName,
+      workerID,
       task: task,
       claimTimeout,
       onLeaseExtended: scheduleLeaseTimers,
@@ -1296,18 +1341,28 @@ export class Absurd {
             this.queueName,
             task.run_id,
             task.run_id,
+            workerID,
           );
           this.log.warn(
             `claimed unknown task "${task.task_name}" (${task.task_id}); deferred run ${task.run_id} by ${deferSeconds}s`,
           );
           return;
         } catch (deferErr) {
+          if (isTaskStateTerminalError(deferErr)) {
+            return;
+          }
           this.log.error(
             `failed to defer unknown task "${task.task_name}" (${task.task_id}); failing run`,
             deferErr,
           );
           try {
-            await failTaskRun(this.con, this.queueName, task.run_id, deferErr);
+            await failTaskRun(
+              this.con,
+              this.queueName,
+              task.run_id,
+              deferErr,
+              workerID,
+            );
           } catch (failErr) {
             if (isTaskStateTerminalError(failErr)) {
               return;
@@ -1322,7 +1377,13 @@ export class Absurd {
 
       const execute = async () => {
         const result = await registration.handler(task.params, ctx);
-        await completeTaskRun(this.con, this.queueName, task.run_id, result);
+        await completeTaskRun(
+          this.con,
+          this.queueName,
+          task.run_id,
+          result,
+          workerID,
+        );
       };
 
       if (this.hooks.wrapTaskExecution) {
@@ -1334,14 +1395,15 @@ export class Absurd {
       if (
         err instanceof SuspendTask ||
         err instanceof CancelledTask ||
-        err instanceof FailedTask
+        err instanceof FailedTask ||
+        err instanceof LostClaimError
       ) {
-        // Task suspended or cancelled (sleep or await), don't complete or fail
+        // The run is already terminal or suspended, so do not mutate it again.
         return;
       }
       this.log.error("[absurd] task execution failed:", err);
       try {
-        await failTaskRun(this.con, this.queueName, task.run_id, err);
+        await failTaskRun(this.con, this.queueName, task.run_id, err, workerID);
       } catch (failErr) {
         if (isTaskStateTerminalError(failErr)) {
           return;
@@ -1396,24 +1458,33 @@ function mapTaskStateError(err: any): Error {
   if (err?.code === "AB002") {
     return new FailedTask();
   }
+  if (err?.code === "AB004") {
+    return new LostClaimError();
+  }
   return err;
 }
 
 function isTaskStateTerminalError(err: unknown): boolean {
-  return err instanceof CancelledTask || err instanceof FailedTask;
+  return (
+    err instanceof CancelledTask ||
+    err instanceof FailedTask ||
+    err instanceof LostClaimError
+  );
 }
 
 async function completeTaskRun(
   con: Queryable,
   queueName: string,
   runID: string,
-  result?: any,
+  result: any,
+  workerID: string,
 ): Promise<void> {
   try {
-    await con.query(`SELECT absurd.complete_run($1, $2, $3)`, [
+    await con.query(`SELECT absurd.complete_run($1, $2, $3, $4)`, [
       queueName,
       runID,
       JSON.stringify(result ?? null),
+      workerID,
     ]);
   } catch (err) {
     throw mapTaskStateError(err);
@@ -1425,13 +1496,15 @@ async function failTaskRun(
   queueName: string,
   runID: string,
   err: unknown,
+  workerID: string,
 ): Promise<void> {
   try {
-    await con.query(`SELECT absurd.fail_run($1, $2, $3, $4)`, [
+    await con.query(`SELECT absurd.fail_run($1, $2, $3, $4, $5)`, [
       queueName,
       runID,
       JSON.stringify(serializeError(err)),
       null,
+      workerID,
     ]);
   } catch (execErr) {
     throw mapTaskStateError(execErr);
@@ -1443,14 +1516,19 @@ async function deferClaimedRun(
   queueName: string,
   runID: string,
   jitterSeed: string,
+  workerID: string,
 ): Promise<number> {
   const deferSeconds =
     UNKNOWN_TASK_DEFER_BASE_SECONDS +
     deterministicJitterSeconds(jitterSeed, UNKNOWN_TASK_DEFER_JITTER_SECONDS);
-  await con.query(
-    `SELECT absurd.schedule_run($1, $2, absurd.current_time() + make_interval(secs => $3))`,
-    [queueName, runID, deferSeconds],
-  );
+  try {
+    await con.query(
+      `SELECT absurd.schedule_run($1, $2, absurd.current_time() + make_interval(secs => $3), $4)`,
+      [queueName, runID, deferSeconds, workerID],
+    );
+  } catch (err) {
+    throw mapTaskStateError(err);
+  }
   return deferSeconds;
 }
 
@@ -1523,7 +1601,7 @@ async function awaitTaskResultWithBackoff(
   fetchSnapshot: () => Promise<TaskResultSnapshot | null>,
   taskID: string,
   timeoutSeconds?: number,
-  onBeforeSleep?: () => Promise<void>,
+  onBeforeSleep?: (waitForMs: number) => Promise<number>,
 ): Promise<TaskResultSnapshot> {
   const timeoutMs = normalizeTimeoutSecondsToMs(timeoutSeconds);
   const startedAt = Date.now();
@@ -1548,12 +1626,16 @@ async function awaitTaskResultWithBackoff(
     }
 
     if (onBeforeSleep) {
-      await onBeforeSleep();
+      delayMs = await onBeforeSleep(delayMs);
     }
 
     await new Promise((resolve) => setTimeout(resolve, Math.max(0, delayMs)));
     delayMs = Math.min(delayMs * 2, 1000);
   }
+}
+
+function createWorkerID(): string {
+  return `${os.hostname?.() || "host"}:${process.pid}:${randomUUID()}`;
 }
 
 function normalizeSpawnOptions(options: SpawnOptions): JsonObject {

@@ -1,6 +1,13 @@
-import { describe, test, expect, beforeAll, afterEach } from "./testlib.ts";
+import {
+  assert,
+  describe,
+  test,
+  expect,
+  beforeAll,
+  afterEach,
+} from "./testlib.ts";
 import { createTestAbsurd, randomName, type TestContext } from "./setup.ts";
-import type { Absurd } from "../src/index.ts";
+import { LostClaimError, type Absurd } from "../src/index.ts";
 
 describe("Retry and cancellation", () => {
   let ctx: TestContext;
@@ -373,6 +380,39 @@ describe("Retry and cancellation", () => {
 
     const staleRun = await ctx.getRun(claim.run_id);
     expect(staleRun?.state).toBe("failed");
+  });
+
+  test("executeTask stops when the worker claim has been lost", async () => {
+    let caught: unknown;
+    let continued = false;
+    absurd.registerTask(
+      { name: "lost-worker-claim" },
+      async (_params, taskCtx) => {
+        try {
+          await taskCtx.heartbeat(30);
+          continued = true;
+        } catch (error) {
+          caught = error;
+          throw error;
+        }
+      },
+    );
+
+    const { runID } = await absurd.spawn("lost-worker-claim", { data: 1 });
+    const [claim] = await absurd.claimTasks({
+      workerId: "worker-1",
+      claimTimeout: 60,
+    });
+    await ctx.pool.query(
+      `UPDATE absurd.r_${ctx.queueName} SET claimed_by = $2 WHERE run_id = $1`,
+      [runID, "worker-2"],
+    );
+
+    await absurd.executeTask(claim, 60);
+
+    assert.ok(caught instanceof LostClaimError);
+    expect(continued).toBe(false);
+    expect((await ctx.getRun(runID))?.state).toBe("running");
   });
 
   test("executeTask swallows AB001 when fail_run hits cancelled run", async () => {

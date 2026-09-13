@@ -2,6 +2,7 @@ package absurd
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -21,12 +22,16 @@ const (
 	defaultDriverName         = "postgres"
 	defaultClientMaxAttempts  = 5
 	defaultClaimTimeout       = 120 * time.Second
-	defaultBatchWorkerID      = "worker"
 	defaultWorkerPollInterval = 250 * time.Millisecond
 	minHeartbeatInterval      = 500 * time.Millisecond
 	initialBackoff            = 50 * time.Millisecond
 	maxBackoff                = time.Second
 )
+
+func defaultWorkerID() string {
+	hostname, _ := os.Hostname()
+	return fmt.Sprintf("%s:%d:%s", hostname, os.Getpid(), rand.Text())
+}
 
 // Errors
 var (
@@ -50,6 +55,25 @@ func (e *TimeoutError) Timeout() bool { return true }
 
 func newTimeoutError(format string, args ...any) error {
 	return &TimeoutError{message: fmt.Sprintf(format, args...)}
+}
+
+// LostClaimError indicates that the current worker no longer owns the run.
+type LostClaimError struct {
+	cause error
+}
+
+func (e *LostClaimError) Error() string {
+	if e == nil || e.cause == nil {
+		return "absurd: worker claim lost"
+	}
+	return fmt.Sprintf("absurd: worker claim lost: %v", e.cause)
+}
+
+func (e *LostClaimError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.cause
 }
 
 // Logger is the minimal logging interface used by the SDK.
@@ -724,6 +748,7 @@ type claimedTask struct {
 	RunID      string
 	TaskID     string
 	TaskName   string
+	WorkerID   string
 	Attempt    int
 	ParamsRaw  json.RawMessage
 	HeadersRaw json.RawMessage
@@ -750,7 +775,7 @@ func fetchTaskResultSnapshot(ctx context.Context, db *sql.DB, queueName string, 
 	}, nil
 }
 
-func awaitTaskResultWithBackoff(ctx context.Context, fetch func(context.Context) (*TaskResultSnapshot, error), taskID string, timeout time.Duration, beforeSleep func() error) (TaskResultSnapshot, error) {
+func awaitTaskResultWithBackoff(ctx context.Context, fetch func(context.Context) (*TaskResultSnapshot, error), taskID string, timeout time.Duration, prepareSleep func(time.Duration) (time.Duration, error)) (TaskResultSnapshot, error) {
 	startedAt := time.Now()
 	delay := initialBackoff
 	for {
@@ -767,11 +792,6 @@ func awaitTaskResultWithBackoff(ctx context.Context, fetch func(context.Context)
 		if timeout < 0 || (timeout > 0 && time.Since(startedAt) >= timeout) {
 			return TaskResultSnapshot{}, newTimeoutError(`timed out waiting for task %q`, taskID)
 		}
-		if beforeSleep != nil {
-			if err := beforeSleep(); err != nil {
-				return TaskResultSnapshot{}, err
-			}
-		}
 		waitFor := delay
 		if timeout > 0 {
 			remaining := timeout - time.Since(startedAt)
@@ -780,6 +800,12 @@ func awaitTaskResultWithBackoff(ctx context.Context, fetch func(context.Context)
 			}
 			if waitFor > remaining {
 				waitFor = remaining
+			}
+		}
+		if prepareSleep != nil {
+			waitFor, err = prepareSleep(waitFor)
+			if err != nil {
+				return TaskResultSnapshot{}, err
 			}
 		}
 		select {
@@ -830,23 +856,23 @@ func (c *Client) resolveSpawn(taskName string, opts SpawnOptions) (string, int, 
 	return validatedQueue, maxAttempts, cancellation, nil
 }
 
-func completeTaskRun(ctx context.Context, db *sql.DB, queueName string, runID string, result any) error {
+func completeTaskRun(ctx context.Context, db *sql.DB, queueName string, runID string, result any, workerID string) error {
 	raw, err := marshalJSON(result)
 	if err != nil {
 		return err
 	}
-	_, err = db.ExecContext(ctx, `SELECT absurd.complete_run($1, $2, $3)`, queueName, runID, string(raw))
+	_, err = db.ExecContext(ctx, `SELECT absurd.complete_run($1, $2, $3, $4)`, queueName, runID, string(raw), workerID)
 	if err != nil {
 		return mapTaskStateError(err)
 	}
 	return nil
 }
 
-func failTaskRun(ctx context.Context, db *sql.DB, queueName string, runID string, err error) error {
-	return failTaskRunWithTraceback(ctx, db, queueName, runID, fmt.Sprintf("%T", err), err.Error(), debug.Stack())
+func failTaskRun(ctx context.Context, db *sql.DB, queueName string, runID string, err error, workerID string) error {
+	return failTaskRunWithTraceback(ctx, db, queueName, runID, fmt.Sprintf("%T", err), err.Error(), debug.Stack(), workerID)
 }
 
-func failTaskRunWithTraceback(ctx context.Context, db *sql.DB, queueName string, runID string, name string, message string, traceback []byte) error {
+func failTaskRunWithTraceback(ctx context.Context, db *sql.DB, queueName string, runID string, name string, message string, traceback []byte, workerID string) error {
 	serialized, marshalErr := marshalJSON(map[string]any{
 		"name":      name,
 		"message":   message,
@@ -855,7 +881,7 @@ func failTaskRunWithTraceback(ctx context.Context, db *sql.DB, queueName string,
 	if marshalErr != nil {
 		return marshalErr
 	}
-	_, execErr := db.ExecContext(ctx, `SELECT absurd.fail_run($1, $2, $3, $4)`, queueName, runID, string(serialized), nil)
+	_, execErr := db.ExecContext(ctx, `SELECT absurd.fail_run($1, $2, $3, $4, $5)`, queueName, runID, string(serialized), nil, workerID)
 	if execErr != nil {
 		return mapTaskStateError(execErr)
 	}
@@ -1031,6 +1057,8 @@ func mapTaskStateError(err error) error {
 			return errCancelled
 		case "AB002":
 			return errFailedRun
+		case "AB004":
+			return &LostClaimError{cause: err}
 		}
 	}
 	return err

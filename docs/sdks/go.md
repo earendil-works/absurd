@@ -393,7 +393,7 @@ IDs, headers, or cross-queue task waits.
 
 ```go
 task := absurd.MustTaskContext(ctx)
-log.Println(task.TaskID(), task.RunID(), task.Attempt(), task.Headers())
+log.Println(task.TaskID(), task.RunID(), task.WorkerID(), task.Attempt(), task.Headers())
 ```
 
 ### `absurd.Step(ctx, name, fn)`
@@ -628,7 +628,8 @@ if err := app.RunWorker(workerCtx, absurd.WorkerOptions{
 ```
 
 Graceful shutdown is controlled by canceling the context you passed to
-`RunWorker()`.
+`RunWorker()`. If omitted, `WorkerID` is generated uniquely for each worker or
+batch call.
 
 ### Single-batch processing
 
@@ -689,6 +690,7 @@ app, err := absurd.New(absurd.Options{
 |-------|-------------|
 | `absurd.ErrNoTaskContext` | No active task context in the provided `context.Context` |
 | `absurd.ErrTaskNotFound` | Task result lookup could not find the task |
+| `*absurd.LostClaimError` | The worker no longer owns the run |
 | `*absurd.TimeoutError` | Returned by `AwaitEvent()` / `AwaitTaskResult()` on timeout |
 
 `TimeoutError` also implements `Timeout() bool`.

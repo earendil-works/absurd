@@ -177,6 +177,10 @@ if final.state == "failed":
 
 The unique identifier of the current task.
 
+#### `ctx.worker_id`
+
+The unique worker identity that owns the current run.
+
 #### `ctx.headers`
 
 Read-only mapping of headers attached to the task.
@@ -380,6 +384,7 @@ How you start a worker depends on if you are using `Absurd` or `AsyncAbsurd`.
 
 Either way the recommended way to scale workers is to spawn multiple processes,
 regardless of if you are using a sync or async worker setup.
+If omitted, `worker_id` is generated uniquely for each worker or batch call.
 
 ### Synchronous (Blocking)
 
@@ -488,6 +493,7 @@ Both hooks also accept async callables when used with `AsyncAbsurd`.
 | `SuspendTask` | Internal — task suspended. Never visible to user code. |
 | `CancelledTask` | Internal — task was cancelled. |
 | `FailedTask` | Internal — run already failed. |
+| `LostClaimError` | The worker no longer owns the run; the task runner treats it as terminal. |
 | `TimeoutError` | Thrown by `await_event()` / `await_task_result()` when timeout expires. |
 
 ## Closing

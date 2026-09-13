@@ -107,9 +107,10 @@ describe("Task result APIs", () => {
     const childAbsurd = new Absurd({ db: ctx.pool, queueName: childQueue });
     await childAbsurd.createQueue(childQueue);
 
-    childAbsurd.registerTask({ name: "child-task" }, async () => ({
-      child: "ok",
-    }));
+    childAbsurd.registerTask({ name: "child-task" }, async () => {
+      await new Promise((resolve) => setTimeout(resolve, 2200));
+      return { child: "ok" };
+    });
 
     absurd.registerTask({ name: "parent-task" }, async (_params, taskCtx) => {
       const child = await childAbsurd.spawn("child-task", {});
@@ -128,7 +129,7 @@ describe("Task result APIs", () => {
     const parentWorker = await absurd.startWorker({
       concurrency: 1,
       pollInterval: 0.01,
-      claimTimeout: 120,
+      claimTimeout: 1,
     });
     const childWorker = await childAbsurd.startWorker({
       concurrency: 1,
