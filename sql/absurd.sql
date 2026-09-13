@@ -1876,6 +1876,205 @@ begin
 end;
 $$;
 
+-- Validates and locks a worker's active claim before a run mutation.
+-- Worker-aware SDK overloads use this assertion. The original overloads stay
+-- available for rolling upgrades, but cannot verify ownership without an ID.
+create function absurd.assert_worker_claim (
+  p_queue_name text,
+  p_task_id uuid,
+  p_run_id uuid,
+  p_worker_id text
+)
+  returns void
+  language plpgsql
+as $$
+declare
+  v_claim_expires_at timestamptz;
+  v_claimed_by text;
+  v_run_state text;
+  v_run_task_id uuid;
+  v_task_state text;
+  v_worker_id text := coalesce(nullif(p_worker_id, ''), 'worker');
+begin
+  execute format(
+    'select task_id, state, claimed_by, claim_expires_at
+       from absurd.%I
+      where run_id = $1
+      for update',
+    'r_' || p_queue_name
+  )
+  into v_run_task_id, v_run_state, v_claimed_by, v_claim_expires_at
+  using p_run_id;
+
+  if v_run_task_id is null then
+    raise exception sqlstate 'AB004' using message = 'The worker claim has been lost';
+  end if;
+
+  if p_task_id is not null and v_run_task_id <> p_task_id then
+    raise exception sqlstate 'AB004' using message = 'The run does not belong to the task';
+  end if;
+
+  execute format(
+    'select state
+       from absurd.%I
+      where task_id = $1
+      for update',
+    't_' || p_queue_name
+  )
+  into v_task_state
+  using v_run_task_id;
+
+  if v_task_state = 'cancelled' then
+    raise exception sqlstate 'AB001' using message = 'Task has been cancelled';
+  end if;
+
+  if v_run_state <> 'running'
+    or v_task_state is distinct from 'running'
+    or v_claimed_by is distinct from v_worker_id
+    or (v_claim_expires_at is not null and v_claim_expires_at <= absurd.current_time())
+  then
+    raise exception sqlstate 'AB004' using message = 'The worker claim has been lost';
+  end if;
+end;
+$$;
+
+create function absurd.complete_run (
+  p_queue_name text,
+  p_run_id uuid,
+  p_state jsonb,
+  p_worker_id text
+)
+  returns void
+  language plpgsql
+as $$
+begin
+  perform absurd.assert_worker_claim(p_queue_name, null, p_run_id, p_worker_id);
+  perform absurd.complete_run(p_queue_name, p_run_id, p_state);
+end;
+$$;
+
+create function absurd.fail_run (
+  p_queue_name text,
+  p_run_id uuid,
+  p_reason jsonb,
+  p_retry_at timestamptz,
+  p_worker_id text
+)
+  returns void
+  language plpgsql
+as $$
+begin
+  perform absurd.assert_worker_claim(p_queue_name, null, p_run_id, p_worker_id);
+  perform absurd.fail_run(p_queue_name, p_run_id, p_reason, p_retry_at);
+end;
+$$;
+
+create function absurd.set_task_checkpoint_state (
+  p_queue_name text,
+  p_task_id uuid,
+  p_step_name text,
+  p_state jsonb,
+  p_owner_run uuid,
+  p_extend_claim_by integer,
+  p_worker_id text
+)
+  returns void
+  language plpgsql
+as $$
+begin
+  perform absurd.assert_worker_claim(p_queue_name, p_task_id, p_owner_run, p_worker_id);
+  perform absurd.set_task_checkpoint_state(
+    p_queue_name,
+    p_task_id,
+    p_step_name,
+    p_state,
+    p_owner_run,
+    p_extend_claim_by
+  );
+end;
+$$;
+
+create function absurd.extend_claim (
+  p_queue_name text,
+  p_run_id uuid,
+  p_extend_by integer,
+  p_worker_id text
+)
+  returns void
+  language plpgsql
+as $$
+begin
+  perform absurd.assert_worker_claim(p_queue_name, null, p_run_id, p_worker_id);
+  perform absurd.extend_claim(p_queue_name, p_run_id, p_extend_by);
+end;
+$$;
+
+create function absurd.schedule_run (
+  p_queue_name text,
+  p_run_id uuid,
+  p_wake_at timestamptz,
+  p_worker_id text
+)
+  returns void
+  language plpgsql
+as $$
+begin
+  perform absurd.assert_worker_claim(p_queue_name, null, p_run_id, p_worker_id);
+  perform absurd.schedule_run(p_queue_name, p_run_id, p_wake_at);
+end;
+$$;
+
+create function absurd.await_event (
+  p_queue_name text,
+  p_task_id uuid,
+  p_run_id uuid,
+  p_step_name text,
+  p_event_name text,
+  p_timeout integer,
+  p_worker_id text
+)
+  returns table (
+    should_suspend boolean,
+    payload jsonb
+  )
+  language plpgsql
+as $$
+begin
+  if p_event_name is null or length(trim(p_event_name)) = 0 then
+    raise exception 'event_name must be provided';
+  end if;
+
+  -- Preserve the event-to-run lock order used by await_event() and emit_event().
+  execute format(
+    'insert into absurd.%I (event_name, payload, emitted_at)
+     values ($1, null, ''epoch''::timestamptz)
+     on conflict (event_name) do nothing',
+    'e_' || p_queue_name
+  ) using p_event_name;
+
+  execute format(
+    'select 1
+       from absurd.%I
+      where event_name = $1
+      for share',
+    'e_' || p_queue_name
+  ) using p_event_name;
+
+  perform absurd.assert_worker_claim(p_queue_name, p_task_id, p_run_id, p_worker_id);
+
+  return query
+    select upstream.should_suspend, upstream.payload
+      from absurd.await_event(
+        p_queue_name,
+        p_task_id,
+        p_run_id,
+        p_step_name,
+        p_event_name,
+        p_timeout
+      ) upstream;
+end;
+$$;
+
 create function absurd.emit_event (
   p_queue_name text,
   p_event_name text,

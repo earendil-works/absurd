@@ -340,7 +340,7 @@ func TestUnknownTaskWithExplicitQueueDefersClaimedRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Spawn: %v", err)
 	}
-	if err := client.WorkBatch(context.Background(), absurd.WorkBatchOptions{WorkerID: "worker"}); err != nil {
+	if err := client.WorkBatch(context.Background(), absurd.WorkBatchOptions{WorkerID: "unknown-worker"}); err != nil {
 		t.Fatalf("WorkBatch: %v", err)
 	}
 
@@ -400,7 +400,7 @@ func TestSleepForSchedulesRelativeToDatabaseClock(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Spawn: %v", err)
 	}
-	if err := client.WorkBatch(context.Background(), absurd.WorkBatchOptions{WorkerID: "worker"}); err != nil {
+	if err := client.WorkBatch(context.Background(), absurd.WorkBatchOptions{WorkerID: "sleep-worker"}); err != nil {
 		t.Fatalf("WorkBatch: %v", err)
 	}
 	if calls != 1 {
@@ -419,7 +419,7 @@ func TestSleepForSchedulesRelativeToDatabaseClock(t *testing.T) {
 	if availableAt.Before(dbNow.Add(9*time.Second)) || availableAt.After(dbNow.Add(11*time.Second)) {
 		t.Fatalf("available_at was not scheduled relative to DB clock: db_now=%s available_at=%s", dbNow, availableAt)
 	}
-	if err := client.WorkBatch(context.Background(), absurd.WorkBatchOptions{WorkerID: "worker"}); err != nil {
+	if err := client.WorkBatch(context.Background(), absurd.WorkBatchOptions{WorkerID: "sleep-worker"}); err != nil {
 		t.Fatalf("second WorkBatch: %v", err)
 	}
 	if calls != 1 {
@@ -472,7 +472,7 @@ func TestQueueMismatchFailsClaimedRunImmediately(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Spawn: %v", err)
 	}
-	if err := workerClient.WorkBatch(context.Background(), absurd.WorkBatchOptions{WorkerID: "worker"}); err != nil {
+	if err := workerClient.WorkBatch(context.Background(), absurd.WorkBatchOptions{WorkerID: "mismatched-queue-worker"}); err != nil {
 		t.Fatalf("WorkBatch: %v", err)
 	}
 
@@ -786,7 +786,7 @@ func TestFailureIncludesTraceback(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Spawn: %v", err)
 	}
-	if err := client.WorkBatch(context.Background(), absurd.WorkBatchOptions{WorkerID: "worker"}); err != nil {
+	if err := client.WorkBatch(context.Background(), absurd.WorkBatchOptions{WorkerID: "failure-worker"}); err != nil {
 		t.Fatalf("WorkBatch: %v", err)
 	}
 	failure := fetchFailure(t, db, queue, spawned.RunID)
@@ -821,7 +821,7 @@ func TestInvalidHeadersFailRun(t *testing.T) {
 		t.Fatalf("inject invalid headers: %v", err)
 	}
 
-	if err := client.WorkBatch(context.Background(), absurd.WorkBatchOptions{WorkerID: "worker"}); err != nil {
+	if err := client.WorkBatch(context.Background(), absurd.WorkBatchOptions{WorkerID: "invalid-header-worker"}); err != nil {
 		t.Fatalf("WorkBatch: %v", err)
 	}
 
@@ -829,5 +829,64 @@ func TestInvalidHeadersFailRun(t *testing.T) {
 	message, _ := failure["message"].(string)
 	if !strings.Contains(message, "invalid task headers") {
 		t.Fatalf("unexpected failure payload: %#v", failure)
+	}
+}
+
+func TestLostClaimStopsStaleCheckpointExecution(t *testing.T) {
+	queue := randomQueueName("go_lost_claim")
+	db := setupTestDatabase(t)
+	client := newTestClient(t, queue)
+
+	const workerID = "original-worker"
+	var contextWorkerID string
+	var observedLostClaim bool
+	client.MustRegister(absurd.Task("lose-claim", func(ctx context.Context, params map[string]any) (map[string]any, error) {
+		task := absurd.MustTaskContext(ctx)
+		contextWorkerID = task.WorkerID()
+
+		query := fmt.Sprintf(`update absurd.r_%s set claimed_by = 'replacement-worker' where run_id = $1`, queue)
+		if _, err := db.ExecContext(ctx, query, task.RunID()); err != nil {
+			return nil, err
+		}
+
+		_, err := absurd.Step(ctx, "stale-step", func(ctx context.Context) (map[string]bool, error) {
+			return map[string]bool{"written": true}, nil
+		})
+		var lostClaim *absurd.LostClaimError
+		observedLostClaim = errors.As(err, &lostClaim)
+		return nil, err
+	}))
+
+	spawned, err := client.Spawn(context.Background(), "lose-claim", nil)
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	if err := client.WorkBatch(context.Background(), absurd.WorkBatchOptions{WorkerID: workerID}); err != nil {
+		t.Fatalf("WorkBatch: %v", err)
+	}
+
+	if contextWorkerID != workerID {
+		t.Fatalf("unexpected task context worker ID: %q", contextWorkerID)
+	}
+	if !observedLostClaim {
+		t.Fatal("expected checkpoint mutation to return LostClaimError")
+	}
+	if got := countCheckpoints(t, db, queue, spawned.TaskID); got != 0 {
+		t.Fatalf("expected no stale checkpoints, got %d", got)
+	}
+
+	runQuery := fmt.Sprintf(`select state, claimed_by, failure_reason from absurd.r_%s where run_id = $1`, queue)
+	var runState string
+	var claimedBy string
+	var failureReason []byte
+	if err := db.QueryRowContext(context.Background(), runQuery, spawned.RunID).Scan(
+		&runState,
+		&claimedBy,
+		&failureReason,
+	); err != nil {
+		t.Fatalf("fetch run: %v", err)
+	}
+	if runState != "running" || claimedBy != "replacement-worker" || len(failureReason) != 0 {
+		t.Fatalf("stale worker mutated run: state=%q claimed_by=%q failure=%s", runState, claimedBy, failureReason)
 	}
 }

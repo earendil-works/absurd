@@ -76,16 +76,18 @@ def test_task_context_await_task_result_waits_for_terminal_state(
     child_client.create_queue()
 
     parent = parent_client.spawn("parent", {}, queue=parent_queue)
-    parent_claim = parent_client.claim_tasks(worker_id="parent-worker")[0]
+    parent_claim = parent_client.claim_tasks(
+        worker_id="parent-worker", claim_timeout=1
+    )[0]
     ctx = _create_task_context(
-        parent_claim["task_id"], conn, parent_queue, parent_claim, claim_timeout=120
+        parent_claim["task_id"], conn, parent_queue, parent_claim, claim_timeout=1
     )
 
     child = child_client.spawn("child", {}, queue=child_queue)
 
     def finish_child_task():
         with psycopg.connect(db_dsn, autocommit=True) as worker_conn:
-            time.sleep(0.1)
+            time.sleep(2.2)
             row = worker_conn.execute(
                 """SELECT run_id
                    FROM absurd.claim_task(%s, %s, %s, %s)""",
@@ -101,11 +103,71 @@ def test_task_context_await_task_result_waits_for_terminal_state(
     thread.start()
     try:
         snapshot = ctx.await_task_result(
-            child["task_id"], queue_name=child_queue, timeout=2
+            child["task_id"], queue_name=child_queue, timeout=5
         )
         assert snapshot == TaskResultSnapshot(state="completed", result={"child": "ok"})
     finally:
         thread.join()
+
+
+def test_async_task_context_await_task_result_keeps_short_claim(db_dsn, queue_name):
+    parent_queue = queue_name("task_result_async_parent")
+    child_queue = queue_name("task_result_async_child")
+    with psycopg.connect(db_dsn, autocommit=True) as setup_conn:
+        Absurd(setup_conn, queue_name=parent_queue).create_queue()
+        Absurd(setup_conn, queue_name=child_queue).create_queue()
+
+    async def run_case():
+        parent_client = AsyncAbsurd(db_dsn, queue_name=parent_queue)
+        child_client = AsyncAbsurd(db_dsn, queue_name=child_queue)
+        try:
+            await parent_client.spawn("parent", {}, queue=parent_queue)
+            parent_claim = (
+                await parent_client.claim_tasks(
+                    worker_id="parent-worker", claim_timeout=1
+                )
+            )[0]
+            assert parent_client._conn is not None
+            parent_ctx = await _create_async_task_context(
+                parent_claim["task_id"],
+                parent_client._conn,
+                parent_queue,
+                parent_claim,
+                claim_timeout=1,
+            )
+            child = await child_client.spawn("child", {}, queue=child_queue)
+
+            async def finish_child_task():
+                await asyncio.sleep(2.2)
+                child_claim = (
+                    await child_client.claim_tasks(
+                        worker_id="child-worker", claim_timeout=60
+                    )
+                )[0]
+                assert child_client._conn is not None
+                await child_client._conn.execute(
+                    "SELECT absurd.complete_run(%s, %s, %s, %s)",
+                    (
+                        child_queue,
+                        child_claim["run_id"],
+                        json.dumps({"child": "ok"}),
+                        child_claim["worker_id"],
+                    ),
+                )
+
+            finisher = asyncio.create_task(finish_child_task())
+            snapshot = await parent_ctx.await_task_result(
+                child["task_id"], queue_name=child_queue, timeout=5
+            )
+            await finisher
+            assert snapshot == TaskResultSnapshot(
+                state="completed", result={"child": "ok"}
+            )
+        finally:
+            await child_client.close()
+            await parent_client.close()
+
+    asyncio.run(run_case())
 
 
 def test_task_context_await_task_result_rejects_same_queue(conn, queue_name):

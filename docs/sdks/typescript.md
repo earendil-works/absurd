@@ -317,7 +317,7 @@ const worker = await app.startWorker({
   claimTimeout: 120,     // lease duration in seconds (default: 120)
   batchSize: 4,          // tasks to claim per poll (default: concurrency)
   pollInterval: 0.25,    // seconds between idle polls (default: 0.25)
-  workerId: 'web-1',     // identifier for tracking (default: hostname:pid)
+  workerId: 'web-1',     // unique owner ID (default: hostname:pid:UUID)
   // exit process if task exceeds 2x lease (default: true)
   fatalOnLeaseTimeout: true,
   onError: (err) => console.error(err),
@@ -403,7 +403,8 @@ const app = new Absurd({
 |-------|-------------|
 | `SuspendTask` | Internal — task suspended (sleep/event). Never visible to user code. |
 | `CancelledTask` | Internal — task was cancelled. Never visible to user code. |
-| `FailedTask` | Internal — run already failed (e.g., claim expired). |
+| `FailedTask` | Internal — the run already failed. |
+| `LostClaimError` | The worker no longer owns the run; the task runner treats it as terminal. |
 | `TimeoutError` | Thrown by `awaitEvent()` / `awaitTaskResult()` when the timeout expires. |
 
 ## Closing

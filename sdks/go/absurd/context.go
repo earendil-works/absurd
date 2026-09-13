@@ -22,6 +22,7 @@ type TaskContext struct {
 	taskID       string
 	runID        string
 	taskName     string
+	workerID     string
 	attempt      int
 	claimTimeout time.Duration
 
@@ -51,6 +52,7 @@ func newTaskContext(parent context.Context, client *Client, queueName string, ta
 		taskID:          task.TaskID,
 		runID:           task.RunID,
 		taskName:        task.TaskName,
+		workerID:        task.WorkerID,
 		attempt:         task.Attempt,
 		claimTimeout:    effectiveLease,
 		headersRaw:      cloneRawJSON(task.HeadersRaw),
@@ -107,6 +109,7 @@ func (t *TaskContext) TaskID() string    { return t.taskID }
 func (t *TaskContext) RunID() string     { return t.runID }
 func (t *TaskContext) TaskName() string  { return t.taskName }
 func (t *TaskContext) QueueName() string { return t.queueName }
+func (t *TaskContext) WorkerID() string  { return t.workerID }
 func (t *TaskContext) Attempt() int      { return t.attempt }
 
 func (t *TaskContext) Headers() map[string]any {
@@ -187,13 +190,14 @@ func (t *TaskContext) persistCheckpoint(ctx context.Context, checkpointName stri
 	if err != nil {
 		return err
 	}
-	_, err = t.client.db.ExecContext(ctx, `SELECT absurd.set_task_checkpoint_state($1, $2, $3, $4, $5, $6)`,
+	_, err = t.client.db.ExecContext(ctx, `SELECT absurd.set_task_checkpoint_state($1, $2, $3, $4, $5, $6, $7)`,
 		t.queueName,
 		t.taskID,
 		checkpointName,
 		string(raw),
 		t.runID,
 		durationSecondsOrDefault(t.claimTimeout, defaultClaimTimeout),
+		t.workerID,
 	)
 	if err != nil {
 		return mapTaskStateError(err)
@@ -207,17 +211,23 @@ func (t *TaskContext) persistCheckpoint(ctx context.Context, checkpointName stri
 
 func (t *TaskContext) scheduleRunAfter(ctx context.Context, d time.Duration) error {
 	_, err := t.client.db.ExecContext(ctx,
-		`SELECT absurd.schedule_run($1, $2, absurd.current_time() + make_interval(secs => $3::double precision))`,
+		`SELECT absurd.schedule_run($1, $2, absurd.current_time() + make_interval(secs => $3::double precision), $4)`,
 		t.queueName,
 		t.runID,
 		d.Seconds(),
+		t.workerID,
 	)
-	return err
+	return mapTaskStateError(err)
 }
 
 func (t *TaskContext) heartbeat(ctx context.Context, d time.Duration) error {
 	lease := normalizeLeaseDuration(d, t.claimTimeout)
-	_, err := t.client.db.ExecContext(ctx, `SELECT absurd.extend_claim($1, $2, $3)`, t.queueName, t.runID, durationSeconds(lease))
+	_, err := t.client.db.ExecContext(ctx, `SELECT absurd.extend_claim($1, $2, $3, $4)`,
+		t.queueName,
+		t.runID,
+		durationSeconds(lease),
+		t.workerID,
+	)
 	if err != nil {
 		return mapTaskStateError(err)
 	}
@@ -258,12 +268,18 @@ func (t *TaskContext) AwaitTaskResult(ctx context.Context, queueName, taskID str
 	nextHeartbeatAt := time.Now().Add(heartbeatInterval)
 	snapshot, err := awaitTaskResultWithBackoff(ctx, func(ctx context.Context) (*TaskResultSnapshot, error) {
 		return fetchTaskResultSnapshot(ctx, t.client.db, validatedQueue, taskID)
-	}, taskID, opts.Timeout, func() error {
-		if time.Now().Before(nextHeartbeatAt) {
-			return nil
+	}, taskID, opts.Timeout, func(waitFor time.Duration) (time.Duration, error) {
+		if waitFor > heartbeatInterval {
+			waitFor = heartbeatInterval
+		}
+		if time.Now().Add(waitFor).Before(nextHeartbeatAt) {
+			return waitFor, nil
+		}
+		if err := t.heartbeat(ctx, 0); err != nil {
+			return 0, err
 		}
 		nextHeartbeatAt = time.Now().Add(heartbeatInterval)
-		return t.heartbeat(ctx, 0)
+		return waitFor, nil
 	})
 	if err != nil {
 		return TaskResultSnapshot{}, err
@@ -394,13 +410,14 @@ func AwaitEvent[T any](ctx context.Context, eventName string, options ...AwaitEv
 		timeoutSeconds = 0
 	}
 	row := task.client.db.QueryRowContext(ctx, `SELECT should_suspend, payload
-        FROM absurd.await_event($1, $2, $3, $4, $5, $6)`,
+	        FROM absurd.await_event($1, $2, $3, $4, $5, $6, $7)`,
 		task.queueName,
 		task.taskID,
 		task.runID,
 		checkpointName,
 		eventName,
 		timeoutSeconds,
+		task.workerID,
 	)
 	var shouldSuspend bool
 	var payload []byte

@@ -251,6 +251,16 @@ can pick it up.  That means brief overlapping execution is possible, so tasks
 should make observable progress well within the claim timeout and leave ample
 headroom.
 
+Worker-owned mutations verify that the run is still claimed by the worker that
+received it.  Use a unique worker ID for each concurrently running worker
+instance.  If a claim expires or moves to another worker, SDK operations stop
+with a lost-claim error instead of changing the stale run.
+
+Current SDKs generate unique worker IDs by default.  Explicit IDs are useful
+for observability, but they must still be unique between concurrent worker
+instances.  Legacy SDK versions use compatible SQL functions without worker
+ownership checks; upgrade every worker to enable fencing throughout a fleet.
+
 Retry strategies can be `fixed`, `exponential`, or `none`:
 
 === "TypeScript"

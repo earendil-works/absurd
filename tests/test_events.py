@@ -215,26 +215,15 @@ def test_await_emit_event_race_does_not_lose_wakeup(db_dsn):
             assert claim[0] == run_id
             assert claim[1] == task_id
 
-            # Create a dummy wait row so await_event hits the UPDATE path and can block.
-            conn.execute(
-                sql.SQL(
-                    """
-                    insert into absurd.{w} (task_id, run_id, step_name, event_name, timeout_at)
-                    values (%s, %s, %s, %s, null)
-                    """
-                ).format(w=wtbl),
-                (task_id, run_id, "wait", "dummy"),
-            )
-
         lock_conn = psycopg.connect(db_dsn)
         lock_conn.execute("set timezone to 'UTC'")
         set_fake_now(lock_conn)
         set_application_name(lock_conn, "absurd-locker")
         lock_conn.execute(
-            sql.SQL(
-                "select 1 from absurd.{w} where run_id = %s and step_name = %s for update"
-            ).format(w=wtbl),
-            (run_id, "wait"),
+            sql.SQL("select 1 from absurd.{r} where run_id = %s for update").format(
+                r=rtbl
+            ),
+            (run_id,),
         )
 
         await_result = {}
@@ -249,9 +238,9 @@ def test_await_emit_event_race_does_not_lose_wakeup(db_dsn):
                     row = await_conn.execute(
                         """
                         select should_suspend, payload
-                        from absurd.await_event(%s, %s, %s, %s, %s, %s)
+                        from absurd.await_event(%s, %s, %s, %s, %s, %s, %s)
                         """,
-                        (queue, task_id, run_id, "wait", event_name, None),
+                        (queue, task_id, run_id, "wait", event_name, None, "worker"),
                     ).fetchone()
                     await_result["row"] = row
             except Exception as e:
@@ -262,7 +251,7 @@ def test_await_emit_event_race_does_not_lose_wakeup(db_dsn):
         t = threading.Thread(target=await_worker, daemon=True)
         t.start()
 
-        # Wait until await_event is blocked on a lock (the w_<queue> row lock).
+        # await_event must lock the event before it blocks on the run.
         with psycopg.connect(db_dsn, autocommit=True) as mon_conn:
             mon_conn.execute("set timezone to 'UTC'")
             set_application_name(mon_conn, "absurd-monitor")
@@ -282,7 +271,8 @@ def test_await_emit_event_race_does_not_lose_wakeup(db_dsn):
             else:
                 raise AssertionError("await_event did not block as expected")
 
-        # While await_event is blocked, emit_event should block on the event-row lock.
+        # emit_event must now block on the event row. A run-first await_event
+        # implementation would let this call complete and could later deadlock.
         with psycopg.connect(db_dsn, autocommit=True) as emit_conn:
             emit_conn.execute("set timezone to 'UTC'")
             set_fake_now(emit_conn)
@@ -343,9 +333,9 @@ def test_await_emit_event_race_does_not_lose_wakeup(db_dsn):
             resume = check_conn.execute(
                 """
                 select should_suspend, payload
-                from absurd.await_event(%s, %s, %s, %s, %s, %s)
+                from absurd.await_event(%s, %s, %s, %s, %s, %s, %s)
                 """,
-                (queue, task_id, run_id, "wait", event_name, None),
+                (queue, task_id, run_id, "wait", event_name, None, "worker"),
             ).fetchone()
             assert resume[0] is False
             assert resume[1] == payload

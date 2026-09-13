@@ -8,7 +8,7 @@ from psycopg import sql
 from absurd_sdk import (
     Absurd,
     AsyncAbsurd,
-    FailedTask,
+    LostClaimError,
     _create_async_task_context,
     _create_task_context,
 )
@@ -83,7 +83,7 @@ def test_async_heartbeat_zero_is_rejected_by_sql(db_dsn, queue_name):
         assert "extend_by must be > 0" in str(run[2])
 
 
-def test_sync_heartbeat_on_failed_run_raises_failed_task(conn, queue_name):
+def test_sync_heartbeat_on_failed_run_raises_lost_claim(conn, queue_name):
     queue = queue_name("heartbeat_failed")
     client = Absurd(conn, queue_name=queue)
     client.create_queue()
@@ -106,7 +106,7 @@ def test_sync_heartbeat_on_failed_run_raises_failed_task(conn, queue_name):
     )
 
     ctx = _create_task_context(task["task_id"], conn, queue, task, claim_timeout=60)
-    with pytest.raises(FailedTask):
+    with pytest.raises(LostClaimError):
         ctx.heartbeat(30)
 
     run = _fetch_run(conn, queue, spawned["run_id"])
@@ -114,7 +114,7 @@ def test_sync_heartbeat_on_failed_run_raises_failed_task(conn, queue_name):
     assert run[0] == "failed"
 
 
-def test_sync_execute_task_swallows_failed_task_checkpoint(conn, queue_name):
+def test_sync_execute_task_stops_after_losing_claim_at_checkpoint(conn, queue_name):
     queue = queue_name("checkpoint_failed_wrapper")
     client = Absurd(conn, queue_name=queue)
     client.create_queue()
@@ -137,7 +137,7 @@ def test_sync_execute_task_swallows_failed_task_checkpoint(conn, queue_name):
         ),
     )
 
-    # Must not raise: FailedTask is a terminal control-flow signal.
+    # Must not raise: a lost claim is a terminal control-flow signal.
     client._execute_task(task, 60)
 
     checkpoint = conn.execute(
@@ -149,7 +149,7 @@ def test_sync_execute_task_swallows_failed_task_checkpoint(conn, queue_name):
     assert checkpoint is None
 
 
-def test_async_heartbeat_on_failed_run_raises_failed_task(db_dsn, queue_name):
+def test_async_heartbeat_on_failed_run_raises_lost_claim(db_dsn, queue_name):
     queue = queue_name("heartbeat_failed_async")
 
     with psycopg.connect(db_dsn, autocommit=True) as setup_conn:
@@ -180,7 +180,7 @@ def test_async_heartbeat_on_failed_run_raises_failed_task(db_dsn, queue_name):
         ctx = await _create_async_task_context(
             task["task_id"], client._conn, queue, task, claim_timeout=60
         )
-        with pytest.raises(FailedTask):
+        with pytest.raises(LostClaimError):
             await ctx.heartbeat(30)
 
         await client.close()

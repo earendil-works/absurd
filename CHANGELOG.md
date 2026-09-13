@@ -4,6 +4,8 @@ This contains the changes between releases.
 
 # Unreleased
 
+* Added worker ownership checks to Go, Python, and TypeScript SDK task mutations so stale workers stop after losing a claim.
+
 # 0.5.0
 
 * Added a Habitat tasks filter for terminal failures and defaulted the failed status view to hide failed attempts that were retried later.

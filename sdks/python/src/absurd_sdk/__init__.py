@@ -32,45 +32,47 @@ from typing import (
     cast,
     overload,
 )
+from uuid import uuid4
 
 from psycopg import AsyncConnection, Connection
 from psycopg.rows import dict_row
 
 __all__ = [
     "Absurd",
-    "AsyncAbsurd",
-    "TaskContext",
-    "AsyncTaskContext",
-    "SuspendTask",
-    "CancelledTask",
-    "FailedTask",
-    "TimeoutError",
-    "RetryStrategy",
-    "CancellationPolicy",
-    "SpawnOptions",
-    "CreateQueueOptions",
-    "QueuePolicyOptions",
-    "QueuePolicy",
-    "RetryTaskResult",
-    "TaskResultState",
-    "TaskResultSnapshot",
-    "StepHandle",
-    "ClaimedTask",
     "AbsurdHooks",
+    "AsyncAbsurd",
+    "AsyncTaskContext",
+    "CancellationPolicy",
+    "CancelledTask",
+    "ClaimedTask",
+    "CreateQueueOptions",
+    "FailedTask",
+    "LostClaimError",
+    "QueuePolicy",
+    "QueuePolicyOptions",
+    "RetryStrategy",
+    "RetryTaskResult",
+    "SpawnOptions",
+    "StepHandle",
+    "SuspendTask",
+    "TaskContext",
+    "TaskResultSnapshot",
+    "TaskResultState",
+    "TimeoutError",
     "get_current_context",
 ]
 
 
 # Context variable for accessing the current task context
 _current_task_context: contextvars.ContextVar[
-    Optional[Union["TaskContext", "AsyncTaskContext"]]
+    Optional[Union[TaskContext, AsyncTaskContext]]
 ] = contextvars.ContextVar("current_task_context", default=None)
 
 _UNKNOWN_TASK_DEFER_BASE_SECONDS = 15
 _UNKNOWN_TASK_DEFER_JITTER_SECONDS = 15
 
 
-def get_current_context() -> Optional[Union["TaskContext", "AsyncTaskContext"]]:
+def get_current_context() -> Optional[Union[TaskContext, AsyncTaskContext]]:
     """Get the current task context if running inside a task handler.
 
     Returns None if called outside of a task execution.
@@ -155,6 +157,7 @@ class ClaimedTask(TypedDict):
     run_id: str
     task_id: str
     task_name: str
+    worker_id: str
     attempt: int
     params: JsonValue
     retry_strategy: JsonValue
@@ -184,6 +187,10 @@ class RetryTaskResult(TypedDict):
 TaskResultState = Literal[
     "pending", "running", "sleeping", "completed", "failed", "cancelled"
 ]
+
+
+def _create_worker_id() -> str:
+    return f"{socket.gethostname()}:{os.getpid()}:{uuid4()}"
 
 
 @dataclass(frozen=True)
@@ -274,6 +281,13 @@ class FailedTask(Exception):
     """Internal exception thrown when the current run has already failed."""
 
 
+class LostClaimError(Exception):
+    """Terminal error raised when the current worker no longer owns the run."""
+
+    def __init__(self) -> None:
+        super().__init__("The worker claim has been lost")
+
+
 class TimeoutError(Exception):
     """Error thrown when waiting for an event or task result times out."""
 
@@ -288,6 +302,8 @@ def _task_state_exception_handling() -> Iterator[None]:
             raise CancelledTask() from err
         if code == "AB002":
             raise FailedTask() from err
+        if code == "AB004":
+            raise LostClaimError() from err
         raise
 
 
@@ -336,11 +352,12 @@ def _complete_task_run(
     queue_name: str,
     run_id: str,
     result: Optional[JsonValue],
+    worker_id: str,
 ) -> None:
     with _task_state_exception_handling():
         conn.cursor().execute(
-            "SELECT absurd.complete_run(%s, %s, %s)",
-            (queue_name, run_id, json.dumps(result)),
+            "SELECT absurd.complete_run(%s, %s, %s, %s)",
+            (queue_name, run_id, json.dumps(result), worker_id),
         )
 
 
@@ -350,29 +367,32 @@ def _fail_task_run(
     run_id: str,
     err: Any,
     retry_at: Optional[datetime] = None,
+    worker_id: str = "worker",
 ) -> None:
     with _task_state_exception_handling():
         conn.cursor().execute(
-            "SELECT absurd.fail_run(%s, %s, %s, %s)",
+            "SELECT absurd.fail_run(%s, %s, %s, %s, %s)",
             (
                 queue_name,
                 run_id,
                 json.dumps(_serialize_error(err)),
                 retry_at,
+                worker_id,
             ),
         )
 
 
 async def _complete_task_run_async(
-    conn,
-    queue_name,
-    run_id,
-    result,
+    conn: AsyncConnection[Any],
+    queue_name: str,
+    run_id: str,
+    result: Optional[JsonValue],
+    worker_id: str,
 ) -> None:
     with _task_state_exception_handling():
         await conn.cursor().execute(
-            "SELECT absurd.complete_run(%s, %s, %s)",
-            (queue_name, run_id, json.dumps(result)),
+            "SELECT absurd.complete_run(%s, %s, %s, %s)",
+            (queue_name, run_id, json.dumps(result), worker_id),
         )
 
 
@@ -382,15 +402,17 @@ async def _fail_task_run_async(
     run_id: str,
     err: Any,
     retry_at: Optional[datetime] = None,
+    worker_id: str = "worker",
 ) -> None:
     with _task_state_exception_handling():
         await conn.cursor().execute(
-            "SELECT absurd.fail_run(%s, %s, %s, %s)",
+            "SELECT absurd.fail_run(%s, %s, %s, %s, %s)",
             (
                 queue_name,
                 run_id,
                 json.dumps(_serialize_error(err)),
                 retry_at,
+                worker_id,
             ),
         )
 
@@ -487,7 +509,7 @@ def _await_task_result_with_backoff(
     fetch_snapshot: Callable[[], Optional[TaskResultSnapshot]],
     task_id: str,
     timeout: Optional[float] = None,
-    on_before_sleep: Optional[Callable[[], None]] = None,
+    on_before_sleep: Optional[Callable[[float], float]] = None,
 ) -> TaskResultSnapshot:
     timeout_ms = None if timeout is None else max(timeout, 0) * 1000
     started_at = time.monotonic()
@@ -500,7 +522,7 @@ def _await_task_result_with_backoff(
         if snapshot is not None:
             return snapshot
         elif on_before_sleep is not None:
-            on_before_sleep()
+            sleep_ms = on_before_sleep(sleep_ms)
 
         time.sleep(sleep_ms / 1000)
 
@@ -509,7 +531,7 @@ async def _await_task_result_with_backoff_async(
     fetch_snapshot: Callable[[], Awaitable[Optional[TaskResultSnapshot]]],
     task_id: str,
     timeout: Optional[float] = None,
-    on_before_sleep: Optional[Callable[[], Awaitable[None]]] = None,
+    on_before_sleep: Optional[Callable[[float], Awaitable[float]]] = None,
 ) -> TaskResultSnapshot:
     timeout_ms = None if timeout is None else max(timeout, 0) * 1000
     started_at = time.monotonic()
@@ -523,7 +545,7 @@ async def _await_task_result_with_backoff_async(
             return snapshot
 
         if on_before_sleep is not None:
-            await on_before_sleep()
+            sleep_ms = await on_before_sleep(sleep_ms)
 
         await asyncio.sleep(sleep_ms / 1000)
 
@@ -638,6 +660,7 @@ def _create_task_context(
     ctx._conn = conn
     ctx._queue_name = queue_name
     ctx._task = task
+    ctx._worker_id = task["worker_id"]
     ctx._checkpoint_cache = cache
     ctx._claim_timeout = claim_timeout
     ctx._step_name_counter = {}
@@ -665,6 +688,7 @@ async def _create_async_task_context(
     ctx._conn = conn
     ctx._queue_name = queue_name
     ctx._task = task
+    ctx._worker_id = task["worker_id"]
     ctx._checkpoint_cache = cache
     ctx._claim_timeout = claim_timeout
     ctx._step_name_counter = {}
@@ -678,6 +702,7 @@ class TaskContext:
     _conn: Connection[Any]
     _queue_name: str
     _task: ClaimedTask
+    _worker_id: str
     _checkpoint_cache: Dict[str, JsonValue]
     _claim_timeout: int
     _step_name_counter: Dict[str, int]
@@ -689,6 +714,11 @@ class TaskContext:
     def headers(self) -> Mapping[str, JsonValue]:
         """Returns all headers attached to this task."""
         return self._task.get("headers") or {}
+
+    @property
+    def worker_id(self) -> str:
+        """Return the worker ID that owns this run."""
+        return self._worker_id
 
     def step(self, name: str, fn: Callable[[], R]) -> R:
         """Execute an idempotent step identified by name"""
@@ -724,12 +754,10 @@ class TaskContext:
     @overload
     def run_step(self, name: Optional[str] = None) -> Callable[[Callable[[], R]], R]:
         """Decorator to run a function as a step and replace it with the return value"""
-        ...
 
     @overload
     def run_step(self, fn: Callable[[], R]) -> R:
         """Decorator to run a function as a step and replace it with the return value"""
-        ...
 
     def run_step(
         self, name_or_fn: Optional[Union[str, Callable[[], R]]] = None
@@ -768,7 +796,7 @@ class TaskContext:
         wake_at = _get_current_time() + timedelta(seconds=duration)
         return self.sleep_until(step_name, wake_at)
 
-    def sleep_until(self, step_name: str, wake_at: Union[datetime, int, float]) -> None:
+    def sleep_until(self, step_name: str, wake_at: Union[datetime, float]) -> None:
         """Suspend the task until the specified time"""
         if isinstance(wake_at, (int, float)):
             wake_at = datetime.fromtimestamp(wake_at, timezone.utc)
@@ -815,7 +843,7 @@ class TaskContext:
         with _task_state_exception_handling():
             cursor.execute(
                 """SELECT should_suspend, payload
-                   FROM absurd.await_event(%s, %s, %s, %s, %s, %s)""",
+                   FROM absurd.await_event(%s, %s, %s, %s, %s, %s, %s)""",
                 (
                     self._queue_name,
                     self._task["task_id"],
@@ -823,6 +851,7 @@ class TaskContext:
                     checkpoint_name,
                     event_name,
                     timeout,
+                    self._worker_id,
                 ),
             )
 
@@ -860,18 +889,20 @@ class TaskContext:
             heartbeat_interval_ms = max(500, int((self._claim_timeout * 1000) / 2))
             next_heartbeat_at = time.monotonic() * 1000 + heartbeat_interval_ms
 
-            def maybe_heartbeat() -> None:
+            def maybe_heartbeat(wait_for_ms: float) -> float:
                 nonlocal next_heartbeat_at
+                effective_wait_ms = min(wait_for_ms, heartbeat_interval_ms)
                 now_ms = time.monotonic() * 1000
-                if now_ms >= next_heartbeat_at:
+                if now_ms + effective_wait_ms >= next_heartbeat_at:
                     self.heartbeat()
                     next_heartbeat_at = time.monotonic() * 1000 + heartbeat_interval_ms
+                return effective_wait_ms
 
             snapshot = _await_task_result_with_backoff(
                 lambda: _fetch_task_result_snapshot(self._conn, queue, task_id),
                 task_id,
                 timeout,
-                maybe_heartbeat,
+                maybe_heartbeat if self._claim_timeout > 0 else None,
             )
             return _task_result_snapshot_to_json(snapshot)
 
@@ -894,11 +925,12 @@ class TaskContext:
         cursor = self._conn.cursor()
         with _task_state_exception_handling():
             cursor.execute(
-                "SELECT absurd.extend_claim(%s, %s, %s)",
+                "SELECT absurd.extend_claim(%s, %s, %s, %s)",
                 (
                     self._queue_name,
                     self._task["run_id"],
                     seconds if seconds is not None else self._claim_timeout,
+                    self._worker_id,
                 ),
             )
 
@@ -933,7 +965,7 @@ class TaskContext:
         cursor = self._conn.cursor()
         with _task_state_exception_handling():
             cursor.execute(
-                "SELECT absurd.set_task_checkpoint_state(%s, %s, %s, %s, %s, %s)",
+                "SELECT absurd.set_task_checkpoint_state(%s, %s, %s, %s, %s, %s, %s)",
                 (
                     self._queue_name,
                     self._task["task_id"],
@@ -941,6 +973,7 @@ class TaskContext:
                     json.dumps(value),
                     self._task["run_id"],
                     self._claim_timeout,
+                    self._worker_id,
                 ),
             )
         self._checkpoint_cache[checkpoint_name] = value
@@ -948,10 +981,11 @@ class TaskContext:
     def _schedule_run_after(self, seconds: float) -> None:
         """Schedule a run to wake after a duration in seconds."""
         cursor = self._conn.cursor()
-        cursor.execute(
-            "SELECT absurd.schedule_run(%s, %s, absurd.current_time() + make_interval(secs => %s::double precision))",
-            (self._queue_name, self._task["run_id"], seconds),
-        )
+        with _task_state_exception_handling():
+            cursor.execute(
+                "SELECT absurd.schedule_run(%s, %s, absurd.current_time() + make_interval(secs => %s::double precision), %s)",
+                (self._queue_name, self._task["run_id"], seconds, self._worker_id),
+            )
 
 
 class AsyncTaskContext:
@@ -961,6 +995,7 @@ class AsyncTaskContext:
     _conn: AsyncConnection[Any]
     _queue_name: str
     _task: ClaimedTask
+    _worker_id: str
     _checkpoint_cache: Dict[str, JsonValue]
     _claim_timeout: int
     _step_name_counter: Dict[str, int]
@@ -972,6 +1007,11 @@ class AsyncTaskContext:
     def headers(self) -> Mapping[str, JsonValue]:
         """Returns all headers attached to this task."""
         return self._task.get("headers") or {}
+
+    @property
+    def worker_id(self) -> str:
+        """Return the worker ID that owns this run."""
+        return self._worker_id
 
     async def step(self, name: str, fn: Callable[[], Awaitable[R]]) -> R:
         """Execute an idempotent step identified by name"""
@@ -1010,7 +1050,7 @@ class AsyncTaskContext:
         return await self.sleep_until(step_name, wake_at)
 
     async def sleep_until(
-        self, step_name: str, wake_at: Union[datetime, int, float]
+        self, step_name: str, wake_at: Union[datetime, float]
     ) -> None:
         """Suspend the task until the specified time"""
         if isinstance(wake_at, (int, float)):
@@ -1058,7 +1098,7 @@ class AsyncTaskContext:
         with _task_state_exception_handling():
             await cursor.execute(
                 """SELECT should_suspend, payload
-                   FROM absurd.await_event(%s, %s, %s, %s, %s, %s)""",
+                   FROM absurd.await_event(%s, %s, %s, %s, %s, %s, %s)""",
                 (
                     self._queue_name,
                     self._task["task_id"],
@@ -1066,6 +1106,7 @@ class AsyncTaskContext:
                     checkpoint_name,
                     event_name,
                     timeout,
+                    self._worker_id,
                 ),
             )
 
@@ -1103,18 +1144,20 @@ class AsyncTaskContext:
             heartbeat_interval_ms = max(500, int((self._claim_timeout * 1000) / 2))
             next_heartbeat_at = time.monotonic() * 1000 + heartbeat_interval_ms
 
-            async def maybe_heartbeat() -> None:
+            async def maybe_heartbeat(wait_for_ms: float) -> float:
                 nonlocal next_heartbeat_at
+                effective_wait_ms = min(wait_for_ms, heartbeat_interval_ms)
                 now_ms = time.monotonic() * 1000
-                if now_ms >= next_heartbeat_at:
+                if now_ms + effective_wait_ms >= next_heartbeat_at:
                     await self.heartbeat()
                     next_heartbeat_at = time.monotonic() * 1000 + heartbeat_interval_ms
+                return effective_wait_ms
 
             snapshot = await _await_task_result_with_backoff_async(
                 lambda: _fetch_task_result_snapshot_async(self._conn, queue, task_id),
                 task_id,
                 timeout,
-                maybe_heartbeat,
+                maybe_heartbeat if self._claim_timeout > 0 else None,
             )
             return _task_result_snapshot_to_json(snapshot)
 
@@ -1139,11 +1182,12 @@ class AsyncTaskContext:
         cursor = self._conn.cursor()
         with _task_state_exception_handling():
             await cursor.execute(
-                "SELECT absurd.extend_claim(%s, %s, %s)",
+                "SELECT absurd.extend_claim(%s, %s, %s, %s)",
                 (
                     self._queue_name,
                     self._task["run_id"],
                     seconds if seconds is not None else self._claim_timeout,
+                    self._worker_id,
                 ),
             )
 
@@ -1180,7 +1224,7 @@ class AsyncTaskContext:
         cursor = self._conn.cursor()
         with _task_state_exception_handling():
             await cursor.execute(
-                "SELECT absurd.set_task_checkpoint_state(%s, %s, %s, %s, %s, %s)",
+                "SELECT absurd.set_task_checkpoint_state(%s, %s, %s, %s, %s, %s, %s)",
                 (
                     self._queue_name,
                     self._task["task_id"],
@@ -1188,6 +1232,7 @@ class AsyncTaskContext:
                     json.dumps(value),
                     self._task["run_id"],
                     self._claim_timeout,
+                    self._worker_id,
                 ),
             )
         self._checkpoint_cache[checkpoint_name] = value
@@ -1195,10 +1240,11 @@ class AsyncTaskContext:
     async def _schedule_run_after(self, seconds: float) -> None:
         """Schedule a run to wake after a duration in seconds."""
         cursor = self._conn.cursor()
-        await cursor.execute(
-            "SELECT absurd.schedule_run(%s, %s, absurd.current_time() + make_interval(secs => %s::double precision))",
-            (self._queue_name, self._task["run_id"], seconds),
-        )
+        with _task_state_exception_handling():
+            await cursor.execute(
+                "SELECT absurd.schedule_run(%s, %s, absurd.current_time() + make_interval(secs => %s::double precision), %s)",
+                (self._queue_name, self._task["run_id"], seconds, self._worker_id),
+            )
 
 
 class _AbsurdBase:
@@ -1600,20 +1646,30 @@ class Absurd(_AbsurdBase):
         )
 
     def claim_tasks(
-        self, batch_size: int = 1, claim_timeout: int = 120, worker_id: str = "worker"
+        self,
+        batch_size: int = 1,
+        claim_timeout: int = 120,
+        worker_id: Optional[str] = None,
     ) -> List[ClaimedTask]:
         """Claim up to batch_size tasks from the queue"""
+        effective_worker_id = worker_id or _create_worker_id()
         cursor = self._conn.cursor(row_factory=dict_row)
         cursor.execute(
             """SELECT run_id, task_id, attempt, task_name, params, retry_strategy, max_attempts,
                       headers, wake_event, event_payload
                FROM absurd.claim_task(%s, %s, %s, %s)""",
-            (self._queue_name, worker_id, claim_timeout, batch_size),
+            (self._queue_name, effective_worker_id, claim_timeout, batch_size),
         )
-        return cursor.fetchall()  # type: ignore
+        tasks = cast(List[ClaimedTask], cursor.fetchall())
+        for task in tasks:
+            task["worker_id"] = effective_worker_id
+        return tasks
 
     def work_batch(
-        self, worker_id: str = "worker", claim_timeout: int = 120, batch_size: int = 1
+        self,
+        worker_id: Optional[str] = None,
+        claim_timeout: int = 120,
+        batch_size: int = 1,
     ) -> None:
         """Claim and process up to batch_size tasks sequentially"""
         tasks = self.claim_tasks(
@@ -1637,7 +1693,7 @@ class Absurd(_AbsurdBase):
         thread pool up to the configured concurrency limit.
         """
         if worker_id is None:
-            worker_id = f"{socket.gethostname()}:{os.getpid()}"
+            worker_id = _create_worker_id()
 
         effective_batch_size = batch_size or concurrency
         self._worker_running = True
@@ -1738,10 +1794,18 @@ class Absurd(_AbsurdBase):
                         _UNKNOWN_TASK_DEFER_JITTER_SECONDS + 1
                     )
                     defer_seconds = defer_seconds + jitter
-                self._conn.cursor().execute(
-                    "SELECT absurd.schedule_run(%s, %s, absurd.current_time() + make_interval(secs => %s::int))",
-                    (self._queue_name, task["run_id"], defer_seconds),
-                )
+                with _task_state_exception_handling():
+                    self._conn.cursor().execute(
+                        "SELECT absurd.schedule_run(%s, %s, absurd.current_time() + make_interval(secs => %s::int), %s)",
+                        (
+                            self._queue_name,
+                            task["run_id"],
+                            defer_seconds,
+                            task["worker_id"],
+                        ),
+                    )
+                return
+            except (CancelledTask, FailedTask, LostClaimError):
                 return
             except Exception as defer_err:
                 try:
@@ -1750,8 +1814,9 @@ class Absurd(_AbsurdBase):
                         self._queue_name,
                         task["run_id"],
                         defer_err,
+                        worker_id=task["worker_id"],
                     )
-                except (CancelledTask, FailedTask):
+                except (CancelledTask, FailedTask, LostClaimError):
                     pass
                 return
 
@@ -1764,8 +1829,9 @@ class Absurd(_AbsurdBase):
                     self._queue_name,
                     task["run_id"],
                     Exception("Misconfigured task (queue mismatch)"),
+                    worker_id=task["worker_id"],
                 )
-            except (CancelledTask, FailedTask):
+            except (CancelledTask, FailedTask, LostClaimError):
                 pass
             return
 
@@ -1791,13 +1857,25 @@ class Absurd(_AbsurdBase):
                 )
             else:
                 result = cast(JsonValue, registration["handler"](task["params"], ctx))
-            _complete_task_run(self._conn, queue_name, task["run_id"], result)
-        except (SuspendTask, CancelledTask, FailedTask):
+            _complete_task_run(
+                self._conn,
+                queue_name,
+                task["run_id"],
+                result,
+                task["worker_id"],
+            )
+        except (SuspendTask, CancelledTask, FailedTask, LostClaimError):
             pass
         except Exception as err:
             try:
-                _fail_task_run(self._conn, queue_name, task["run_id"], err)
-            except (CancelledTask, FailedTask):
+                _fail_task_run(
+                    self._conn,
+                    queue_name,
+                    task["run_id"],
+                    err,
+                    worker_id=task["worker_id"],
+                )
+            except (CancelledTask, FailedTask, LostClaimError):
                 pass
         finally:
             _current_task_context.reset(token)
@@ -2146,22 +2224,32 @@ class AsyncAbsurd(_AbsurdBase):
         )
 
     async def claim_tasks(
-        self, batch_size: int = 1, claim_timeout: int = 120, worker_id: str = "worker"
+        self,
+        batch_size: int = 1,
+        claim_timeout: int = 120,
+        worker_id: Optional[str] = None,
     ) -> List[ClaimedTask]:
         """Claim up to batch_size tasks from the queue"""
         await self._ensure_connected()
         assert self._conn is not None
+        effective_worker_id = worker_id or _create_worker_id()
         cursor = self._conn.cursor(row_factory=dict_row)
         await cursor.execute(
             """SELECT run_id, task_id, attempt, task_name, params, retry_strategy, max_attempts,
                       headers, wake_event, event_payload
                FROM absurd.claim_task(%s, %s, %s, %s)""",
-            (self._queue_name, worker_id, claim_timeout, batch_size),
+            (self._queue_name, effective_worker_id, claim_timeout, batch_size),
         )
-        return await cursor.fetchall()  # type: ignore
+        tasks = cast(List[ClaimedTask], await cursor.fetchall())
+        for task in tasks:
+            task["worker_id"] = effective_worker_id
+        return tasks
 
     async def work_batch(
-        self, worker_id: str = "worker", claim_timeout: int = 120, batch_size: int = 1
+        self,
+        worker_id: Optional[str] = None,
+        claim_timeout: int = 120,
+        batch_size: int = 1,
     ) -> None:
         """Claim and process up to batch_size tasks sequentially"""
         tasks = await self.claim_tasks(
@@ -2184,7 +2272,7 @@ class AsyncAbsurd(_AbsurdBase):
 
         await self._ensure_connected()
         if worker_id is None:
-            worker_id = f"{socket.gethostname()}:{os.getpid()}"
+            worker_id = _create_worker_id()
 
         effective_batch_size = batch_size or concurrency
         self._worker_running = True
@@ -2243,10 +2331,18 @@ class AsyncAbsurd(_AbsurdBase):
                         _UNKNOWN_TASK_DEFER_JITTER_SECONDS + 1
                     )
                     defer_seconds = defer_seconds + jitter
-                await self._conn.cursor().execute(
-                    "SELECT absurd.schedule_run(%s, %s, absurd.current_time() + make_interval(secs => %s::int))",
-                    (self._queue_name, task["run_id"], defer_seconds),
-                )
+                with _task_state_exception_handling():
+                    await self._conn.cursor().execute(
+                        "SELECT absurd.schedule_run(%s, %s, absurd.current_time() + make_interval(secs => %s::int), %s)",
+                        (
+                            self._queue_name,
+                            task["run_id"],
+                            defer_seconds,
+                            task["worker_id"],
+                        ),
+                    )
+                return
+            except (CancelledTask, FailedTask, LostClaimError):
                 return
             except Exception as defer_err:
                 try:
@@ -2255,8 +2351,9 @@ class AsyncAbsurd(_AbsurdBase):
                         self._queue_name,
                         task["run_id"],
                         defer_err,
+                        worker_id=task["worker_id"],
                     )
-                except (CancelledTask, FailedTask):
+                except (CancelledTask, FailedTask, LostClaimError):
                     pass
                 return
 
@@ -2269,8 +2366,9 @@ class AsyncAbsurd(_AbsurdBase):
                     self._queue_name,
                     task["run_id"],
                     Exception("Misconfigured task (queue mismatch)"),
+                    worker_id=task["worker_id"],
                 )
-            except (CancelledTask, FailedTask):
+            except (CancelledTask, FailedTask, LostClaimError):
                 pass
             return
 
@@ -2291,7 +2389,7 @@ class AsyncAbsurd(_AbsurdBase):
 
                 hook_result = wrap_hook(ctx, execute)
                 if inspect.isawaitable(hook_result):
-                    result = cast(JsonValue, await cast(Awaitable[Any], hook_result))
+                    result = cast(JsonValue, await hook_result)
                 else:
                     result = cast(JsonValue, hook_result)
             else:
@@ -2299,9 +2397,13 @@ class AsyncAbsurd(_AbsurdBase):
                     JsonValue, await registration["handler"](task["params"], ctx)
                 )
             await _complete_task_run_async(
-                self._conn, queue_name, task["run_id"], result
+                self._conn,
+                queue_name,
+                task["run_id"],
+                result,
+                task["worker_id"],
             )
-        except (SuspendTask, CancelledTask, FailedTask):
+        except (SuspendTask, CancelledTask, FailedTask, LostClaimError):
             pass
         except Exception as err:
             try:
@@ -2310,8 +2412,9 @@ class AsyncAbsurd(_AbsurdBase):
                     queue_name,
                     task["run_id"],
                     err,
+                    worker_id=task["worker_id"],
                 )
-            except (CancelledTask, FailedTask):
+            except (CancelledTask, FailedTask, LostClaimError):
                 pass
         finally:
             _current_task_context.reset(token)
