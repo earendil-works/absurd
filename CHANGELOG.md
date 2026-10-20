@@ -4,6 +4,8 @@ This contains the changes between releases.
 
 # Unreleased
 
+* Indexed and narrowed claim-time cancellation maintenance so worker polling avoids scanning large historical task tables for tasks without cancellation policies.
+
 # 0.5.0
 
 * Added a Habitat tasks filter for terminal failures and defaulted the failed status view to hide failed attempts that were retried later.

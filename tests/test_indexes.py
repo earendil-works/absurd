@@ -27,6 +27,7 @@ def test_new_queue_creates_performance_indexes(client):
     client.create_queue(queue)
 
     assert _index_exists(client.conn, f"r_{queue}", f"r_{queue}_cei")
+    assert _index_exists(client.conn, f"t_{queue}", f"t_{queue}_ci")
     assert _index_exists(client.conn, f"w_{queue}", f"w_{queue}_ti")
     assert _index_exists(client.conn, f"e_{queue}", f"e_{queue}_eai")
 
@@ -60,6 +61,108 @@ def test_lease_expiry_scan_uses_claim_expiry_index(client):
     )
 
     assert f"r_{queue}_cei" in plan
+
+
+def test_cancellation_sweep_uses_cancellation_index(client):
+    queue = "index_cancel_sweep"
+    client.create_queue(queue)
+
+    base = datetime(2024, 7, 1, 12, 0, tzinfo=timezone.utc)
+    client.set_fake_now(base)
+
+    client.spawn_task(
+        queue,
+        "cancellable",
+        {"value": 1},
+        {"cancellation": {"max_delay": 1}},
+    )
+    for offset in range(5):
+        client.spawn_task(queue, f"regular-{offset}", {"value": offset})
+
+    client.conn.execute("set enable_seqscan = off")
+    plan = _explain(
+        client.conn,
+        sql.SQL(
+            """
+            explain select task_id
+            from absurd.{t}
+            where state in ('pending', 'sleeping', 'running')
+              and cancellation is not null
+              and (
+                (
+                  (cancellation->>'max_delay')::bigint is not null
+                  and first_started_at is null
+                  and extract(epoch from (%s - enqueue_at)) >= (cancellation->>'max_delay')::bigint
+                )
+                or
+                (
+                  (cancellation->>'max_duration')::bigint is not null
+                  and first_started_at is not null
+                  and extract(epoch from (%s - first_started_at)) >= (cancellation->>'max_duration')::bigint
+                )
+              )
+            order by task_id
+            limit 1
+            """
+        ).format(t=client.get_table("t", queue)),
+        (base + timedelta(seconds=2), base + timedelta(seconds=2)),
+    )
+
+    assert f"t_{queue}_ci" in plan
+
+
+def test_cancellation_index_keeps_task_state_updates_hot(client):
+    # The cancellation index must not depend on `state`: otherwise every
+    # claim/complete transition becomes a non-HOT update and has to touch
+    # every index on the task table.
+    queue = "index_cancel_hot"
+    client.create_queue(queue)
+
+    row = client.conn.execute(
+        """
+        select pg_get_indexdef(i.indexrelid)
+        from pg_index i
+        join pg_class c on c.oid = i.indexrelid
+        where c.relname = %s
+        """,
+        (f"t_{queue}_ci",),
+    ).fetchone()
+    assert row is not None
+    assert "state" not in row[0]
+    assert "cancellation IS NOT NULL" in row[0]
+
+    client.spawn_task(queue, "regular", {"value": 1})
+    client.spawn_task(
+        queue, "cancellable", {"value": 2}, {"cancellation": {"max_delay": 3600}}
+    )
+
+    t_table = f"t_{queue}"
+
+    # The test connection runs inside a transaction that is rolled back, so
+    # use the per-transaction stats view rather than the shared counters.
+    def update_counts():
+        return client.conn.execute(
+            """
+            select n_tup_upd, n_tup_hot_upd
+            from pg_stat_xact_user_tables
+            where schemaname = 'absurd' and relname = %s
+            """,
+            (t_table,),
+        ).fetchone()
+
+    before_upd, before_hot = update_counts()
+
+    claimed = client.claim_tasks(queue, qty=2)
+    assert len(claimed) == 2
+    for task in claimed:
+        client.complete_run(queue, task["run_id"], {"ok": True})
+
+    after_upd, after_hot = update_counts()
+    task_updates = after_upd - before_upd
+    hot_updates = after_hot - before_hot
+
+    assert task_updates > 0
+    assert hot_updates == task_updates
 
 
 def test_event_ttl_ordering_uses_emitted_at_index(client):

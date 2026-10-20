@@ -3,7 +3,7 @@
 from datetime import datetime, timezone, timedelta
 from psycopg import sql
 
-from absurd_sdk import Absurd, TimeoutError
+from absurd_sdk import Absurd, JsonObject, TimeoutError
 
 
 def _set_fake_now(conn, fake_time):
@@ -64,7 +64,7 @@ def test_await_and_emit_event_flow(conn, queue_name):
     assert sleeping_run["wake_event"] == event_name
 
     # Emit event
-    payload = {"value": 42}
+    payload: JsonObject = {"value": 42}
     client.emit_event(event_name, payload)
 
     # Task should now be pending
@@ -86,7 +86,7 @@ def test_event_emitted_before_await_is_cached(conn, queue_name):
     client.create_queue()
 
     event_name = f"cached_event_{queue}"
-    payload = {"data": "pre-emitted"}
+    payload: JsonObject = {"data": "pre-emitted"}
 
     # Emit event before task even exists
     client.emit_event(event_name, payload)
@@ -113,8 +113,8 @@ def test_emit_event_is_first_write_wins(conn, queue_name):
     client.create_queue()
 
     event_name = f"stable_event_{queue}"
-    first_payload = {"value": 1}
-    second_payload = {"value": 2}
+    first_payload: JsonObject = {"value": 1}
+    second_payload: JsonObject = {"value": 2}
 
     first_emit_at = datetime(2024, 5, 1, 9, 0, 0, tzinfo=timezone.utc)
     _set_fake_now(conn, first_emit_at)
@@ -221,7 +221,7 @@ def test_multiple_tasks_can_await_same_event(conn, queue_name):
         assert task["state"] == "sleeping"
 
     # Emit event once
-    payload = {"data": "broadcast"}
+    payload: JsonObject = {"data": "broadcast"}
     client.emit_event(event_name, payload)
 
     # All tasks should resume and complete
