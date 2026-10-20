@@ -157,7 +157,7 @@ create or replace function absurd.get_schema_version ()
   returns text
   language sql
 as $$
-  select 'main'::text;
+  select '0.5.1'::text;
 $$;
 
 -- Queue names are used in generated table/index identifiers.
