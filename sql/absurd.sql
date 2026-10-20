@@ -333,9 +333,8 @@ begin
 
   execute format(
     'create index if not exists %I on absurd.%I (task_id)
-      where state in (''pending'', ''sleeping'', ''running'')
-        and cancellation is not null',
-    ('t_' || p_queue_name) || '_aci',
+      where cancellation is not null',
+    ('t_' || p_queue_name) || '_ci',
     't_' || p_queue_name
   );
 
