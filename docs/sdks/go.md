@@ -313,6 +313,47 @@ the client default queue. In that unregistered case, task-level defaults from
 `TaskOptions` are unavailable; retries/cancellation come from explicit spawn
 options (or client defaults).
 
+### Transactional spawning
+
+Use `SpawnTx` to make a task spawn atomic with other database changes. It accepts
+an existing `*sql.Tx`; the task only becomes visible if that transaction commits:
+
+```go
+tx, err := db.BeginTx(ctx, nil)
+if err != nil {
+    return err
+}
+defer tx.Rollback()
+
+if _, err := tx.ExecContext(ctx,
+    `INSERT INTO orders (id, status) VALUES ($1, $2)`,
+    order.ID,
+    "created",
+); err != nil {
+    return err
+}
+
+spawned, err := app.SpawnTx(
+    ctx,
+    tx,
+    "process-order",
+    order,
+    absurd.SpawnOptions{IdempotencyKey: "order:" + order.ID},
+)
+if err != nil {
+    return err
+}
+
+if err := tx.Commit(); err != nil {
+    return err
+}
+log.Printf("spawned task %s", spawned.TaskID)
+```
+
+The caller owns the transaction and must commit or roll it back. `SpawnTx` uses
+the same task registration, defaults, options, validation, and `BeforeSpawn` hook
+as `Spawn`. Typed definitions also provide `task.SpawnTx(ctx, app, tx, params)`.
+
 ### `SpawnOptions`
 
 | Option | Type | Description |

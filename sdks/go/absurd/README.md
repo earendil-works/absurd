@@ -175,6 +175,42 @@ If `order-fulfillment` is not registered in this process, pass
 per-task defaults from registration are not available; spawn options (or client
 defaults) are used instead.
 
+### Transactional spawning
+
+Use `SpawnTx` with an existing `*sql.Tx` to make a task spawn atomic with other
+database changes:
+
+```go
+tx, err := db.BeginTx(ctx, nil)
+if err != nil {
+	return err
+}
+defer tx.Rollback()
+
+if _, err := tx.ExecContext(ctx,
+	`INSERT INTO orders (id, status) VALUES ($1, $2)`,
+	order.ID,
+	"created",
+); err != nil {
+	return err
+}
+
+spawned, err := app.SpawnTx(ctx, tx, "process-order", order)
+if err != nil {
+	return err
+}
+if err := tx.Commit(); err != nil {
+	return err
+}
+
+log.Printf("spawned task %s", spawned.TaskID)
+```
+
+The task becomes visible only when the transaction commits and is discarded if
+it rolls back. The caller owns the transaction lifecycle. `SpawnTx` applies the
+same registration, options, validation, defaults, and hooks as `Spawn`. Typed
+task definitions also provide `task.SpawnTx(ctx, app, tx, params)`.
+
 ## Task Result Snapshots
 
 You can inspect or wait for a task's terminal result:

@@ -286,6 +286,11 @@ func (t TaskDefinition[P, R]) Spawn(ctx context.Context, c *Client, params P, op
 	return c.Spawn(ctx, t.name, params, options...)
 }
 
+// SpawnTx uses the typed task name and parameter type within tx.
+func (t TaskDefinition[P, R]) SpawnTx(ctx context.Context, c *Client, tx *sql.Tx, params P, options ...SpawnOptions) (SpawnResult, error) {
+	return c.SpawnTx(ctx, tx, t.name, params, options...)
+}
+
 type taskRegistration interface {
 	buildRegistered(defaultQueue string) (registeredTask, error)
 }
@@ -626,7 +631,26 @@ func (c *Client) EmitEvent(ctx context.Context, queueName, eventName string, pay
 	return err
 }
 
+// Spawn enqueues a task using the client's database handle.
 func (c *Client) Spawn(ctx context.Context, taskName string, params any, options ...SpawnOptions) (SpawnResult, error) {
+	return c.spawn(ctx, c.db, taskName, params, options...)
+}
+
+// SpawnTx enqueues a task using tx, so the spawn is committed or rolled back
+// together with the caller's transaction. The caller remains responsible for
+// committing or rolling back tx.
+func (c *Client) SpawnTx(ctx context.Context, tx *sql.Tx, taskName string, params any, options ...SpawnOptions) (SpawnResult, error) {
+	if tx == nil {
+		return SpawnResult{}, fmt.Errorf("transaction must not be nil")
+	}
+	return c.spawn(ctx, tx, taskName, params, options...)
+}
+
+type queryRowContexter interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+func (c *Client) spawn(ctx context.Context, queryer queryRowContexter, taskName string, params any, options ...SpawnOptions) (SpawnResult, error) {
 	opts := cloneSpawnOptions(first(options))
 	if c.hooks.BeforeSpawn != nil {
 		var err error
@@ -655,7 +679,7 @@ func (c *Client) Spawn(ctx context.Context, taskName string, params any, options
 		return SpawnResult{}, err
 	}
 
-	row := c.db.QueryRowContext(ctx, `SELECT task_id, run_id, attempt, created
+	row := queryer.QueryRowContext(ctx, `SELECT task_id, run_id, attempt, created
        FROM absurd.spawn_task($1, $2, $3, $4)`, validatedQueue, taskName, string(paramsRaw), string(spawnOptsRaw))
 	var result SpawnResult
 	if err := row.Scan(&result.TaskID, &result.RunID, &result.Attempt, &result.Created); err != nil {
