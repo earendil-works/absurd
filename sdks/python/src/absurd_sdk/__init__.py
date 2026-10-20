@@ -21,7 +21,7 @@ from typing import (
     Awaitable,
     Callable,
     Dict,
-    Iterator,
+    Generator,
     List,
     Literal,
     Mapping,
@@ -279,7 +279,7 @@ class TimeoutError(Exception):
 
 
 @contextmanager
-def _task_state_exception_handling() -> Iterator[None]:
+def _task_state_exception_handling() -> Generator[None, None, None]:
     try:
         yield
     except Exception as err:
@@ -1212,7 +1212,7 @@ class _AbsurdBase:
     ) -> None:
         self._queue_name = _validate_queue_name(queue_name)
         self._default_max_attempts = default_max_attempts
-        self._hooks: AbsurdHooks = hooks if hooks is not None else cast(AbsurdHooks, {})
+        self._hooks: AbsurdHooks = hooks if hooks is not None else {}
         self._registry: Dict[str, Dict[str, Any]] = {}
         self._worker_running = False
 
@@ -2291,7 +2291,7 @@ class AsyncAbsurd(_AbsurdBase):
 
                 hook_result = wrap_hook(ctx, execute)
                 if inspect.isawaitable(hook_result):
-                    result = cast(JsonValue, await cast(Awaitable[Any], hook_result))
+                    result = cast(JsonValue, await hook_result)
                 else:
                     result = cast(JsonValue, hook_result)
             else:

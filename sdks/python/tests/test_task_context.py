@@ -5,7 +5,7 @@ from typing import cast
 import pytest
 from psycopg import sql
 
-from absurd_sdk import Absurd, SuspendTask, _create_task_context
+from absurd_sdk import Absurd, JsonObject, SuspendTask, _create_task_context
 
 
 def _fetch_checkpoint(conn, queue, task_id, checkpoint_name):
@@ -106,7 +106,7 @@ def test_await_event_flow(conn, queue_name):
     assert wake_event == event_name
     assert available_at is None
 
-    payload = {"status": "ok"}
+    payload: JsonObject = {"status": "ok"}
     client.emit_event(event_name, payload, queue_name=queue)
 
     replay = client.claim_tasks(worker_id="worker")[0]
