@@ -1,0 +1,32 @@
+services:
+  postgres:
+    image: postgres:18.3
+    environment:
+      POSTGRES_DB: absurd
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./sql/absurd.sql:/docker-entrypoint-initdb.d/001-absurd.sql:ro
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U postgres -d absurd" ]
+      start_period: 5s
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  habitat:
+    image: habitat:latest
+    build:
+      context: ./habitat
+    ports:
+      - "7890:7890"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      HABITAT_DB_HOST: postgres
+      HABITAT_DB_USER: postgres
+      HABITAT_DB_PASSWORD: password
+      HABITAT_DB_SSLMODE: disable
