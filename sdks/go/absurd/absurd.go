@@ -9,6 +9,7 @@ import (
 	"log"
 	"math"
 	"os"
+	"reflect"
 	"runtime/debug"
 	"strings"
 	"sync"
@@ -284,6 +285,11 @@ func (t TaskDefinition[P, R]) Name() string { return t.name }
 // Spawn uses the typed task name and parameter type.
 func (t TaskDefinition[P, R]) Spawn(ctx context.Context, c *Client, params P, options ...SpawnOptions) (SpawnResult, error) {
 	return c.Spawn(ctx, t.name, params, options...)
+}
+
+// SpawnTx uses the typed task name and parameter type within tx.
+func (t TaskDefinition[P, R]) SpawnTx(ctx context.Context, c *Client, tx Querier, params P, options ...SpawnOptions) (SpawnResult, error) {
+	return c.SpawnTx(ctx, tx, t.name, params, options...)
 }
 
 type taskRegistration interface {
@@ -626,7 +632,38 @@ func (c *Client) EmitEvent(ctx context.Context, queueName, eventName string, pay
 	return err
 }
 
+// Spawn enqueues a task using the client's database handle.
 func (c *Client) Spawn(ctx context.Context, taskName string, params any, options ...SpawnOptions) (SpawnResult, error) {
+	return c.spawn(ctx, c.db, taskName, params, options...)
+}
+
+// Querier is the database handle accepted by [Client.SpawnTx]. It is
+// implemented by *sql.Tx, *sql.Conn, and *sql.DB.
+type Querier interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+// SpawnTx enqueues a task using tx instead of the client's database handle.
+// When tx is a *sql.Tx, the spawn is committed or rolled back together with
+// the caller's transaction. Any other [Querier], such as a *sql.Conn, can be
+// used to spawn on a specific connection. The caller remains responsible for
+// committing or rolling back tx.
+func (c *Client) SpawnTx(ctx context.Context, tx Querier, taskName string, params any, options ...SpawnOptions) (SpawnResult, error) {
+	if isNilQuerier(tx) {
+		return SpawnResult{}, fmt.Errorf("transaction must not be nil")
+	}
+	return c.spawn(ctx, tx, taskName, params, options...)
+}
+
+func isNilQuerier(q Querier) bool {
+	if q == nil {
+		return true
+	}
+	v := reflect.ValueOf(q)
+	return v.Kind() == reflect.Pointer && v.IsNil()
+}
+
+func (c *Client) spawn(ctx context.Context, queryer Querier, taskName string, params any, options ...SpawnOptions) (SpawnResult, error) {
 	opts := cloneSpawnOptions(first(options))
 	if c.hooks.BeforeSpawn != nil {
 		var err error
@@ -655,7 +692,7 @@ func (c *Client) Spawn(ctx context.Context, taskName string, params any, options
 		return SpawnResult{}, err
 	}
 
-	row := c.db.QueryRowContext(ctx, `SELECT task_id, run_id, attempt, created
+	row := queryer.QueryRowContext(ctx, `SELECT task_id, run_id, attempt, created
        FROM absurd.spawn_task($1, $2, $3, $4)`, validatedQueue, taskName, string(paramsRaw), string(spawnOptsRaw))
 	var result SpawnResult
 	if err := row.Scan(&result.TaskID, &result.RunID, &result.Attempt, &result.Created); err != nil {
