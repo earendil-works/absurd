@@ -408,6 +408,10 @@ await app.start_worker(
 )
 ```
 
+Set `concurrency > 1` to execute async handlers as concurrent tasks on the
+event loop.  As with the sync worker, free slots are refilled as tasks finish,
+so one slow task does not block new claims while capacity remains.
+
 ### Single-Batch Processing
 
 ```python

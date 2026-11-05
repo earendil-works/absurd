@@ -5,6 +5,7 @@ This contains the changes between releases.
 # Unreleased
 
 * Fixed the Python SDK's async client to reconnect when its owned connection was interrupted (e.g. by an idle timeout or a server restart) instead of failing every later call with "the connection is closed".  #141
+* Fixed the Python SDK's asynchronous worker to refill free concurrency slots instead of waiting for every task in a claimed batch to finish, so a slow task no longer idles the remaining slots.  #137
 
 # 0.5.1
 

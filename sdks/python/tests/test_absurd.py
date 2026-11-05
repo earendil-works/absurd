@@ -203,6 +203,133 @@ def test_sync_start_worker_keeps_claiming_while_slow_task_runs(conn, queue_name)
     assert not worker_thread.is_alive()
 
 
+def test_async_start_worker_keeps_claiming_while_slow_task_runs(db_dsn, queue_name):
+    queue = queue_name("async_slow")
+
+    with psycopg.connect(db_dsn, autocommit=True) as setup_conn:
+        Absurd(setup_conn, queue_name=queue).create_queue()
+
+    async def run():
+        client = AsyncAbsurd(db_dsn, queue_name=queue)
+        # AsyncAbsurd does not serialize concurrent use of its connection, and
+        # the worker uses the client's for the whole loop, so spawn on another.
+        spawner = AsyncAbsurd(db_dsn, queue_name=queue)
+
+        slow_started = asyncio.Event()
+        release_slow = asyncio.Event()
+        two_fast_done = asyncio.Event()
+        fast_completed = 0
+
+        @client.register_task("mixed-speed-task")
+        async def mixed_speed_task(params, ctx):
+            nonlocal fast_completed
+            if params["kind"] == "slow":
+                slow_started.set()
+                await asyncio.wait_for(release_slow.wait(), 5)
+                return params
+
+            fast_completed += 1
+            if fast_completed >= 2:
+                two_fast_done.set()
+            return params
+
+        slow = await spawner.spawn(
+            "mixed-speed-task", {"kind": "slow", "idx": 0}, queue=queue
+        )
+
+        worker = asyncio.create_task(
+            client.start_worker(
+                worker_id="async-slow-worker",
+                claim_timeout=120,
+                concurrency=2,
+                poll_interval=0.01,
+            )
+        )
+
+        try:
+            await asyncio.wait_for(slow_started.wait(), 5)
+
+            fast1 = await spawner.spawn(
+                "mixed-speed-task", {"kind": "fast", "idx": 1}, queue=queue
+            )
+            fast2 = await spawner.spawn(
+                "mixed-speed-task", {"kind": "fast", "idx": 2}, queue=queue
+            )
+
+            # Both only run if the worker refills the slots left free beside the
+            # slow task instead of waiting for the whole batch to finish.
+            await asyncio.wait_for(two_fast_done.wait(), 5)
+
+            with psycopg.connect(db_dsn, autocommit=True) as check_conn:
+                assert _fetch_task(check_conn, queue, slow["task_id"])[0] == "running"
+
+            return slow, fast1, fast2
+        finally:
+            release_slow.set()
+            client.stop_worker()
+            try:
+                await asyncio.wait_for(worker, timeout=10)
+            finally:
+                await client.close()
+                await spawner.close()
+
+    slow, fast1, fast2 = asyncio.run(run())
+
+    with psycopg.connect(db_dsn, autocommit=True) as check_conn:
+        assert _fetch_task(check_conn, queue, slow["task_id"])[0] == "completed"
+        assert _fetch_task(check_conn, queue, fast1["task_id"])[0] == "completed"
+        assert _fetch_task(check_conn, queue, fast2["task_id"])[0] == "completed"
+
+
+def test_async_start_worker_cancellation_cancels_running_tasks(db_dsn, queue_name):
+    queue = queue_name("async_cancel")
+
+    with psycopg.connect(db_dsn, autocommit=True) as setup_conn:
+        Absurd(setup_conn, queue_name=queue).create_queue()
+
+    async def run():
+        client = AsyncAbsurd(db_dsn, queue_name=queue)
+        started = asyncio.Event()
+        handler_cancelled = False
+
+        @client.register_task("blocking-task")
+        async def blocking_task(params, ctx):
+            nonlocal handler_cancelled
+            started.set()
+            try:
+                await asyncio.sleep(30)
+            except asyncio.CancelledError:
+                handler_cancelled = True
+                raise
+
+        try:
+            await client.spawn("blocking-task", {}, queue=queue)
+            worker = asyncio.create_task(
+                client.start_worker(
+                    worker_id="async-cancel-worker",
+                    claim_timeout=120,
+                    concurrency=2,
+                    poll_interval=0.01,
+                )
+            )
+            await asyncio.wait_for(started.wait(), 5)
+
+            worker.cancel()
+            try:
+                await asyncio.wait_for(worker, timeout=5)
+            except asyncio.CancelledError:
+                pass
+
+            # The handler must be cancelled and awaited before the worker
+            # returns, so nothing keeps using the connection after close().
+            assert worker.cancelled()
+            assert handler_cancelled
+        finally:
+            await client.close()
+
+    asyncio.run(run())
+
+
 def test_unknown_task_is_deferred_not_failed(conn, queue_name):
     queue = queue_name("unknown")
     client = Absurd(conn, queue_name=queue)
