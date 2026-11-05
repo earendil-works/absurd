@@ -1,0 +1,391 @@
+/* Absurd's documentation, on Elanor, styled like Earendil's other docs (the djs guide).
+   elanor/tokens.css (the earendil brand, vendored by scripts/docs/elanor-update.sh) defines every color, font, size and space used here; this file
+   only arranges them, following Elanor's docs app and its Prose, CodeSnippet, Table,
+   SideNavigation and TableOfContents components. Light and dark come from the tokens:
+   prefers-color-scheme, or the header's toggle (data-color-scheme on <html>). */
+
+*, *::before, *::after { box-sizing: border-box; }
+html {
+  -webkit-text-size-adjust: 100%;
+  scroll-padding-block-start: calc(var(--semantic-dimension-size-top-navigation) + var(--semantic-dimension-space-gap-large));
+}
+@media (prefers-reduced-motion: no-preference) { html { scroll-behavior: smooth; } }
+body {
+  margin: 0;
+  min-block-size: 100dvh;
+  background: var(--semantic-color-background-canvas);
+  color: var(--semantic-color-text-primary);
+  font: var(--semantic-typography-ui-primary);
+}
+[hidden] { display: none !important; }
+:focus-visible {
+  outline: var(--semantic-dimension-border-width-large) solid var(--semantic-color-focus-ring);
+  outline-offset: var(--semantic-dimension-border-width-medium);
+  border-radius: var(--semantic-dimension-radius-small);
+}
+.skip:not(:focus) { position: absolute; inline-size: 1px; block-size: 1px; overflow: hidden; clip-path: inset(50%); }
+.skip:focus { position: fixed; z-index: var(--semantic-number-layer-overlay); inset: var(--semantic-dimension-space-padding-medium) auto auto var(--semantic-dimension-space-padding-medium); padding: var(--semantic-dimension-space-padding-small) var(--semantic-dimension-space-padding-medium); background: var(--semantic-color-background-surface); color: var(--semantic-color-text-link); }
+
+/* An icon from elanor/icons, inline so that it takes the text color. */
+.icon { display: block; inline-size: var(--semantic-dimension-size-icon); block-size: var(--semantic-dimension-size-icon); fill: currentColor; flex: none; }
+
+/* A ghost icon button, as in Elanor's top navigation. */
+.icon-button {
+  display: inline-flex; align-items: center; justify-content: center;
+  padding: var(--semantic-dimension-space-control-padding-block-small);
+  border: 0; border-radius: var(--semantic-dimension-radius-small);
+  background: var(--semantic-color-background-fill-ghost-neutral);
+  color: var(--semantic-color-icon-secondary);
+  font: var(--semantic-typography-ui-primary); text-decoration: none; cursor: pointer;
+}
+@media (hover: hover) {
+  .icon-button:hover { background: var(--semantic-color-background-fill-ghost-neutral-hover); color: var(--semantic-color-icon-primary); }
+}
+.icon-button:active { background: var(--semantic-color-background-fill-ghost-neutral-active); }
+
+/* Top navigation */
+
+header.top {
+  position: sticky; inset-block-start: 0; z-index: var(--semantic-number-layer-sticky);
+  display: flex; align-items: center; gap: var(--semantic-dimension-space-gap-large);
+  block-size: var(--semantic-dimension-size-top-navigation);
+  padding-inline: var(--semantic-dimension-space-padding-x-large);
+  border-block-end: var(--semantic-dimension-border-width-small) solid var(--semantic-color-border-secondary);
+  background: var(--semantic-color-background-canvas);
+}
+.identity { display: flex; align-items: center; gap: var(--semantic-dimension-space-gap-medium); min-inline-size: 0; }
+/* The Earendil symbol, unmodified (on-light or on-dark to match the canvas), with at
+   least a quarter of its width as clear space (BRAND-GUIDELINES.md). */
+.mark { display: block; padding: var(--semantic-dimension-space-padding-xx-small); }
+.mark img { display: block; block-size: var(--semantic-dimension-size-small); inline-size: auto; }
+.mark .on-dark { display: none; }
+:root[data-color-scheme="dark"] .mark .on-light { display: none; }
+:root[data-color-scheme="dark"] .mark .on-dark { display: block; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-color-scheme]) .mark .on-light { display: none; }
+  :root:not([data-color-scheme]) .mark .on-dark { display: block; }
+}
+.brand { display: flex; align-items: baseline; gap: var(--semantic-dimension-space-gap-small); min-inline-size: 0; color: var(--semantic-color-text-primary); text-decoration: none; white-space: nowrap; }
+.brand b { font: var(--semantic-typography-heading-app-5); }
+.brand span { color: var(--semantic-color-text-secondary); overflow: hidden; text-overflow: ellipsis; }
+.top .spacer { flex: 1; }
+.top .actions { display: flex; align-items: center; gap: var(--semantic-dimension-space-gap-x-small); }
+.menu-button { display: none; }
+
+/* Search (assets/search.js: #search and #search-results) */
+.search { position: relative; }
+.search .icon { position: absolute; inset-block-start: 50%; inset-inline-start: var(--semantic-dimension-space-control-padding-inline-x-small); translate: 0 -50%; color: var(--semantic-color-icon-secondary); pointer-events: none; }
+.search input {
+  inline-size: 16rem;
+  padding-block: calc(var(--semantic-dimension-space-control-padding-block-small) - var(--semantic-dimension-border-width-default));
+  padding-inline: calc(var(--semantic-dimension-space-control-padding-inline-x-small) + var(--semantic-dimension-size-icon) + var(--semantic-dimension-space-control-gap-small)) var(--semantic-dimension-space-control-padding-inline-small);
+  border: var(--semantic-dimension-border-width-default) solid var(--semantic-color-background-fill-secondary);
+  border-radius: var(--semantic-dimension-radius-small);
+  background: var(--semantic-color-background-fill-secondary);
+  color: var(--semantic-color-text-primary);
+  font: var(--semantic-typography-ui-primary);
+}
+.search input::placeholder { color: var(--semantic-color-text-secondary); }
+@media (hover: hover) { .search input:hover { border-color: var(--semantic-color-background-fill-secondary-hover); background: var(--semantic-color-background-fill-secondary-hover); } }
+.search input:focus { border-color: var(--semantic-color-focus-ring); background: var(--semantic-color-background-fill-secondary); outline: none; }
+#search-results {
+  position: absolute; inset-inline-end: 0; inset-block-start: calc(100% + var(--semantic-dimension-space-gap-small));
+  inline-size: min(34rem, calc(100vw - 2 * var(--semantic-dimension-space-padding-x-large)));
+  max-block-size: var(--semantic-dimension-size-max-height-search-dialog); overflow: auto;
+  margin: 0; padding: var(--semantic-dimension-space-padding-x-small); list-style: none;
+  border: var(--semantic-dimension-border-width-small) solid var(--semantic-color-border-secondary);
+  border-radius: var(--semantic-dimension-radius-medium);
+  background: var(--semantic-color-background-canvas);
+  box-shadow: var(--semantic-shadow-popup);
+  font: var(--semantic-typography-ui-primary);
+}
+#search-results a { display: block; padding: var(--semantic-dimension-space-padding-small) var(--semantic-dimension-space-padding-medium); border-radius: var(--semantic-dimension-radius-small); color: var(--semantic-color-text-secondary); text-decoration: none; overflow-wrap: anywhere; }
+#search-results a:hover, #search-results a.sel { background: var(--semantic-color-background-fill-ghost-neutral-active); }
+#search-results b { display: block; color: var(--semantic-color-text-primary); font-weight: var(--semantic-font-weight-ui-selected); }
+#search-results mark { background: none; color: var(--semantic-color-text-primary); font-weight: var(--semantic-font-weight-ui-emphasis); }
+#search-results .none { padding: var(--semantic-dimension-space-padding-small) var(--semantic-dimension-space-padding-medium); color: var(--semantic-color-text-secondary); }
+
+/* Light/dark toggle: shows the scheme it switches to. */
+.scheme .to-light { display: none; }
+:root[data-color-scheme="dark"] .scheme .to-light { display: block; }
+:root[data-color-scheme="dark"] .scheme .to-dark { display: none; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-color-scheme]) .scheme .to-light { display: block; }
+  :root:not([data-color-scheme]) .scheme .to-dark { display: none; }
+}
+
+/* Page: side navigation, content, table of contents */
+
+.layout { display: grid; grid-template-columns: var(--semantic-dimension-size-sidebar) minmax(0, 1fr); }
+
+nav.book {
+  position: sticky; inset-block-start: var(--semantic-dimension-size-top-navigation); align-self: start;
+  block-size: calc(100dvh - var(--semantic-dimension-size-top-navigation)); overflow: auto; overscroll-behavior: contain;
+  padding: var(--semantic-dimension-space-padding-xxx-large) var(--semantic-dimension-space-padding-x-large);
+  border-inline-end: var(--semantic-dimension-border-width-small) solid var(--semantic-color-border-secondary);
+}
+nav.book ol { display: flex; flex-direction: column; gap: var(--semantic-dimension-space-gap-xx-small); margin: 0; padding: 0; list-style: none; }
+nav.book li.part { padding: var(--semantic-dimension-space-padding-xx-large) var(--semantic-dimension-space-padding-small) var(--semantic-dimension-space-padding-xx-small); font: var(--semantic-typography-ui-label); }
+nav.book li.part:first-child { padding-block-start: 0; }
+nav.book a, nav.book li.draft {
+  display: block;
+  padding: var(--semantic-dimension-space-control-padding-block-small) var(--semantic-dimension-space-control-padding-inline-small);
+  border-radius: var(--semantic-dimension-radius-small);
+  color: var(--semantic-color-text-secondary); text-decoration: none;
+}
+nav.book li.d1 a, nav.book li.d1.draft { padding-inline-start: var(--semantic-dimension-space-padding-xx-large); }
+nav.book li.draft { opacity: var(--semantic-number-opacity-disabled); }
+@media (hover: hover) { nav.book a:hover { background: var(--semantic-color-background-fill-ghost-neutral-hover); color: var(--semantic-color-text-primary); } }
+nav.book a[aria-current] { background: var(--semantic-color-background-fill-ghost-neutral-active); color: var(--semantic-color-text-primary); font-weight: var(--semantic-font-weight-ui-selected); }
+
+main {
+  display: grid; grid-template-columns: minmax(0, var(--semantic-dimension-size-max-width-text)) 14rem;
+  justify-content: center; align-items: start; column-gap: var(--semantic-dimension-space-gap-x-large);
+  min-inline-size: 0;
+  padding: var(--semantic-dimension-space-padding-xxx-large) var(--semantic-dimension-space-padding-x-large) var(--semantic-dimension-space-padding-xxxx-large);
+}
+main:focus { outline: 0; }
+.page { min-inline-size: 0; }
+
+aside.toc {
+  position: sticky; inset-block-start: var(--semantic-dimension-size-top-navigation); align-self: start;
+  max-block-size: calc(100dvh - var(--semantic-dimension-size-top-navigation)); overflow: auto; overscroll-behavior: contain;
+  margin-block-start: calc(-1 * var(--semantic-dimension-space-padding-xxx-large));
+  padding-block: var(--semantic-dimension-space-padding-xxx-large);
+}
+aside.toc .toc-title { margin: 0 0 var(--semantic-dimension-space-gap-small); font: var(--semantic-typography-ui-label); }
+aside.toc ol { display: flex; flex-direction: column; gap: var(--semantic-dimension-space-gap-x-small); margin: 0; padding: 0; list-style: none; }
+aside.toc a {
+  position: relative; display: block;
+  padding-block: var(--semantic-dimension-space-control-padding-block-small);
+  padding-inline-start: var(--semantic-dimension-space-padding-large);
+  color: var(--semantic-color-text-secondary); text-decoration: none; overflow-wrap: anywhere;
+}
+aside.toc li.h3 a { padding-inline-start: var(--semantic-dimension-space-padding-xx-large); }
+@media (hover: hover) { aside.toc a:hover { color: var(--semantic-color-text-primary); } }
+aside.toc a[aria-current] { color: var(--semantic-color-text-primary); }
+aside.toc a[aria-current]::before {
+  position: absolute; inset-block: var(--semantic-dimension-space-padding-x-small); inset-inline-start: 0;
+  inline-size: var(--semantic-dimension-border-width-medium); background: currentColor; content: "";
+}
+
+/* Prose: the article. Blocks are spaced like Elanor's Prose: by the margin above each. */
+
+article { min-inline-size: 0; font: var(--semantic-typography-prose-primary); overflow-wrap: break-word; }
+article > *, article :where(li, blockquote) > * { margin-block: 0; }
+article > * + *, article :where(li, blockquote) > * + * { margin-block-start: var(--semantic-dimension-space-flow-small); }
+article > * + :where(pre, .code-wrap, .tabbed-set, .table-scroll, figure, blockquote), article > :where(pre, .code-wrap, .tabbed-set, .table-scroll, figure, blockquote) + * { margin-block-start: var(--semantic-dimension-space-flow-medium); }
+article > * + h2 { margin-block-start: var(--semantic-dimension-space-flow-x-large); }
+article > * + h3 { margin-block-start: var(--semantic-dimension-space-flow-large); }
+article > * + :where(h4, h5, h6) { margin-block-start: var(--semantic-dimension-space-flow-medium); }
+article > h2 + * { margin-block-start: var(--semantic-dimension-space-flow-medium); }
+article > h3 + * { margin-block-start: var(--semantic-dimension-space-flow-small); }
+article > :where(h4, h5, h6) + * { margin-block-start: var(--semantic-dimension-space-flow-x-small); }
+article > h1 + * { margin-block-start: var(--semantic-dimension-space-flow-large); }
+
+article :where(h1, h2, h3, h4) { overflow-wrap: anywhere; text-wrap: pretty; }
+article h1 { font: var(--semantic-typography-heading-app-1); letter-spacing: var(--semantic-typography-heading-app-1-letter-spacing); }
+article h2 { font: var(--semantic-typography-heading-app-3); letter-spacing: var(--semantic-typography-heading-app-3-letter-spacing); }
+article h3 { font: var(--semantic-typography-heading-app-5); letter-spacing: var(--semantic-typography-heading-app-5-letter-spacing); }
+article h4 { font: var(--semantic-typography-heading-app-6); }
+article :where(h1, h2, h3, h4) a.anchor { color: inherit; text-decoration: none; }
+article :where(ul, ol) { padding-inline-start: var(--semantic-dimension-space-padding-xx-large); }
+article li + li { margin-block-start: var(--semantic-dimension-space-flow-x-small); }
+article li::marker { color: var(--semantic-color-text-secondary); }
+article strong { font-weight: var(--semantic-font-weight-emphasis); }
+article hr { border: 0; border-block-start: var(--semantic-dimension-border-width-small) solid var(--semantic-color-border-secondary); }
+article img { max-inline-size: 100%; }
+
+a { color: var(--semantic-color-text-link); text-decoration: underline; text-decoration-thickness: from-font; text-underline-position: from-font; }
+a:hover { text-decoration-thickness: 10%; }
+/* A link to a repository file on GitHub (class="source"). */
+a.source::after {
+  display: inline-block; inline-size: 0.8em; block-size: 0.8em; margin-inline-start: 0.15em;
+  background: currentColor; content: "";
+  mask: url(elanor/icons/open-in-new.svg) center / contain no-repeat;
+}
+
+/* Inline code: wraps anywhere, so a long identifier never widens its column. */
+code {
+  padding-inline: var(--semantic-dimension-space-control-padding-inline-x-small);
+  border-radius: var(--semantic-dimension-radius-small);
+  background: var(--semantic-color-background-fill-secondary);
+  color: var(--semantic-color-text-code);
+  font-family: var(--semantic-font-family-code);
+  font-size: calc(var(--semantic-number-font-scale-inline-code) * 1em);
+  overflow-wrap: anywhere; hyphens: none;
+}
+a code { color: inherit; }
+@media (forced-colors: active) { code { outline: var(--semantic-dimension-border-width-small) solid CanvasText; } }
+
+/* Code blocks: Elanor's CodeSnippet. Long lines scroll inside the block. */
+pre {
+  max-inline-size: 100%; overflow: auto;
+  padding: var(--semantic-dimension-space-padding-medium) var(--semantic-dimension-space-padding-x-large);
+  border-radius: var(--semantic-dimension-radius-small);
+  background: var(--semantic-color-background-fill-secondary);
+  color: var(--semantic-color-text-code);
+  font: var(--semantic-typography-code-primary);
+  tab-size: 4;
+}
+pre code { padding: 0; border-radius: 0; background: none; font: inherit; color: inherit; white-space: pre; overflow-wrap: normal; }
+
+/* Syntax roles (build.py's highlight): the colors of Elanor's Shiki theme. */
+.tok-comment { color: var(--semantic-color-text-code-comment); font-style: italic; }
+.tok-punctuation { color: var(--semantic-color-text-code-punctuation); }
+.tok-keyword { color: var(--semantic-color-text-code-keyword); }
+.tok-function { color: var(--semantic-color-text-code-function); }
+.tok-variable { color: var(--semantic-color-text-code-variable); }
+.tok-string { color: var(--semantic-color-text-code-string); }
+.tok-number { color: var(--semantic-color-text-code-number); }
+.tok-type { color: var(--semantic-color-text-code-type); }
+
+/* Tables: Elanor's Table. A table wider than the column scrolls inside its wrapper
+   (build.py wraps each Markdown table in .table-scroll). */
+.table-scroll { max-inline-size: 100%; overflow-x: auto; }
+article table {
+  inline-size: 100%;
+  border-spacing: 0; border-collapse: collapse;
+  font: var(--semantic-typography-ui-primary);
+}
+/* A table's first column names things (prefixes, options, commands): keep the names
+   whole. The column sizes to them, and a table that gets too wide scrolls in its wrapper. */
+article td:first-child code { overflow-wrap: normal; }
+th, td {
+  padding: var(--semantic-dimension-space-padding-small) var(--semantic-dimension-space-padding-large);
+  text-align: start; vertical-align: top;
+}
+tr > :first-child { padding-inline-start: 0; }
+tr > :last-child { padding-inline-end: 0; }
+thead tr, tr:not(:last-child) { border-block-end: var(--semantic-dimension-border-width-small) solid var(--semantic-color-border-secondary); }
+th { font-weight: var(--semantic-font-weight-ui-emphasis); }
+
+/* Quotes: the docs use them for notes, so they are callouts on Elanor's information
+   surface (as the djs guide's "In short" asides). */
+blockquote {
+  margin-inline: 0;
+  padding: var(--semantic-dimension-space-padding-large) var(--semantic-dimension-space-padding-x-large);
+  border-radius: var(--semantic-dimension-radius-medium);
+  background: var(--semantic-color-background-fill-secondary-information);
+}
+blockquote > p:first-child > strong:first-child { color: var(--semantic-color-text-information); }
+blockquote :where(code) { background: var(--semantic-color-background-fill-ghost-neutral-active); }
+
+/* Code blocks get a copy button (page.js), shown on hover or focus. */
+.code-wrap { position: relative; }
+.code-wrap > pre { margin: 0; }
+.code-wrap .copy {
+  position: absolute; inset-block-start: var(--semantic-dimension-space-padding-small); inset-inline-end: var(--semantic-dimension-space-padding-small);
+  padding: var(--semantic-dimension-space-control-padding-block-small) var(--semantic-dimension-space-control-padding-inline-small);
+  border: 0; border-radius: var(--semantic-dimension-radius-small);
+  box-shadow: inset 0 0 0 var(--semantic-dimension-border-width-small) var(--semantic-color-border-secondary);
+  background: var(--semantic-color-background-canvas); color: var(--semantic-color-text-secondary);
+  font: var(--semantic-typography-ui-secondary); cursor: pointer;
+  opacity: 0;
+}
+.code-wrap:hover .copy, .code-wrap .copy:focus-visible, .code-wrap .copy.done { opacity: 1; }
+@media (hover: none) { .code-wrap .copy { opacity: 1; } }
+@media (hover: hover) { .code-wrap .copy:hover { color: var(--semantic-color-text-primary); } }
+
+/* Tabs (pymdownx.tabbed, alternate style): one set per example in several languages.
+   Built like the djs guide's live examples: a bordered box with a bar of ghost buttons.
+   page.js keeps sets with the same labels on the same tab. */
+.tabbed-set {
+  display: flex; flex-direction: column; min-inline-size: 0; overflow: hidden;
+  border: var(--semantic-dimension-border-width-small) solid var(--semantic-color-border-secondary);
+  border-radius: var(--semantic-dimension-radius-medium);
+}
+.tabbed-set > input { position: absolute; opacity: 0; pointer-events: none; }
+.tabbed-labels {
+  display: flex; flex-wrap: wrap; align-items: center; gap: var(--semantic-dimension-space-control-gap-medium);
+  padding: var(--semantic-dimension-space-padding-small) var(--semantic-dimension-space-padding-medium);
+  border-block-end: var(--semantic-dimension-border-width-small) solid var(--semantic-color-border-secondary);
+  background: var(--semantic-color-background-surface);
+  font: var(--semantic-typography-ui-secondary);
+}
+.tabbed-labels > label {
+  padding: var(--semantic-dimension-space-control-padding-block-small) var(--semantic-dimension-space-control-padding-inline-small);
+  border-radius: var(--semantic-dimension-radius-small);
+  background: var(--semantic-color-background-fill-ghost-neutral);
+  color: var(--semantic-color-text-secondary);
+  font: var(--semantic-typography-ui-primary); cursor: pointer; user-select: none;
+}
+@media (hover: hover) { .tabbed-labels > label:hover { background: var(--semantic-color-background-fill-ghost-neutral-hover); color: var(--semantic-color-text-primary); } }
+.tabbed-block { display: none; min-inline-size: 0; padding: var(--semantic-dimension-space-padding-medium) var(--semantic-dimension-space-padding-x-large); }
+.tabbed-block > * { margin-block: 0; }
+.tabbed-block > * + * { margin-block-start: var(--semantic-dimension-space-flow-small); }
+.tabbed-block:has(> .code-wrap:only-child, > pre:only-child) { padding: 0; }
+.tabbed-block > .code-wrap:only-child > pre, .tabbed-block > pre:only-child { border-radius: 0; }
+.tabbed-set > input:nth-child(1):checked ~ .tabbed-labels > label:nth-child(1) { background: var(--semantic-color-background-fill-ghost-neutral-active); color: var(--semantic-color-text-primary); font-weight: var(--semantic-font-weight-ui-selected); }
+.tabbed-set > input:nth-child(1):focus-visible ~ .tabbed-labels > label:nth-child(1) { outline: var(--semantic-dimension-border-width-large) solid var(--semantic-color-focus-ring); outline-offset: var(--semantic-dimension-border-width-medium); }
+.tabbed-set > input:nth-child(1):checked ~ .tabbed-content > .tabbed-block:nth-child(1) { display: block; }
+.tabbed-set > input:nth-child(2):checked ~ .tabbed-labels > label:nth-child(2) { background: var(--semantic-color-background-fill-ghost-neutral-active); color: var(--semantic-color-text-primary); font-weight: var(--semantic-font-weight-ui-selected); }
+.tabbed-set > input:nth-child(2):focus-visible ~ .tabbed-labels > label:nth-child(2) { outline: var(--semantic-dimension-border-width-large) solid var(--semantic-color-focus-ring); outline-offset: var(--semantic-dimension-border-width-medium); }
+.tabbed-set > input:nth-child(2):checked ~ .tabbed-content > .tabbed-block:nth-child(2) { display: block; }
+.tabbed-set > input:nth-child(3):checked ~ .tabbed-labels > label:nth-child(3) { background: var(--semantic-color-background-fill-ghost-neutral-active); color: var(--semantic-color-text-primary); font-weight: var(--semantic-font-weight-ui-selected); }
+.tabbed-set > input:nth-child(3):focus-visible ~ .tabbed-labels > label:nth-child(3) { outline: var(--semantic-dimension-border-width-large) solid var(--semantic-color-focus-ring); outline-offset: var(--semantic-dimension-border-width-medium); }
+.tabbed-set > input:nth-child(3):checked ~ .tabbed-content > .tabbed-block:nth-child(3) { display: block; }
+.tabbed-set > input:nth-child(4):checked ~ .tabbed-labels > label:nth-child(4) { background: var(--semantic-color-background-fill-ghost-neutral-active); color: var(--semantic-color-text-primary); font-weight: var(--semantic-font-weight-ui-selected); }
+.tabbed-set > input:nth-child(4):focus-visible ~ .tabbed-labels > label:nth-child(4) { outline: var(--semantic-dimension-border-width-large) solid var(--semantic-color-focus-ring); outline-offset: var(--semantic-dimension-border-width-medium); }
+.tabbed-set > input:nth-child(4):checked ~ .tabbed-content > .tabbed-block:nth-child(4) { display: block; }
+.tabbed-set > input:nth-child(5):checked ~ .tabbed-labels > label:nth-child(5) { background: var(--semantic-color-background-fill-ghost-neutral-active); color: var(--semantic-color-text-primary); font-weight: var(--semantic-font-weight-ui-selected); }
+.tabbed-set > input:nth-child(5):focus-visible ~ .tabbed-labels > label:nth-child(5) { outline: var(--semantic-dimension-border-width-large) solid var(--semantic-color-focus-ring); outline-offset: var(--semantic-dimension-border-width-medium); }
+.tabbed-set > input:nth-child(5):checked ~ .tabbed-content > .tabbed-block:nth-child(5) { display: block; }
+.tabbed-set > input:nth-child(6):checked ~ .tabbed-labels > label:nth-child(6) { background: var(--semantic-color-background-fill-ghost-neutral-active); color: var(--semantic-color-text-primary); font-weight: var(--semantic-font-weight-ui-selected); }
+.tabbed-set > input:nth-child(6):focus-visible ~ .tabbed-labels > label:nth-child(6) { outline: var(--semantic-dimension-border-width-large) solid var(--semantic-color-focus-ring); outline-offset: var(--semantic-dimension-border-width-medium); }
+.tabbed-set > input:nth-child(6):checked ~ .tabbed-content > .tabbed-block:nth-child(6) { display: block; }
+.tabbed-set > input:nth-child(7):checked ~ .tabbed-labels > label:nth-child(7) { background: var(--semantic-color-background-fill-ghost-neutral-active); color: var(--semantic-color-text-primary); font-weight: var(--semantic-font-weight-ui-selected); }
+.tabbed-set > input:nth-child(7):focus-visible ~ .tabbed-labels > label:nth-child(7) { outline: var(--semantic-dimension-border-width-large) solid var(--semantic-color-focus-ring); outline-offset: var(--semantic-dimension-border-width-medium); }
+.tabbed-set > input:nth-child(7):checked ~ .tabbed-content > .tabbed-block:nth-child(7) { display: block; }
+.tabbed-set > input:nth-child(8):checked ~ .tabbed-labels > label:nth-child(8) { background: var(--semantic-color-background-fill-ghost-neutral-active); color: var(--semantic-color-text-primary); font-weight: var(--semantic-font-weight-ui-selected); }
+.tabbed-set > input:nth-child(8):focus-visible ~ .tabbed-labels > label:nth-child(8) { outline: var(--semantic-dimension-border-width-large) solid var(--semantic-color-focus-ring); outline-offset: var(--semantic-dimension-border-width-medium); }
+.tabbed-set > input:nth-child(8):checked ~ .tabbed-content > .tabbed-block:nth-child(8) { display: block; }
+
+/* Previous / next: Elanor's linked Card. */
+.pager { display: flex; gap: var(--semantic-dimension-space-gap-medium); margin-block-start: var(--semantic-dimension-space-flow-x-large); }
+.pager a {
+  flex: 1; min-inline-size: 0;
+  padding: var(--semantic-dimension-space-padding-medium) var(--semantic-dimension-space-padding-large);
+  border: var(--semantic-dimension-border-width-default) solid var(--semantic-color-border-secondary);
+  border-radius: var(--semantic-dimension-radius-medium);
+  color: var(--semantic-color-text-primary); text-decoration: none; overflow-wrap: anywhere;
+}
+@media (hover: hover) { .pager a:hover { background: var(--semantic-color-background-fill-ghost-hover); } }
+.pager a small { display: block; color: var(--semantic-color-text-secondary); font: var(--semantic-typography-ui-secondary); }
+.pager .next { margin-inline-start: auto; text-align: end; }
+
+footer.foot {
+  margin-block-start: var(--semantic-dimension-space-flow-x-large);
+  padding-block-start: var(--semantic-dimension-space-padding-large);
+  border-block-start: var(--semantic-dimension-border-width-small) solid var(--semantic-color-border-secondary);
+  color: var(--semantic-color-text-secondary); font: var(--semantic-typography-ui-secondary);
+}
+footer.foot p { margin: 0 0 var(--semantic-dimension-space-gap-x-small); }
+footer.foot a { color: inherit; }
+
+/* Narrower: no table of contents; then the chapters move into a menu (as in Elanor's docs
+   below 61.625rem). */
+@media (width < 75rem) {
+  main { grid-template-columns: minmax(0, var(--semantic-dimension-size-max-width-text)); }
+  aside.toc { display: none; }
+}
+@media (width < 61.625rem) {
+  .layout { display: block; }
+  .menu-button { display: inline-flex; }
+  nav.book {
+    display: none; position: fixed; z-index: var(--semantic-number-layer-floating);
+    inset: var(--semantic-dimension-size-top-navigation) 0 0 0; max-block-size: none;
+    block-size: auto; border: 0; background: var(--semantic-color-background-canvas);
+  }
+  body.nav-open nav.book { display: block; }
+  body.nav-open { overflow: hidden; }
+  main { padding-block-start: var(--semantic-dimension-space-padding-x-large); }
+}
+@media (width < 48rem) {
+  header.top { gap: var(--semantic-dimension-space-gap-small); padding-inline: var(--semantic-dimension-space-padding-medium); }
+  .brand span { display: none; }
+  .search input { inline-size: 9rem; }
+  main { padding-inline: var(--semantic-dimension-space-padding-medium); }
+  pre { padding-inline: var(--semantic-dimension-space-padding-medium); }
+  .pager { flex-direction: column; }
+}

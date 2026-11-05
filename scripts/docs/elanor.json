@@ -1,0 +1,13 @@
+{
+  "brand": "earendil",
+  "packages": {
+    "@earendil-works/design-tokens": {
+      "version": "0.1.0",
+      "integrity": "sha512-xY6+O52jX7VJGso8kEA+bLdV7N8nSooJ2vjtrYq71gi1Hkd3qHwz2g3UprmgpcKSHtZO6vOxzGWxbT1jAS7sVA=="
+    },
+    "@earendil-works/elanor-fonts": {
+      "version": "0.1.0",
+      "integrity": "sha512-FumYoWIhXt8NHIwY8Ku0TecJox0aZ9rcGgu11sgOUhCPREgVkFS3C1Obo7FgT8IdqlFhzG87ryzx7bg5UPpVpQ=="
+    }
+  }
+}

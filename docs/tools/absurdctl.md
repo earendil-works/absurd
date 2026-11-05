@@ -85,7 +85,7 @@ export PGDATABASE="postgresql://user:pass@localhost:5432/mydb"
 ## Schema Management
 
 For a full guide to fresh installs, upgrades, and generating SQL for your own
-migration system, see **[Database Setup and Migrations](./database.md)**.
+migration system, see **[Database Setup and Migrations](../database.md)**.
 
 ### `init`
 

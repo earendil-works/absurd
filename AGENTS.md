@@ -41,6 +41,15 @@ uv run pytest              # Run all tests
 uv run pytest test_foo.py  # Run single test file
 ```
 
+### Documentation
+```bash
+make docs        # Build docs/ into site/ (scripts/docs/build.py)
+make serve-docs  # Serve on http://127.0.0.1:8000/, rebuilding on change
+```
+The navigation lives in `docs/SUMMARY.md`.  The theme (shared with Earendil's
+other docs) lives in `scripts/docs/assets/`; Elanor's tokens and fonts come from
+npm, pinned in `scripts/docs/elanor.json` (`scripts/docs/build.py update-elanor`).
+
 ### Formatting
 ```bash
 make format     # Format TypeScript SDK, habitat UI, and Python tests

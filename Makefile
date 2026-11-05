@@ -8,16 +8,13 @@ format:
 	@gofmt -w habitat
 	@gofmt -w sdks/go/absurd
 
-ZENSICAL_VERSION ?= 0.0.21
-
-# Build documentation site
+# Build documentation site (docs/ -> site/)
 docs:
-	@uvx --from "zensical==$(ZENSICAL_VERSION)" zensical build
-	@touch site/.nojekyll
+	@uv run --script scripts/docs/build.py build
 
-# Serve documentation locally with live reload
+# Serve documentation locally, rebuilding on change
 serve-docs:
-	@uvx --from "zensical==$(ZENSICAL_VERSION)" zensical serve
+	@uv run --script scripts/docs/build.py serve
 
 # Build bundled absurdctl artifacts with embedded schema + migrations
 build-absurdctl:
