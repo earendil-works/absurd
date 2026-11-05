@@ -4,6 +4,8 @@ This contains the changes between releases.
 
 # Unreleased
 
+* Fixed the Python SDK's async client to reconnect when its owned connection was interrupted (e.g. by an idle timeout or a server restart) instead of failing every later call with "the connection is closed".  #141
+
 # 0.5.1
 
 * Indexed and narrowed claim-time cancellation maintenance so worker polling avoids scanning large historical task tables for tasks without cancellation policies.  The `0.5.0-0.5.1` migration adds the new index to existing queues.  #140

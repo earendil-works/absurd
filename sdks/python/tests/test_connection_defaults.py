@@ -1,3 +1,7 @@
+import asyncio
+
+import psycopg
+
 import absurd_sdk
 
 
@@ -45,3 +49,49 @@ def test_async_absurd_falls_back_to_default_absurd_uri(monkeypatch):
 
     assert client._conn_string == "postgresql://localhost/absurd"
     assert client._owned_conn is True
+
+
+def test_async_absurd_reconnects_after_an_interrupted_connection(monkeypatch):
+    made = []
+
+    async def connect(dsn, autocommit=True):
+        # Connecting to a nonexistent socket fails immediately, producing a
+        # real psycopg connection that is `broken`: status BAD without a
+        # clean close(), the same state a dropped connection leaves behind.
+        made.append(
+            psycopg.AsyncConnection(psycopg.pq.PGconn.connect(b"host=/nonexistent"))
+        )
+        return made[-1]
+
+    monkeypatch.setattr(absurd_sdk.AsyncConnection, "connect", connect)
+    client = absurd_sdk.AsyncAbsurd("postgresql://localhost/absurd")
+    closed = []
+
+    async def run():
+        await client._ensure_connected()
+
+        async def close():
+            closed.append(True)
+            raise psycopg.OperationalError("boom")
+
+        made[0].close = close
+        await client._ensure_connected()
+
+    asyncio.run(run())
+
+    assert len(made) == 2
+    assert client._conn is made[1]
+    assert closed == [True]
+
+
+def test_async_absurd_leaves_a_broken_caller_connection_alone(monkeypatch):
+    async def connect(dsn, autocommit=True):
+        raise AssertionError("must not reconnect a caller-provided connection")
+
+    monkeypatch.setattr(absurd_sdk.AsyncConnection, "connect", connect)
+    conn = psycopg.AsyncConnection(psycopg.pq.PGconn.connect(b"host=/nonexistent"))
+    client = absurd_sdk.AsyncAbsurd(conn)
+
+    asyncio.run(client._ensure_connected())
+
+    assert client._conn is conn
