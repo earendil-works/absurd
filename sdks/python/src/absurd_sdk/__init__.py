@@ -686,6 +686,26 @@ class TaskContext:
         raise TypeError("Cannot create TaskContext instances")
 
     @property
+    def run_id(self) -> str:
+        """The ID of the run (attempt) currently executing this task."""
+        return self._task["run_id"]
+
+    @property
+    def task_name(self) -> str:
+        """The registered name of the task being executed."""
+        return self._task["task_name"]
+
+    @property
+    def queue_name(self) -> str:
+        """The name of the queue the task was claimed from."""
+        return self._queue_name
+
+    @property
+    def attempt(self) -> int:
+        """The current attempt number, starting at 1."""
+        return self._task["attempt"]
+
+    @property
     def headers(self) -> Mapping[str, JsonValue]:
         """Returns all headers attached to this task."""
         return self._task.get("headers") or {}
@@ -967,6 +987,26 @@ class AsyncTaskContext:
 
     def __init__(self):
         raise TypeError("Cannot create AsyncTaskContext instances")
+
+    @property
+    def run_id(self) -> str:
+        """The ID of the run (attempt) currently executing this task."""
+        return self._task["run_id"]
+
+    @property
+    def task_name(self) -> str:
+        """The registered name of the task being executed."""
+        return self._task["task_name"]
+
+    @property
+    def queue_name(self) -> str:
+        """The name of the queue the task was claimed from."""
+        return self._queue_name
+
+    @property
+    def attempt(self) -> int:
+        """The current attempt number, starting at 1."""
+        return self._task["attempt"]
 
     @property
     def headers(self) -> Mapping[str, JsonValue]:

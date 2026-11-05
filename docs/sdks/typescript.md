@@ -151,6 +151,21 @@ The context object passed to every task handler.
 
 The unique identifier of the current task.
 
+### `ctx.runID`, `ctx.taskName`, `ctx.queueName`, `ctx.attempt`
+
+Read-only metadata about the current claim: the ID of the current run, the
+registered task name, the queue the task was claimed from, and the attempt
+number (starting at `1`).  A retry creates a new run with a new `runID` and an
+incremented `attempt`; resuming after a sleep or event keeps both.
+
+```ts
+console.log(ctx.taskID, ctx.runID, ctx.attempt);
+```
+
+`runID` and `attempt` change between attempts, so code outside of steps that
+branches on them intentionally behaves differently on retries.  Steps that
+already completed are still replayed from their checkpoints.
+
 ### `ctx.headers`
 
 Read-only JSON object of headers attached to the task.

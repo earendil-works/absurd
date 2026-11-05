@@ -7,6 +7,7 @@ This contains the changes between releases.
 * Fixed the Python SDK's async client to reconnect when its owned connection was interrupted (e.g. by an idle timeout or a server restart) instead of failing every later call with "the connection is closed".  #141
 * Fixed the Python SDK's asynchronous worker to refill free concurrency slots instead of waiting for every task in a claimed batch to finish, so a slow task no longer idles the remaining slots.  #137
 * Added `SpawnTx` to the Go SDK for spawning tasks within a caller-provided `*sql.Tx` (or any `absurd.Querier` such as `*sql.Conn`), so spawns commit or roll back with the surrounding transaction.  #139
+* Exposed claim metadata on the TypeScript and Python SDK task contexts (`runID`/`run_id`, `taskName`/`task_name`, `queueName`/`queue_name`, and `attempt`), matching the Go SDK.  #113
 
 # 0.5.1
 

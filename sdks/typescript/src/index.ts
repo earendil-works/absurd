@@ -264,9 +264,11 @@ export type StepHandle<T = JsonValue> = {
 export class TaskContext {
   private stepNameCounter: Map<string, number> = new Map();
   private readonly log: Log;
+  /** The ID of the task being executed. */
   readonly taskID: string;
   private readonly con: Queryable;
-  private readonly queueName: string;
+  /** The name of the queue the task was claimed from. */
+  readonly queueName: string;
   private readonly task: ClaimedTask;
   private readonly checkpointCache: Map<string, JsonValue>;
   private readonly claimTimeout: number;
@@ -290,6 +292,27 @@ export class TaskContext {
     this.checkpointCache = checkpointCache;
     this.claimTimeout = claimTimeout;
     this.onLeaseExtended = onLeaseExtended;
+  }
+
+  /**
+   * The ID of the run (attempt) currently executing this task.
+   */
+  get runID(): string {
+    return this.task.run_id;
+  }
+
+  /**
+   * The registered name of the task being executed.
+   */
+  get taskName(): string {
+    return this.task.task_name;
+  }
+
+  /**
+   * The current attempt number, starting at 1.
+   */
+  get attempt(): number {
+    return this.task.attempt;
   }
 
   /**

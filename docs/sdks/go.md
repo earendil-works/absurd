@@ -440,6 +440,11 @@ task := absurd.MustTaskContext(ctx)
 log.Println(task.TaskID(), task.RunID(), task.Attempt(), task.Headers())
 ```
 
+`TaskName()` and `QueueName()` are available as well.  `RunID()` and
+`Attempt()` change between attempts (a retry gets a new run and an incremented
+attempt, starting at `1`), so code outside of steps that branches on them
+intentionally behaves differently on retries.
+
 ### `absurd.Step(ctx, name, fn)`
 
 Run an idempotent step.  The result is checkpointed in Postgres.

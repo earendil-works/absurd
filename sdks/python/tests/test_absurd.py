@@ -560,3 +560,88 @@ def test_async_begin_complete_step_is_cached_on_retry(db_dsn, queue_name):
         assert task_state == "completed"
         assert task_attempts == 2
         assert completed_payload == {"processed": 6, "executions": 1}
+
+
+def _fetch_runs(conn, queue, task_id):
+    query = sql.SQL(
+        "select run_id, attempt from absurd.{table} where task_id = %s order by attempt"
+    ).format(table=sql.Identifier(f"r_{queue}"))
+    return conn.execute(query, (task_id,)).fetchall()
+
+
+def test_sync_task_context_exposes_claim_metadata(conn, queue_name):
+    queue = queue_name("claim_meta")
+    client = Absurd(conn, queue_name=queue)
+    client.create_queue()
+
+    seen = []
+
+    @client.register_task("claim-metadata", default_max_attempts=2)
+    def claim_metadata(params, ctx):
+        seen.append(
+            (ctx.task_id, ctx.run_id, ctx.task_name, ctx.queue_name, ctx.attempt)
+        )
+        if ctx.attempt < 2:
+            raise Exception("first attempt fails")
+        return {"attempt": ctx.attempt}
+
+    spawned = client.spawn("claim-metadata", {})
+    client.work_batch(worker_id="worker")
+    client.work_batch(worker_id="worker")
+
+    runs = _fetch_runs(conn, queue, spawned["task_id"])
+    assert [attempt for _, attempt in runs] == [1, 2]
+    assert runs[0][0] == spawned["run_id"]
+    assert seen == [
+        (spawned["task_id"], run_id, "claim-metadata", queue, attempt)
+        for run_id, attempt in runs
+    ]
+
+    task_state, _, completed_payload = _fetch_task(conn, queue, spawned["task_id"])
+    assert task_state == "completed"
+    assert completed_payload == {"attempt": 2}
+
+
+def test_async_task_context_exposes_claim_metadata(db_dsn, queue_name):
+    queue = queue_name("claim_meta_async")
+
+    with psycopg.connect(db_dsn, autocommit=True) as setup_conn:
+        Absurd(setup_conn, queue_name=queue).create_queue()
+
+    async def run():
+        client = AsyncAbsurd(db_dsn, queue_name=queue)
+        seen = []
+
+        @client.register_task("claim-metadata", default_max_attempts=2)
+        async def claim_metadata(params, ctx):
+            seen.append(
+                (ctx.task_id, ctx.run_id, ctx.task_name, ctx.queue_name, ctx.attempt)
+            )
+            if ctx.attempt < 2:
+                raise Exception("first attempt fails")
+            return {"attempt": ctx.attempt}
+
+        spawned = await client.spawn("claim-metadata", {})
+        await client.work_batch(worker_id="async-worker")
+        await client.work_batch(worker_id="async-worker")
+
+        if client._conn is not None:
+            await client._conn.commit()
+        await client.close()
+        return spawned, seen
+
+    spawned, seen = asyncio.run(run())
+
+    with psycopg.connect(db_dsn, autocommit=True) as check_conn:
+        runs = _fetch_runs(check_conn, queue, spawned["task_id"])
+        task_state, _, completed_payload = _fetch_task(
+            check_conn, queue, spawned["task_id"]
+        )
+
+    assert [attempt for _, attempt in runs] == [1, 2]
+    assert seen == [
+        (spawned["task_id"], run_id, "claim-metadata", queue, attempt)
+        for run_id, attempt in runs
+    ]
+    assert task_state == "completed"
+    assert completed_payload == {"attempt": 2}

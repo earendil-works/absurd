@@ -177,6 +177,21 @@ if final.state == "failed":
 
 The unique identifier of the current task.
 
+#### `ctx.run_id`, `ctx.task_name`, `ctx.queue_name`, `ctx.attempt`
+
+Read-only metadata about the current claim: the ID of the current run, the
+registered task name, the queue the task was claimed from, and the attempt
+number (starting at `1`).  A retry creates a new run with a new `run_id` and an
+incremented `attempt`; resuming after a sleep or event keeps both.
+
+```python
+print(ctx.task_id, ctx.run_id, ctx.attempt)
+```
+
+`run_id` and `attempt` change between attempts, so code outside of steps that
+branches on them intentionally behaves differently on retries.  Steps that
+already completed are still replayed from their checkpoints.
+
 #### `ctx.headers`
 
 Read-only mapping of headers attached to the task.
@@ -291,7 +306,8 @@ ctx.emit_event("order.completed", {"order_id": "42"})
 
 ### Asynchronous (`AsyncTaskContext`)
 
-The async context has the same methods, all `async`:
+The async context has the same properties and methods; the methods are all
+`async`:
 
 ```python
 async def fetch_data():

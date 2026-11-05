@@ -46,6 +46,57 @@ describe("Retry and cancellation", () => {
     });
   });
 
+  test("task context exposes claim metadata across retries", async () => {
+    const seen: Array<{
+      taskID: string;
+      runID: string;
+      taskName: string;
+      queueName: string;
+      attempt: number;
+    }> = [];
+
+    absurd.registerTask(
+      { name: "claim-metadata", defaultMaxAttempts: 2 },
+      async (_params, taskCtx) => {
+        seen.push({
+          taskID: taskCtx.taskID,
+          runID: taskCtx.runID,
+          taskName: taskCtx.taskName,
+          queueName: taskCtx.queueName,
+          attempt: taskCtx.attempt,
+        });
+        if (taskCtx.attempt < 2) {
+          throw new Error("first attempt fails");
+        }
+        return { attempt: taskCtx.attempt };
+      },
+    );
+
+    const { taskID, runID } = await absurd.spawn("claim-metadata", {});
+
+    await absurd.workBatch("worker1", 60, 1);
+    await absurd.workBatch("worker1", 60, 1);
+
+    const runs = await ctx.getRuns(taskID);
+    expect(runs).toHaveLength(2);
+    expect(seen).toEqual(
+      runs.map((run) => ({
+        taskID,
+        runID: run.run_id,
+        taskName: "claim-metadata",
+        queueName: ctx.queueName,
+        attempt: run.attempt,
+      })),
+    );
+    expect(seen.map((entry) => entry.attempt)).toEqual([1, 2]);
+    expect(seen[0].runID).toBe(runID);
+    expect(seen[1].runID).not.toBe(runID);
+    expect(await ctx.getTask(taskID)).toMatchObject({
+      state: "completed",
+      completed_payload: { attempt: 2 },
+    });
+  });
+
   test("exponential backoff retry strategy", async () => {
     const baseTime = new Date("2024-05-01T10:00:00Z");
     await ctx.setFakeNow(baseTime);
