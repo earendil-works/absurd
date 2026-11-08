@@ -4,6 +4,11 @@ Habitat is a simple dashboard and monitoring tool for [Absurd](https://github.co
 
 It connects straight away to postgres.
 
+> **Warning:** Habitat has no built-in authentication. Deploy it behind an
+> authenticating reverse proxy or otherwise restrict access to trusted users
+> (for example, with a VPN or firewall). Do not expose it directly to the public
+> internet: anyone who can reach it can view task data, checkpoints, and events.
+
 <div align="center">
   <img src="screenshot.png" width="550" alt="Screenshot of habitat dashboard">
 </div>
