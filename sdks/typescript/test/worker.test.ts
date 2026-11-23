@@ -108,6 +108,8 @@ describe("Worker", () => {
     // Polls again without waiting for pollInterval
     await vi.waitFor(() => {
       expect(claimSpy.mock.calls.length).toBeGreaterThan(initialCallCount);
+      // The claim starts before the third task subscribes to the release event.
+      expect(gate.listenerCount("release")).toBe(1);
     });
 
     // Release any remaining tasks so the worker can shut down
